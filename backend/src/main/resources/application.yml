@@ -1,0 +1,36 @@
+server:
+  port: ${PORT:8090}
+
+spring:
+  application:
+    name: canopy-backend
+  threads:
+    virtual:
+      enabled: true
+  datasource:
+    url: ${DB_URL:jdbc:mysql://127.0.0.1:3308/canopy?useUnicode=true&characterEncoding=utf8&connectionCollation=utf8mb4_0900_ai_ci&allowMultiQueries=true&serverTimezone=UTC}
+    username: ${DB_USER:canopy}
+    password: ${DB_PASSWORD:canopy_dev_pw}
+    driver-class-name: com.mysql.cj.jdbc.Driver
+    hikari:
+      # PlanetScale / MySQL connection-management.md pool sizing
+      maximum-pool-size: 20
+      minimum-idle: 5
+      max-lifetime: 240000
+      idle-timeout: 120000
+      connection-timeout: 5000
+  servlet:
+    multipart:
+      max-file-size: 20MB
+      max-request-size: 25MB
+  jackson:
+    serialization:
+      write-dates-as-timestamps: false
+
+canopy:
+  jwt:
+    # ponytail: dev secret; override CANOPY_JWT_SECRET (>=32 bytes) in production
+    secret: ${CANOPY_JWT_SECRET:canopy-dev-hmac-sha256-secret-key-2026-planetscale-blind-pods}
+    expiration-seconds: 604800
+  uploads-dir: ${CANOPY_UPLOADS_DIR:uploads}
+  cors-origins: ${CANOPY_CORS_ORIGINS:http://localhost:3001,http://127.0.0.1:3001,http://localhost:3000,http://localhost:8081,http://127.0.0.1:8081,http://localhost:19006}

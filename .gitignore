@@ -1,0 +1,43 @@
+# Dependencies & Package Caches
+node_modules/
+**/node_modules/
+
+# Next.js (frontend/)
+frontend/.next/
+frontend/out/
+frontend/mockups/
+*.tsbuildinfo
+
+# Spring Boot / Maven (backend/)
+backend/target/
+backend/uploads/
+*.class
+*.jar
+*.war
+*.log
+
+# Expo / React Native (mobile/)
+mobile/.expo/
+mobile/dist/
+mobile/dist-web/
+mobile/web-build/
+*.jks
+*.p8
+*.p12
+*.key
+*.mobileprovision
+
+# Local Environment, Secrets & OS
+.env
+.env.*
+!.env.example
+.DS_Store
+Thumbs.db
+
+# Local Agent & Scratch Directories
+.agents/
+.claude/
+.taste-skill/
+**/.taste-skill/
+skills-lock.json
+mockups/

@@ -1,0 +1,16 @@
+{
+  "brand": "Canopy",
+  "searched": true,
+  "queries": [
+    {
+      "query": "\"Canopy\" social voice chat",
+      "conflict_in_trade": false,
+      "notes": "No social network, chat app, or voice chat product named Canopy in top 10 results (closest phonetic results were unrelated Murmurline / aMurmur)."
+    },
+    {
+      "query": "\"canopy.com\" OR \"Canopy app\"",
+      "conflict_in_trade": false,
+      "notes": "canopy.com belongs to an unrelated sustainable nut/agriculture food company; no software or voice chat app named Canopy."
+    }
+  ]
+}

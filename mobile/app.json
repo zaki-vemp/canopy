@@ -1,0 +1,35 @@
+{
+  "expo": {
+    "name": "Canopy",
+    "slug": "canopy-mobile",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "userInterfaceStyle": "light",
+    "backgroundColor": "#f5f6f5",
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "com.canopy.mobile",
+      "infoPlist": {
+        "NSMicrophoneUsageDescription": "Canopy uses your microphone for peer-blind Voice Lounges and Voice Notes inside your active pods."
+      }
+    },
+    "android": {
+      "package": "com.canopy.mobile",
+      "permissions": [
+        "RECORD_AUDIO",
+        "MODIFY_AUDIO_SETTINGS"
+      ]
+    },
+    "web": {
+      "bundler": "metro"
+    },
+    "plugins": [
+      [
+        "expo-av",
+        {
+          "microphonePermission": "Canopy uses your microphone for peer-blind Voice Lounges and Voice Notes inside your active pods."
+        }
+      ]
+    ]
+  }
+}

@@ -1,0 +1,299 @@
+{
+  "sharded": true,
+  "vindexes": {
+    "user_id_xxhash": {
+      "type": "xxhash"
+    },
+    "pod_id_xxhash": {
+      "type": "xxhash"
+    },
+    "users_email_lookup": {
+      "type": "consistent_lookup_unique",
+      "params": {
+        "table": "canopy_lookup.users_email_lookup",
+        "from": "email",
+        "to": "keyspace_id"
+      },
+      "owner": "users"
+    },
+    "users_public_id_lookup": {
+      "type": "consistent_lookup_unique",
+      "params": {
+        "table": "canopy_lookup.users_public_id_lookup",
+        "from": "public_id",
+        "to": "keyspace_id"
+      },
+      "owner": "users"
+    },
+    "pods_public_id_lookup": {
+      "type": "consistent_lookup_unique",
+      "params": {
+        "table": "canopy_lookup.pods_public_id_lookup",
+        "from": "public_id",
+        "to": "keyspace_id"
+      },
+      "owner": "pods"
+    },
+    "pod_channels_public_id_lookup": {
+      "type": "consistent_lookup_unique",
+      "params": {
+        "table": "canopy_lookup.pod_channels_public_id_lookup",
+        "from": "public_id",
+        "to": "keyspace_id"
+      },
+      "owner": "pod_channels"
+    },
+    "pod_members_user_lookup": {
+      "type": "consistent_lookup",
+      "params": {
+        "table": "canopy_lookup.pod_members_user_lookup",
+        "from": "user_id",
+        "to": "keyspace_id"
+      },
+      "owner": "pod_members"
+    },
+    "messages_id_lookup": {
+      "type": "consistent_lookup_unique",
+      "params": {
+        "table": "canopy_lookup.messages_id_lookup",
+        "from": "message_id",
+        "to": "keyspace_id"
+      },
+      "owner": "messages"
+    },
+    "attachments_id_lookup": {
+      "type": "consistent_lookup_unique",
+      "params": {
+        "table": "canopy_lookup.attachments_id_lookup",
+        "from": "attachment_id",
+        "to": "keyspace_id"
+      },
+      "owner": "message_attachments"
+    },
+    "polls_id_lookup": {
+      "type": "consistent_lookup_unique",
+      "params": {
+        "table": "canopy_lookup.polls_id_lookup",
+        "from": "poll_id",
+        "to": "keyspace_id"
+      },
+      "owner": "polls"
+    },
+    "pod_invites_code_lookup": {
+      "type": "consistent_lookup_unique",
+      "params": {
+        "table": "canopy_lookup.pod_invites_code_lookup",
+        "from": "code",
+        "to": "keyspace_id"
+      },
+      "owner": "pod_invites"
+    },
+    "pod_proposals_id_lookup": {
+      "type": "consistent_lookup_unique",
+      "params": {
+        "table": "canopy_lookup.pod_proposals_id_lookup",
+        "from": "proposal_id",
+        "to": "keyspace_id"
+      },
+      "owner": "pod_proposals"
+    }
+  },
+  "tables": {
+    "interests": {
+      "type": "reference",
+      "source": "canopy_lookup.interests"
+    },
+    "users": {
+      "column_vindexes": [
+        {
+          "column": "id",
+          "name": "user_id_xxhash"
+        },
+        {
+          "column": "email",
+          "name": "users_email_lookup"
+        },
+        {
+          "column": "public_id",
+          "name": "users_public_id_lookup"
+        }
+      ],
+      "auto_increment": {
+        "column": "id",
+        "sequence": "canopy_lookup.users_seq"
+      }
+    },
+    "user_interests": {
+      "column_vindexes": [
+        {
+          "column": "user_id",
+          "name": "user_id_xxhash"
+        }
+      ]
+    },
+    "pod_opt_outs": {
+      "column_vindexes": [
+        {
+          "column": "user_id",
+          "name": "user_id_xxhash"
+        }
+      ]
+    },
+    "user_bookmarks": {
+      "column_vindexes": [
+        {
+          "column": "user_id",
+          "name": "user_id_xxhash"
+        }
+      ]
+    },
+    "pods": {
+      "column_vindexes": [
+        {
+          "column": "id",
+          "name": "pod_id_xxhash"
+        },
+        {
+          "column": "public_id",
+          "name": "pods_public_id_lookup"
+        }
+      ],
+      "auto_increment": {
+        "column": "id",
+        "sequence": "canopy_lookup.pods_seq"
+      }
+    },
+    "pod_channels": {
+      "column_vindexes": [
+        {
+          "column": "pod_id",
+          "name": "pod_id_xxhash"
+        },
+        {
+          "column": "public_id",
+          "name": "pod_channels_public_id_lookup"
+        }
+      ],
+      "auto_increment": {
+        "column": "id",
+        "sequence": "canopy_lookup.pod_channels_seq"
+      }
+    },
+    "pod_members": {
+      "column_vindexes": [
+        {
+          "column": "pod_id",
+          "name": "pod_id_xxhash"
+        },
+        {
+          "column": "user_id",
+          "name": "pod_members_user_lookup"
+        }
+      ]
+    },
+    "messages": {
+      "column_vindexes": [
+        {
+          "column": "pod_id",
+          "name": "pod_id_xxhash"
+        },
+        {
+          "column": "id",
+          "name": "messages_id_lookup"
+        }
+      ],
+      "auto_increment": {
+        "column": "id",
+        "sequence": "canopy_lookup.messages_seq"
+      }
+    },
+    "message_reactions": {
+      "column_vindexes": [
+        {
+          "column": "message_id",
+          "name": "messages_id_lookup"
+        }
+      ]
+    },
+    "message_attachments": {
+      "column_vindexes": [
+        {
+          "column": "pod_id",
+          "name": "pod_id_xxhash"
+        },
+        {
+          "column": "id",
+          "name": "attachments_id_lookup"
+        }
+      ],
+      "auto_increment": {
+        "column": "id",
+        "sequence": "canopy_lookup.attachments_seq"
+      }
+    },
+    "polls": {
+      "column_vindexes": [
+        {
+          "column": "message_id",
+          "name": "messages_id_lookup"
+        },
+        {
+          "column": "id",
+          "name": "polls_id_lookup"
+        }
+      ],
+      "auto_increment": {
+        "column": "id",
+        "sequence": "canopy_lookup.polls_seq"
+      }
+    },
+    "poll_votes": {
+      "column_vindexes": [
+        {
+          "column": "poll_id",
+          "name": "polls_id_lookup"
+        }
+      ]
+    },
+    "pod_invites": {
+      "column_vindexes": [
+        {
+          "column": "pod_id",
+          "name": "pod_id_xxhash"
+        },
+        {
+          "column": "code",
+          "name": "pod_invites_code_lookup"
+        }
+      ],
+      "auto_increment": {
+        "column": "id",
+        "sequence": "canopy_lookup.pod_invites_seq"
+      }
+    },
+    "pod_proposals": {
+      "column_vindexes": [
+        {
+          "column": "pod_id",
+          "name": "pod_id_xxhash"
+        },
+        {
+          "column": "id",
+          "name": "pod_proposals_id_lookup"
+        }
+      ],
+      "auto_increment": {
+        "column": "id",
+        "sequence": "canopy_lookup.pod_proposals_seq"
+      }
+    },
+    "pod_proposal_votes": {
+      "column_vindexes": [
+        {
+          "column": "proposal_id",
+          "name": "pod_proposals_id_lookup"
+        }
+      ]
+    }
+  }
+}

@@ -1,0 +1,29 @@
+:root {
+  --m-bg: #ffffff;
+  --m-surface: #f3f3f3;
+  --m-surface-2: #e8e8e8;
+  --m-rail: #1a1c1a;
+  --m-sidebar: #f6f7f6;
+  --m-ink: #232323;
+  --m-muted: #686868;
+  --m-accent: #a1ffcb;
+  --m-accent-strong: #1f6b3a;
+  --m-danger: #b42318;
+  --m-border: rgba(35, 35, 35, 0.13);
+  --m-font-sans: 'Familjen Grotesk', system-ui, -apple-system, sans-serif;
+  --m-font-mono: 'IBM Plex Mono', ui-monospace, Menlo, Consolas, monospace;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+  font-family: var(--m-font-sans);
+  color: var(--m-ink);
+  background: var(--m-bg);
+  -webkit-font-smoothing: antialiased;
+}
