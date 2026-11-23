@@ -76,6 +76,7 @@ class CanopyIntegrationTest {
     fun resetTestDatabase() {
         restTemplate.restTemplate.requestFactory = JdkClientHttpRequestFactory()
         val tablesToTruncate = listOf(
+            "pod_read_cursors",
             "pod_proposal_votes",
             "pod_proposals",
             "pod_invites",
@@ -834,6 +835,7 @@ class CanopyIntegrationTest {
             val signalOn1 = awaitFrame(q1) { it.path("type").asText() == "webrtc_signal" }
             assertZeroPiiLeak(objectMapper.writeValueAsString(signalOn1))
             assertEquals(peer0, signalOn1.path("fromPeerId").asText())
+            assertEquals("GROUP", signalOn1.path("scope").asText())
             assertFalse(signalOn1.has("voiceChannelId"))
             assertEquals("offer", signalOn1.path("signal").path("type").asText())
 
@@ -1310,6 +1312,256 @@ class CanopyIntegrationTest {
         assertEquals(HttpStatus.OK, adminKickRes.statusCode)
         assertEquals(2, objectMapper.readTree(adminKickRes.body!!).path("pod").path("memberCount").asInt())
         assertEquals(HttpStatus.FORBIDDEN, postJson("/api/pods/$customPodId/join", u5.token, emptyMap<String, Any>()).statusCode)
+    }
+
+    @Test
+    @Order(11)
+    fun `server-backed read cursors unread counts Seen receipts and private 1-to-1 DM audio calls isolate strictly to participants`() {
+        val uA = accounts[0]
+        val uB = accounts[1]
+        val uC = accounts[2] // Bystander in the same pod!
+
+        // 1. Match uA, uB, uC into a fresh pod ("synthwave-lounge")
+        val mA = postJson("/api/pods/match", uA.token, mapOf("interest" to "synthwave-lounge"))
+        val mB = postJson("/api/pods/match", uB.token, mapOf("interest" to "synthwave-lounge"))
+        val mC = postJson("/api/pods/match", uC.token, mapOf("interest" to "synthwave-lounge"))
+        assertEquals(HttpStatus.OK, mA.statusCode)
+        assertEquals(HttpStatus.OK, mB.statusCode)
+        assertEquals(HttpStatus.OK, mC.statusCode)
+
+        val podNodeA = objectMapper.readTree(mA.body!!).path("matched")[0]
+        val podNodeB = objectMapper.readTree(mB.body!!).path("matched")[0]
+        val phase6PodId = podNodeA.path("podId").asText()
+        val peerA = podNodeA.path("myPeerId").asText()
+        val aliasA = podNodeA.path("myAlias").asText()
+        val peerB = podNodeB.path("myPeerId").asText()
+        val aliasB = podNodeB.path("myAlias").asText()
+
+        // Initial unreadGroupCount > 0 (welcome + join SYSTEM messages have sender_user_id = 0 != myUserId)
+        val initialPodB = objectMapper.readTree(getJson("/api/pods", uB.token).body!!).path("pods")
+            .first { it.path("podId").asText() == phase6PodId }
+        assertTrue(initialPodB.path("unreadGroupCount").asInt() >= 4, "Initial unreadGroupCount should reflect unread system messages")
+
+        val initialMsgs = objectMapper.readTree(getJson("/api/pods/$phase6PodId/messages?beforeId=0&limit=40", uA.token).body!!).path("messages")
+        val latestSysMsgId = initialMsgs.last().path("id").asLong()
+
+        // Mark Group Chat read up to latestSysMsgId for uA, uB, and uC -> unreadGroupCount drops to 0
+        for (acc in listOf(uA, uB, uC)) {
+            val readRes = postJson("/api/pods/$phase6PodId/read", acc.token, mapOf("peerId" to null, "lastReadMessageId" to latestSysMsgId))
+            assertEquals(HttpStatus.OK, readRes.statusCode)
+            assertEquals(latestSysMsgId, objectMapper.readTree(readRes.body!!).path("lastReadMessageId").asLong())
+        }
+        val clearedPodB = objectMapper.readTree(getJson("/api/pods", uB.token).body!!).path("pods")
+            .first { it.path("podId").asText() == phase6PodId }
+        assertEquals(0, clearedPodB.path("unreadGroupCount").asInt())
+
+        // 2. Offline/unread Group Chat count + sender auto-advance + monotonic GREATEST read cursor
+        val g1Res = postJson("/api/pods/$phase6PodId/messages", uA.token, mapOf("body" to "Synth patch #1"))
+        val g2Res = postJson("/api/pods/$phase6PodId/messages", uA.token, mapOf("body" to "Synth patch #2"))
+        val g2Id = objectMapper.readTree(g2Res.body!!).path("message").path("id").asLong()
+        assertEquals(HttpStatus.CREATED, g1Res.statusCode)
+        assertEquals(HttpStatus.CREATED, g2Res.statusCode)
+
+        val afterSendPodA = objectMapper.readTree(getJson("/api/pods", uA.token).body!!).path("pods")
+            .first { it.path("podId").asText() == phase6PodId }
+        val afterSendPodB = objectMapper.readTree(getJson("/api/pods", uB.token).body!!).path("pods")
+            .first { it.path("podId").asText() == phase6PodId }
+        val afterSendPodC = objectMapper.readTree(getJson("/api/pods", uC.token).body!!).path("pods")
+            .first { it.path("podId").asText() == phase6PodId }
+        assertEquals(0, afterSendPodA.path("unreadGroupCount").asInt(), "Sender's own unreadGroupCount must stay 0 via auto-advance")
+        assertEquals(2, afterSendPodB.path("unreadGroupCount").asInt(), "Unread member B must see unreadGroupCount = 2")
+        assertEquals(2, afterSendPodC.path("unreadGroupCount").asInt(), "Unread member C must see unreadGroupCount = 2")
+
+        val markGroupB = postJson("/api/pods/$phase6PodId/read", uB.token, mapOf("lastReadMessageId" to g2Id))
+        assertEquals(HttpStatus.OK, markGroupB.statusCode)
+        assertEquals(g2Id, objectMapper.readTree(markGroupB.body!!).path("lastReadMessageId").asLong())
+        // Regression check: posting a smaller lastReadMessageId must NOT move cursor backward
+        val staleMarkB = postJson("/api/pods/$phase6PodId/read", uB.token, mapOf("lastReadMessageId" to 1L))
+        assertEquals(g2Id, objectMapper.readTree(staleMarkB.body!!).path("lastReadMessageId").asLong())
+        assertEquals(
+            0,
+            objectMapper.readTree(getJson("/api/pods", uB.token).body!!).path("pods")
+                .first { it.path("podId").asText() == phase6PodId }.path("unreadGroupCount").asInt()
+        )
+
+        // 3. 1:1 DM unreadCount + peerLastReadMessageId (Seen ✓✓) + live dm_read WS isolation
+        val dm1 = postJson("/api/pods/$phase6PodId/dms/$peerB/messages", uA.token, mapOf("body" to "Hey, got 5 mins for an audio check?"))
+        val dm2 = postJson("/api/pods/$phase6PodId/dms/$peerB/messages", uA.token, mapOf("body" to "Ring whenever ready!"))
+        assertEquals(HttpStatus.CREATED, dm1.statusCode)
+        assertEquals(HttpStatus.CREATED, dm2.statusCode)
+        val dm2Id = objectMapper.readTree(dm2.body!!).path("message").path("id").asLong()
+
+        val dmsBeforeReadA = objectMapper.readTree(getJson("/api/pods/$phase6PodId/dms", uA.token).body!!).path("conversations")
+        assertEquals(1, dmsBeforeReadA.size())
+        assertEquals(0, dmsBeforeReadA[0].path("unreadCount").asInt(), "Sender uA has 0 unread from uB")
+        assertEquals(0L, dmsBeforeReadA[0].path("peerLastReadMessageId").asLong(), "uB has not read uA's DMs yet (Sent ✓)")
+
+        val dmsBeforeReadB = objectMapper.readTree(getJson("/api/pods/$phase6PodId/dms", uB.token).body!!).path("conversations")
+        assertEquals(1, dmsBeforeReadB.size())
+        assertEquals(2, dmsBeforeReadB[0].path("unreadCount").asInt(), "Recipient uB must see unreadCount = 2")
+        assertEquals(dm2Id, dmsBeforeReadB[0].path("peerLastReadMessageId").asLong(), "uA's cursor auto-advanced to dm2Id on send")
+
+        val wsClient = StandardWebSocketClient()
+        val qA: BlockingQueue<JsonNode> = LinkedBlockingQueue()
+        val qB: BlockingQueue<JsonNode> = LinkedBlockingQueue()
+        val qC: BlockingQueue<JsonNode> = LinkedBlockingQueue()
+
+        val wsA = connectPodWs(wsClient, phase6PodId, uA.token, qA)
+        var wsB = connectPodWs(wsClient, phase6PodId, uB.token, qB)
+        val wsC = connectPodWs(wsClient, phase6PodId, uC.token, qC)
+
+        try {
+            awaitFrame(qA) { it.path("type").asText() == "presence_snapshot" }
+            awaitFrame(qB) { it.path("type").asText() == "presence_snapshot" }
+            awaitFrame(qC) { it.path("type").asText() == "presence_snapshot" }
+            qA.clear()
+            qB.clear()
+            qC.clear()
+
+            // uB marks 1:1 DM from uA as read -> live dm_read delivered ONLY to {uA, uB}, ZERO frames to uC!
+            val dmReadRes = postJson(
+                "/api/pods/$phase6PodId/read",
+                uB.token,
+                mapOf("peerId" to peerA, "lastReadMessageId" to dm2Id)
+            )
+            assertEquals(HttpStatus.OK, dmReadRes.statusCode)
+            assertZeroPiiLeak(dmReadRes.body!!)
+            assertEquals(dm2Id, objectMapper.readTree(dmReadRes.body!!).path("lastReadMessageId").asLong())
+
+            val dmReadOnA = awaitFrame(qA) { it.path("type").asText() == "dm_read" }
+            assertZeroPiiLeak(objectMapper.writeValueAsString(dmReadOnA))
+            assertEquals(peerB, dmReadOnA.path("peerId").asText())
+            assertEquals(peerA, dmReadOnA.path("targetPeerId").asText())
+            assertEquals(dm2Id, dmReadOnA.path("lastReadMessageId").asLong())
+            awaitFrame(qB) { it.path("type").asText() == "dm_read" }
+
+            assertNull(pollMatching(qC, 300L) { true }, "Bystander User C must receive ZERO frames on dm_read!")
+
+            val dmsAfterReadA = objectMapper.readTree(getJson("/api/pods/$phase6PodId/dms", uA.token).body!!).path("conversations")[0]
+            val dmsAfterReadB = objectMapper.readTree(getJson("/api/pods/$phase6PodId/dms", uB.token).body!!).path("conversations")[0]
+            assertEquals(dm2Id, dmsAfterReadA.path("peerLastReadMessageId").asLong(), "uA now sees peerLastReadMessageId == dm2Id (Seen ✓✓)")
+            assertEquals(0, dmsAfterReadB.path("unreadCount").asInt(), "uB unreadCount cleared to 0")
+
+            // 4. Private 1:1 Member Audio Call lifecycle (strictly invisible to bystander User C!)
+            // 4a. webrtc_signal(scope="DM") without an active call must be dropped
+            wsA.sendMessage(
+                TextMessage(
+                    objectMapper.writeValueAsString(
+                        mapOf("type" to "webrtc_signal", "targetPeerId" to peerB, "scope" to "DM", "signal" to mapOf("type" to "offer"))
+                    )
+                )
+            )
+            assertNull(pollMatching(qB, 250L) { it.path("type").asText() == "webrtc_signal" })
+
+            // 4b. Ring + Decline flow
+            wsA.sendMessage(
+                TextMessage(objectMapper.writeValueAsString(mapOf("type" to "dm_call_ring", "targetPeerId" to peerB)))
+            )
+            val ringing1 = awaitFrame(qA) { it.path("type").asText() == "dm_call_ringing" }
+            val incoming1 = awaitFrame(qB) { it.path("type").asText() == "dm_call_incoming" }
+            assertZeroPiiLeak(objectMapper.writeValueAsString(ringing1))
+            assertZeroPiiLeak(objectMapper.writeValueAsString(incoming1))
+            assertEquals(peerB, ringing1.path("targetPeerId").asText())
+            assertEquals(aliasB, ringing1.path("targetAlias").asText())
+            assertTrue(ringing1.path("targetOnline").asBoolean())
+            assertEquals(peerA, incoming1.path("fromPeerId").asText())
+            assertEquals(aliasA, incoming1.path("fromAlias").asText())
+
+            wsB.sendMessage(
+                TextMessage(objectMapper.writeValueAsString(mapOf("type" to "dm_call_decline", "callerPeerId" to peerA)))
+            )
+            val declinedOnA = awaitFrame(qA) { it.path("type").asText() == "dm_call_ended" }
+            awaitFrame(qB) { it.path("type").asText() == "dm_call_ended" }
+            assertEquals(peerB, declinedOnA.path("byPeerId").asText())
+            assertEquals("declined", declinedOnA.path("reason").asText())
+
+            // 4c. Full Ring -> Accept -> Connected -> WebRTC (scope="DM") -> State -> End flow
+            wsA.sendMessage(
+                TextMessage(objectMapper.writeValueAsString(mapOf("type" to "dm_call_ring", "targetPeerId" to peerB)))
+            )
+            awaitFrame(qA) { it.path("type").asText() == "dm_call_ringing" }
+            awaitFrame(qB) { it.path("type").asText() == "dm_call_incoming" }
+
+            wsB.sendMessage(
+                TextMessage(objectMapper.writeValueAsString(mapOf("type" to "dm_call_accept", "callerPeerId" to peerA)))
+            )
+            val connectedOnA = awaitFrame(qA) { it.path("type").asText() == "dm_call_connected" }
+            val connectedOnB = awaitFrame(qB) { it.path("type").asText() == "dm_call_connected" }
+            assertZeroPiiLeak(objectMapper.writeValueAsString(connectedOnA))
+            assertEquals(peerA, connectedOnA.path("peerAId").asText())
+            assertEquals(peerB, connectedOnA.path("peerBId").asText())
+            assertEquals(peerA, connectedOnB.path("peerAId").asText())
+
+            wsA.sendMessage(
+                TextMessage(
+                    objectMapper.writeValueAsString(
+                        mapOf(
+                            "type" to "webrtc_signal",
+                            "targetPeerId" to peerB,
+                            "scope" to "DM",
+                            "signal" to mapOf("type" to "offer", "sdp" to "v=0\r\no=- 999 2 IN IP4 127.0.0.1\r\n")
+                        )
+                    )
+                )
+            )
+            val dmSignalOnB = awaitFrame(qB) { it.path("type").asText() == "webrtc_signal" }
+            assertZeroPiiLeak(objectMapper.writeValueAsString(dmSignalOnB))
+            assertEquals(peerA, dmSignalOnB.path("fromPeerId").asText())
+            assertEquals("DM", dmSignalOnB.path("scope").asText())
+            assertEquals("offer", dmSignalOnB.path("signal").path("type").asText())
+
+            wsB.sendMessage(
+                TextMessage(
+                    objectMapper.writeValueAsString(
+                        mapOf("type" to "dm_call_state", "peerId" to peerA, "muted" to false, "speaking" to true)
+                    )
+                )
+            )
+            val dmStateOnA = awaitFrame(qA) {
+                it.path("type").asText() == "dm_call_state" && it.path("fromPeerId").asText() == peerB
+            }
+            assertZeroPiiLeak(objectMapper.writeValueAsString(dmStateOnA))
+            assertTrue(dmStateOnA.path("speaking").asBoolean())
+
+            wsA.sendMessage(
+                TextMessage(objectMapper.writeValueAsString(mapOf("type" to "dm_call_end", "peerId" to peerB)))
+            )
+            val endedOnB = awaitFrame(qB) { it.path("type").asText() == "dm_call_ended" }
+            awaitFrame(qA) { it.path("type").asText() == "dm_call_ended" }
+            assertEquals(peerA, endedOnB.path("byPeerId").asText())
+            assertEquals("ended", endedOnB.path("reason").asText())
+
+            // Bystander User C MUST have received ZERO frames across the entire 1:1 DM call session!
+            assertNull(
+                pollMatching(qC, 350L) { true },
+                "Bystander User C must receive ZERO WS frames during User A <-> User B's private 1:1 call!"
+            )
+
+            // 4d. Auto-teardown on WebSocket disconnect -> reason = "disconnected"
+            wsA.sendMessage(
+                TextMessage(objectMapper.writeValueAsString(mapOf("type" to "dm_call_ring", "targetPeerId" to peerB)))
+            )
+            awaitFrame(qA) { it.path("type").asText() == "dm_call_ringing" }
+            awaitFrame(qB) { it.path("type").asText() == "dm_call_incoming" }
+            wsB.sendMessage(
+                TextMessage(objectMapper.writeValueAsString(mapOf("type" to "dm_call_accept", "callerPeerId" to peerA)))
+            )
+            awaitFrame(qA) { it.path("type").asText() == "dm_call_connected" }
+            awaitFrame(qB) { it.path("type").asText() == "dm_call_connected" }
+
+            wsB.close()
+            val disconnectEndOnA = awaitFrame(qA) { it.path("type").asText() == "dm_call_ended" }
+            assertEquals(peerB, disconnectEndOnA.path("byPeerId").asText())
+            assertEquals("disconnected", disconnectEndOnA.path("reason").asText())
+
+            // User C only gets presence_snapshot from B going offline — NEVER any dm_call_* frame!
+            val leakedCallFrameToC = pollMatching(qC, 350L) { it.path("type").asText().startsWith("dm_") }
+            assertNull(leakedCallFrameToC, "Bystander User C must never receive dm_call_* on disconnect")
+        } finally {
+            runCatching { wsA.close() }
+            runCatching { wsB.close() }
+            runCatching { wsC.close() }
+        }
     }
 
     private fun uploadAttachment(

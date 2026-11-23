@@ -214,6 +214,16 @@ public class DatabaseInitializer implements ApplicationRunner {
           created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
           PRIMARY KEY (proposal_id, user_id)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
+
+        CREATE TABLE IF NOT EXISTS pod_read_cursors (
+          pod_id BIGINT UNSIGNED NOT NULL,
+          user_id BIGINT UNSIGNED NOT NULL,
+          peer_user_id BIGINT UNSIGNED NOT NULL DEFAULT 0,
+          last_read_message_id BIGINT UNSIGNED NOT NULL DEFAULT 0,
+          updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+          PRIMARY KEY (pod_id, user_id, peer_user_id),
+          KEY idx_read_cursors_peer (pod_id, peer_user_id, user_id)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
         """;
 
     private static final String FALLBACK_SEED = """
@@ -250,7 +260,7 @@ public class DatabaseInitializer implements ApplicationRunner {
             Path.of("../db/migrations/001_init.sql"),
             Path.of("db/migrations/001_init.sql")
         ));
-        if (ddl != null && ddl.contains("dm_user_low_id") && !ddl.contains("CREATE TABLE IF NOT EXISTS pod_channels")) {
+        if (ddl != null && ddl.contains("pod_read_cursors") && !ddl.contains("CREATE TABLE IF NOT EXISTS pod_channels")) {
             executeSql(ddl);
         } else {
             executeSql(FALLBACK_DDL);
@@ -330,6 +340,17 @@ public class DatabaseInitializer implements ApplicationRunner {
             "ft_messages_body",
             "CREATE FULLTEXT INDEX ft_messages_body ON messages (body)"
         );
+        jdbcTemplate.execute("""
+            CREATE TABLE IF NOT EXISTS pod_read_cursors (
+              pod_id BIGINT UNSIGNED NOT NULL,
+              user_id BIGINT UNSIGNED NOT NULL,
+              peer_user_id BIGINT UNSIGNED NOT NULL DEFAULT 0,
+              last_read_message_id BIGINT UNSIGNED NOT NULL DEFAULT 0,
+              updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+              PRIMARY KEY (pod_id, user_id, peer_user_id),
+              KEY idx_read_cursors_peer (pod_id, peer_user_id, user_id)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
+            """);
     }
 
     private void ensureColumn(String table, String column, String definition) {

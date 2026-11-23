@@ -57,7 +57,10 @@ import {
   voicePeersByPodAtom,
   wsConnectedAtom,
 } from '@/state/workspaceAtoms';
-import { usePodWebSocket } from '@/state/wsPodClient';
+import {
+  markConversationReadInCaches,
+  usePodWebSocket,
+} from '@/state/wsPodClient';
 import {
   remoteSpeakingMapAtom,
   useVoiceActions,
@@ -82,6 +85,14 @@ import {
   type VoicePeer,
 } from '@/types/canopy';
 import styles from './workspace.module.css';
+
+function formatDurationClock(totalSec: number): string {
+  const mins = Math.floor(totalSec / 60);
+  const secs = totalSec % 60;
+  return `${mins.toString().padStart(2, '0')}:${secs
+    .toString()
+    .padStart(2, '0')}`;
+}
 
 function WorkspaceAppInner() {
   const router = useRouter();
@@ -112,18 +123,42 @@ function WorkspaceAppInner() {
 
   const [pendingInviteAccept, setPendingInviteAccept] = useState(false);
   const [openVolPeerId, setOpenVolPeerId] = useState<string | null>(null);
+  const [dmElapsedSec, setDmElapsedSec] = useState(0);
   const handledUrlInviteRef = useRef<string | null>(null);
 
   const {
     session: voiceSession,
+    dmSession,
+    incomingDmCall,
+    dmCallNotice,
+    clearDmCallNotice,
     peerVolumes,
     joinVoice,
     leaveVoice,
+    startDmCall,
+    acceptDmCall,
+    declineDmCall,
+    endDmCall,
     toggleMute,
     toggleDeafen,
     toggleTestTone,
     setPeerVolume,
   } = useVoiceActions();
+
+  useEffect(() => {
+    if (dmSession.status !== 'connected' || !dmSession.connectedAtMs) {
+      setDmElapsedSec(0);
+      return;
+    }
+    const tick = () => {
+      setDmElapsedSec(
+        Math.max(0, Math.floor((Date.now() - dmSession.connectedAtMs!) / 1000))
+      );
+    };
+    tick();
+    const id = setInterval(tick, 1000);
+    return () => clearInterval(id);
+  }, [dmSession.connectedAtMs, dmSession.status]);
 
   // Close right drawer by default on mobile (<= 900px) so chat is never covered on load
   useEffect(() => {
@@ -239,7 +274,7 @@ function WorkspaceAppInner() {
 
   const pods = useMemo(() => podsQuery.data?.pods ?? [], [podsQuery.data]);
 
-  // Tear down voice if kicked/removed from the pod hosting the active voice call
+  // Tear down voice or DM call if kicked/removed from the pod hosting the call
   useEffect(() => {
     if (
       podsQuery.isSuccess &&
@@ -248,7 +283,21 @@ function WorkspaceAppInner() {
     ) {
       leaveVoice();
     }
-  }, [leaveVoice, pods, podsQuery.isSuccess, voiceSession.podId]);
+    if (
+      podsQuery.isSuccess &&
+      dmSession.podId &&
+      !pods.some((p) => p.podId === dmSession.podId)
+    ) {
+      endDmCall();
+    }
+  }, [
+    dmSession.podId,
+    endDmCall,
+    leaveVoice,
+    pods,
+    podsQuery.isSuccess,
+    voiceSession.podId,
+  ]);
 
   // Ensure activePodId points to a valid matched pod; auto-open InterestModal when 0 pods
   useEffect(() => {
@@ -299,34 +348,41 @@ function WorkspaceAppInner() {
   useEffect(() => {
     if (!activePod) return;
     const key = conversationKey(activePod.podId, activePeerId);
-    if (unreadMap[key]) {
-      const copy = { ...unreadMap };
-      delete copy[key];
-      setUnreadMap(copy);
-    }
-  }, [activePeerId, activePod, setUnreadMap, unreadMap]);
+    setUnreadMap((prev) => (prev[key] === 0 ? prev : { ...prev, [key]: 0 }));
+    markConversationReadInCaches(queryClient, activePod.podId, activePeerId);
+  }, [activePeerId, activePod, queryClient, setUnreadMap]);
 
   const knownAliases = useMemo(
     () => liveMembers.map((m) => m.alias),
     [liveMembers]
   );
 
+  const groupUnreadCount = useMemo(() => {
+    if (!activePod || activePeerId === null) return 0;
+    const gKey = conversationKey(activePod.podId, null);
+    return unreadMap[gKey] ?? activePod.unreadGroupCount ?? 0;
+  }, [activePeerId, activePod, unreadMap]);
+
   const totalUnreadInPod = useMemo(() => {
     if (!activePod) return 0;
-    const prefix = `${activePod.podId}:`;
-    let sum = 0;
+    let sum = groupUnreadCount;
+    const dmList = activePod.dmConversations ?? [];
+    const seenPeers = new Set<string>();
+    for (const dm of dmList) {
+      seenPeers.add(dm.peerId);
+      if (dm.peerId === activePeerId) continue;
+      const dKey = conversationKey(activePod.podId, dm.peerId);
+      sum += unreadMap[dKey] ?? dm.unreadCount ?? 0;
+    }
+    const prefix = `${activePod.podId}:dm:`;
     for (const [k, count] of Object.entries(unreadMap)) {
-      if (k.startsWith(prefix)) {
-        sum += count || 0;
-      }
+      if (!k.startsWith(prefix)) continue;
+      const peerId = k.slice(prefix.length);
+      if (seenPeers.has(peerId) || peerId === activePeerId) continue;
+      sum += count || 0;
     }
     return sum;
-  }, [activePod, unreadMap]);
-
-  const groupUnreadCount = useMemo(() => {
-    if (!activePod) return 0;
-    return unreadMap[conversationKey(activePod.podId, null)] || 0;
-  }, [activePod, unreadMap]);
+  }, [activePeerId, activePod, groupUnreadCount, unreadMap]);
 
   const selfUser = authQuery.data?.user ?? null;
 
@@ -350,10 +406,19 @@ function WorkspaceAppInner() {
   }
 
   const voiceActive = voiceSession.status !== 'idle';
+  const dmCallActive = dmSession.status !== 'idle';
   const connectedToThisPodCall =
     Boolean(activePod) &&
     voiceActive &&
     voiceSession.podId === activePod?.podId;
+  const dmCallForThisPod =
+    Boolean(activePod) &&
+    dmCallActive &&
+    dmSession.podId === activePod?.podId;
+  const dmCallWithActivePeer =
+    Boolean(activePeer) &&
+    dmCallForThisPod &&
+    dmSession.peerId === activePeer?.peerId;
 
   const rawVoicePeers = activePod ? voicePeersByPod[activePod.podId] || [] : [];
   const voicePeers: VoicePeer[] = [...rawVoicePeers];
@@ -393,11 +458,8 @@ function WorkspaceAppInner() {
   const selectConversation = (podId: string, peerId: string | null) => {
     setDmPeerMap({ ...dmPeerMap, [podId]: peerId });
     const key = conversationKey(podId, peerId);
-    if (unreadMap[key]) {
-      const copy = { ...unreadMap };
-      delete copy[key];
-      setUnreadMap(copy);
-    }
+    setUnreadMap((prev) => (prev[key] === 0 ? prev : { ...prev, [key]: 0 }));
+    markConversationReadInCaches(queryClient, podId, peerId);
   };
 
   const activePeerInCall = Boolean(
@@ -509,11 +571,15 @@ function WorkspaceAppInner() {
                         )}
                       </h1>
                       <span className={styles.dmStatusSubline}>
-                        {activePeerInCall
-                          ? 'In Pod Audio Call'
-                          : activePeer.online
-                            ? 'Online'
-                            : 'Offline'}
+                        {dmCallWithActivePeer
+                          ? dmSession.status === 'ringing'
+                            ? 'Calling privately...'
+                            : 'In Private 1:1 Call'
+                          : activePeerInCall
+                            ? 'In Pod Audio Call'
+                            : activePeer.online
+                              ? 'Online'
+                              : 'Offline'}
                         {activePeer.customStatus
                           ? ` · ${activePeer.customStatus}`
                           : ''}
@@ -612,46 +678,90 @@ function WorkspaceAppInner() {
               </span>
             )}
 
-            {/* Join Call / In Call Button */}
-            {activePod && (!activePeer || connectedToThisPodCall || voicePeers.length > 0) && (
+            {/* 1:1 Private Call Button (in 1:1 DM header) OR Pod Group Call Button (in Group Chat header) */}
+            {activePod && activePeer ? (
               <button
                 type="button"
                 className={`${styles.headerCallBtn} ${
-                  connectedToThisPodCall
-                    ? styles.headerCallBtnConnected
-                    : voicePeers.length > 0
-                      ? styles.headerCallBtnLive
-                      : ''
+                  dmCallWithActivePeer ? styles.headerCallBtnConnected : ''
                 }`}
                 onClick={() => {
-                  if (connectedToThisPodCall) {
+                  if (dmCallWithActivePeer) {
                     if (window.innerWidth <= 900) {
                       setMobileVoiceOpen(true);
                     }
                   } else {
-                    joinVoice(activePod.podId, podDisplayTitle);
+                    startDmCall(
+                      activePod.podId,
+                      activePeer.peerId,
+                      activePeer.alias,
+                      activePeer.color
+                    );
                   }
                 }}
                 aria-label={
-                  connectedToThisPodCall
-                    ? `In Call (${voicePeers.length})`
-                    : voicePeers.length > 0
-                      ? `Join Pod Audio Call (${voicePeers.length} in call)`
-                      : 'Join Pod Audio Call'
+                  dmCallWithActivePeer
+                    ? dmSession.status === 'ringing'
+                      ? `Calling ${activePeer.alias} privately`
+                      : `In private 1:1 call with ${activePeer.alias}`
+                    : `Call ${activePeer.alias} privately`
                 }
                 title={
-                  connectedToThisPodCall
-                    ? 'Active Pod Audio Call'
-                    : 'Start or join Pod Audio Call (WebRTC P2P Opus)'
+                  dmCallWithActivePeer
+                    ? `Private 1:1 Call with ${activePeer.alias}`
+                    : `Start a private 1:1 audio call with ${activePeer.alias} (hidden from rest of pod)`
                 }
               >
                 <PhoneCall size={15} />
                 <span className={styles.headerBtnLabel}>
-                  {connectedToThisPodCall || voicePeers.length > 0
-                    ? `In Call (${voicePeers.length})`
-                    : 'Join Call'}
+                  {dmCallWithActivePeer
+                    ? dmSession.status === 'ringing'
+                      ? 'Calling...'
+                      : 'In 1:1 Call'
+                    : 'Call'}
                 </span>
               </button>
+            ) : (
+              activePod && (
+                <button
+                  type="button"
+                  className={`${styles.headerCallBtn} ${
+                    connectedToThisPodCall
+                      ? styles.headerCallBtnConnected
+                      : voicePeers.length > 0
+                        ? styles.headerCallBtnLive
+                        : ''
+                  }`}
+                  onClick={() => {
+                    if (connectedToThisPodCall) {
+                      if (window.innerWidth <= 900) {
+                        setMobileVoiceOpen(true);
+                      }
+                    } else {
+                      joinVoice(activePod.podId, podDisplayTitle);
+                    }
+                  }}
+                  aria-label={
+                    connectedToThisPodCall
+                      ? `In Call (${voicePeers.length})`
+                      : voicePeers.length > 0
+                        ? `Join Pod Audio Call (${voicePeers.length} in call)`
+                        : 'Join Pod Audio Call'
+                  }
+                  title={
+                    connectedToThisPodCall
+                      ? 'Active Pod Audio Call'
+                      : 'Start or join Pod Audio Call (WebRTC P2P Opus)'
+                  }
+                >
+                  <PhoneCall size={15} />
+                  <span className={styles.headerBtnLabel}>
+                    {connectedToThisPodCall || voicePeers.length > 0
+                      ? `In Call (${voicePeers.length})`
+                      : 'Join Call'}
+                  </span>
+                </button>
+              )
             )}
 
             {activePod && !activePeer && !isAdminPod && (
@@ -766,6 +876,347 @@ function WorkspaceAppInner() {
             </button>
           </div>
         </header>
+
+        {/* Incoming Private 1:1 Call Floating Banner (visible from Group Chat or any DM) */}
+        {incomingDmCall && (
+          <div
+            className={styles.incomingCallBanner}
+            role="alertdialog"
+            aria-label={`Incoming private 1:1 call from ${incomingDmCall.fromAlias}`}
+          >
+            <div className={styles.incomingCallLeft}>
+              <span
+                className={styles.incomingCallAvatar}
+                style={{
+                  background: safeAvatarColor(
+                    incomingDmCall.fromColor,
+                    incomingDmCall.fromAlias
+                  ),
+                }}
+              >
+                {aliasInitials(incomingDmCall.fromAlias)}
+              </span>
+              <div className={styles.incomingCallMeta}>
+                <span className={styles.incomingCallTitle}>
+                  Incoming Private 1:1 Call from {incomingDmCall.fromAlias}
+                </span>
+                <span className={styles.incomingCallSub}>
+                  <Lock size={11} />
+                  <span>
+                    Strictly private P2P Opus audio · Hidden from rest of pod
+                  </span>
+                </span>
+              </div>
+            </div>
+
+            <div className={styles.incomingCallActions}>
+              <button
+                type="button"
+                className={styles.incomingAcceptBtn}
+                onClick={() => {
+                  selectConversation(
+                    incomingDmCall.podId,
+                    incomingDmCall.fromPeerId
+                  );
+                  acceptDmCall();
+                }}
+                aria-label={`Accept private call from ${incomingDmCall.fromAlias}`}
+              >
+                <PhoneCall size={15} />
+                <span>Accept</span>
+              </button>
+
+              <button
+                type="button"
+                className={styles.incomingDeclineBtn}
+                onClick={declineDmCall}
+                aria-label={`Decline private call from ${incomingDmCall.fromAlias}`}
+              >
+                <PhoneOff size={15} />
+                <span>Decline</span>
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* Outgoing / Connecting Private 1:1 Call Ringing Bar */}
+        {activePod &&
+          dmCallForThisPod &&
+          (dmSession.status === 'ringing' ||
+            dmSession.status === 'connecting') && (
+            <div
+              className={styles.dmRingingBar}
+              role="region"
+              aria-label={`Calling ${dmSession.peerAlias} privately`}
+            >
+              <div className={styles.dmRingingLeft}>
+                <span className={styles.dmRingingPulseDot} aria-hidden="true" />
+                <span
+                  className={styles.voiceAvatar}
+                  style={{
+                    width: 26,
+                    height: 26,
+                    fontSize: 10.5,
+                    background: safeAvatarColor(
+                      dmSession.peerColor,
+                      dmSession.peerAlias
+                    ),
+                  }}
+                >
+                  {aliasInitials(dmSession.peerAlias)}
+                </span>
+                <strong>
+                  {dmSession.status === 'connecting'
+                    ? `Connecting private 1:1 audio with ${dmSession.peerAlias}...`
+                    : `Calling ${dmSession.peerAlias} privately...`}
+                </strong>
+                <span className={styles.dmRingingSub}>
+                  {!dmSession.targetOnline
+                    ? 'Member is currently offline'
+                    : `🔒 Only ${dmSession.peerAlias} receives this ring`}
+                </span>
+              </div>
+
+              <button
+                type="button"
+                className={`${styles.callBarBtn} ${styles.callBarBtnHangup}`}
+                onClick={endDmCall}
+                aria-label={`Cancel private call to ${dmSession.peerAlias}`}
+              >
+                <PhoneOff size={15} />
+                <span>Cancel</span>
+              </button>
+            </div>
+          )}
+
+        {/* Connected Private 1:1 Audio Call Bar */}
+        {activePod && dmCallForThisPod && dmSession.status === 'connected' && (
+          <div
+            className={styles.dmActiveCallBar}
+            role="region"
+            aria-label={`Active private 1:1 audio call with ${dmSession.peerAlias}`}
+          >
+            <div className={styles.activeCallLeft}>
+              <span className={styles.activeCallBadge}>
+                <Lock size={12} />
+                <span>
+                  Private 1:1 Call with {dmSession.peerAlias} · Hidden from pod
+                </span>
+              </span>
+
+              <span className={styles.dmCallTimerPill}>
+                <span>{formatDurationClock(dmElapsedSec)}</span>
+                <span>·</span>
+                <span>LIVE OPUS</span>
+              </span>
+
+              <div className={styles.activeCallPeersRow}>
+                {/* Self chip */}
+                <span
+                  className={`${styles.activeCallPeerChip} ${
+                    dmSession.selfSpeaking
+                      ? styles.activeCallPeerChipSpeaking
+                      : ''
+                  }`}
+                  style={{ cursor: 'default' }}
+                >
+                  <span
+                    className={`${styles.voiceAvatar} ${
+                      dmSession.selfSpeaking ? styles.voiceAvatarSpeaking : ''
+                    }`}
+                    style={{
+                      width: 22,
+                      height: 22,
+                      fontSize: 9.5,
+                      background: safeAvatarColor(
+                        activePod.myColor,
+                        activePod.myAlias
+                      ),
+                    }}
+                  >
+                    {aliasInitials(activePod.myAlias)}
+                  </span>
+                  <span>{activePod.myAlias} (you)</span>
+                  {dmSession.muted && <MicOff size={12} color="#fca5a5" />}
+                  {dmSession.deafened && (
+                    <HeadphoneOff size={12} color="#fca5a5" />
+                  )}
+                </span>
+
+                {/* Remote 1:1 peer chip + volume slider */}
+                {dmSession.peerId && (
+                  <div className={styles.activeCallPeerWrap}>
+                    {(() => {
+                      const peerId = dmSession.peerId;
+                      const peerSpeaking = Boolean(
+                        dmSession.peerSpeaking || remoteSpeakingMap[peerId]
+                      );
+                      const volPct = Math.round(
+                        (peerVolumes[peerId] ?? 1) * 100
+                      );
+                      return (
+                        <>
+                          <button
+                            type="button"
+                            className={`${styles.activeCallPeerChip} ${
+                              peerSpeaking
+                                ? styles.activeCallPeerChipSpeaking
+                                : ''
+                            }`}
+                            onClick={() =>
+                              setOpenVolPeerId((cur) =>
+                                cur === peerId ? null : peerId
+                              )
+                            }
+                            title={`Adjust volume for ${dmSession.peerAlias} (${volPct}%)`}
+                          >
+                            <span
+                              className={`${styles.voiceAvatar} ${
+                                peerSpeaking ? styles.voiceAvatarSpeaking : ''
+                              }`}
+                              style={{
+                                width: 22,
+                                height: 22,
+                                fontSize: 9.5,
+                                background: safeAvatarColor(
+                                  dmSession.peerColor,
+                                  dmSession.peerAlias
+                                ),
+                              }}
+                            >
+                              {aliasInitials(dmSession.peerAlias)}
+                            </span>
+                            <span>{dmSession.peerAlias}</span>
+                            {dmSession.peerMuted && (
+                              <MicOff size={12} color="#fca5a5" />
+                            )}
+                            <Sliders size={11} />
+                          </button>
+
+                          {openVolPeerId === peerId && (
+                            <div className={styles.callVolumePopover}>
+                              <div
+                                style={{
+                                  display: 'flex',
+                                  justifyContent: 'space-between',
+                                  marginBottom: 4,
+                                  color: '#232323',
+                                }}
+                              >
+                                <span>{dmSession.peerAlias}</span>
+                                <strong>{volPct}%</strong>
+                              </div>
+                              <input
+                                type="range"
+                                min={0}
+                                max={150}
+                                step={5}
+                                value={volPct}
+                                onChange={(e) =>
+                                  setPeerVolume(
+                                    peerId,
+                                    Number(e.target.value) / 100
+                                  )
+                                }
+                                className={styles.volumeSlider}
+                                aria-label={`${dmSession.peerAlias} volume percentage`}
+                              />
+                            </div>
+                          )}
+                        </>
+                      );
+                    })()}
+                  </div>
+                )}
+              </div>
+
+              {dmSession.fallbackBanner && (
+                <span className={styles.activeCallSynthTag}>
+                  {dmSession.fallbackBanner}
+                </span>
+              )}
+            </div>
+
+            <div className={styles.activeCallControls}>
+              <button
+                type="button"
+                className={`${styles.callBarBtn} ${
+                  dmSession.muted ? styles.callBarBtnActive : ''
+                }`}
+                onClick={toggleMute}
+                aria-pressed={dmSession.muted}
+                aria-label={
+                  dmSession.muted ? 'Unmute microphone' : 'Mute microphone'
+                }
+              >
+                {dmSession.muted ? <MicOff size={15} /> : <Mic size={15} />}
+                <span className={styles.callBarBtnLabel}>
+                  {dmSession.muted ? 'Unmute' : 'Mute'}
+                </span>
+              </button>
+
+              <button
+                type="button"
+                className={`${styles.callBarBtn} ${
+                  dmSession.deafened ? styles.callBarBtnActive : ''
+                }`}
+                onClick={toggleDeafen}
+                aria-pressed={dmSession.deafened}
+                aria-label={
+                  dmSession.deafened ? 'Undeafen audio' : 'Deafen audio'
+                }
+              >
+                {dmSession.deafened ? (
+                  <HeadphoneOff size={15} />
+                ) : (
+                  <Headphones size={15} />
+                )}
+                <span className={styles.callBarBtnLabel}>
+                  {dmSession.deafened ? 'Deaf' : 'Deafen'}
+                </span>
+              </button>
+
+              <button
+                type="button"
+                className={`${styles.callBarBtn} ${
+                  dmSession.testToneActive ? styles.callBarBtnActive : ''
+                }`}
+                onClick={toggleTestTone}
+                aria-pressed={dmSession.testToneActive}
+                aria-label="Toggle synth test tone"
+                title="Toggle 240Hz/360Hz synth test tone"
+              >
+                <AudioLines size={15} />
+                <span className={styles.callBarBtnLabel}>Test Tone</span>
+              </button>
+
+              <button
+                type="button"
+                className={`${styles.callBarBtn} ${styles.callBarBtnHangup}`}
+                onClick={endDmCall}
+                aria-label={`Hang up private call with ${dmSession.peerAlias}`}
+              >
+                <PhoneOff size={15} />
+                <span className={styles.callBarBtnLabel}>Hang Up</span>
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* Transient DM Call Status Notice */}
+        {dmCallNotice && (
+          <div className={styles.dmCallNoticeBanner} role="status">
+            <span>{dmCallNotice}</span>
+            <button
+              type="button"
+              className={styles.iconSmallBtn}
+              onClick={clearDmCallNotice}
+              aria-label="Dismiss call notice"
+            >
+              <X size={14} />
+            </button>
+          </div>
+        )}
 
         {/* Sleek Compact Active-Call Bar Directly Under Header */}
         {activePod && connectedToThisPodCall && (
@@ -1104,6 +1555,91 @@ function WorkspaceAppInner() {
                 >
                   + Match into a 25-Member Pod First
                 </button>
+              ) : dmCallForThisPod ? (
+                <div
+                  className={styles.voiceDock}
+                  style={{ borderRadius: 12 }}
+                  role="region"
+                  aria-label="Active private 1:1 call controls"
+                >
+                  <div className={styles.voiceDockStatus}>
+                    <Lock size={14} />
+                    <span>
+                      {dmSession.status === 'connected'
+                        ? `Private 1:1 Call · ${dmSession.peerAlias} (${formatDurationClock(dmElapsedSec)})`
+                        : `Calling ${dmSession.peerAlias} privately...`}
+                    </span>
+                  </div>
+                  {dmSession.fallbackBanner && (
+                    <div className={styles.synthBanner}>
+                      {dmSession.fallbackBanner}
+                    </div>
+                  )}
+                  <div className={styles.voiceDockControls}>
+                    {dmSession.status === 'connected' && (
+                      <>
+                        <button
+                          type="button"
+                          className={`${styles.voiceCtrlBtn} ${
+                            dmSession.muted ? styles.voiceCtrlBtnActive : ''
+                          }`}
+                          onClick={toggleMute}
+                          aria-pressed={dmSession.muted}
+                        >
+                          {dmSession.muted ? (
+                            <MicOff size={16} />
+                          ) : (
+                            <Mic size={16} />
+                          )}
+                          <span>{dmSession.muted ? 'Unmute' : 'Mute'}</span>
+                        </button>
+
+                        <button
+                          type="button"
+                          className={`${styles.voiceCtrlBtn} ${
+                            dmSession.deafened ? styles.voiceCtrlBtnActive : ''
+                          }`}
+                          onClick={toggleDeafen}
+                          aria-pressed={dmSession.deafened}
+                        >
+                          {dmSession.deafened ? (
+                            <HeadphoneOff size={16} />
+                          ) : (
+                            <Headphones size={16} />
+                          )}
+                          <span>{dmSession.deafened ? 'Deaf' : 'Deafen'}</span>
+                        </button>
+
+                        <button
+                          type="button"
+                          className={`${styles.voiceCtrlBtn} ${
+                            dmSession.testToneActive
+                              ? styles.voiceCtrlBtnActive
+                              : ''
+                          }`}
+                          onClick={toggleTestTone}
+                          aria-pressed={dmSession.testToneActive}
+                        >
+                          <AudioLines size={16} />
+                          <span>Test Tone</span>
+                        </button>
+                      </>
+                    )}
+
+                    <button
+                      type="button"
+                      className={`${styles.voiceCtrlBtn} ${styles.voiceCtrlBtnDanger}`}
+                      onClick={endDmCall}
+                    >
+                      <PhoneOff size={16} />
+                      <span>
+                        {dmSession.status === 'connected'
+                          ? 'Hang Up'
+                          : 'Cancel'}
+                      </span>
+                    </button>
+                  </div>
+                </div>
               ) : connectedToThisPodCall ? (
                 <div
                   className={styles.voiceDock}
@@ -1182,18 +1718,46 @@ function WorkspaceAppInner() {
                   </div>
                 </div>
               ) : (
-                <button
-                  type="button"
-                  className={styles.primaryActionBtn}
-                  onClick={() => joinVoice(activePod.podId, podDisplayTitle)}
-                >
-                  <PhoneCall size={16} />
-                  <span>
-                    {voicePeers.length > 0
-                      ? `Join Pod Audio Call (${voicePeers.length} in call)`
-                      : 'Start Pod Audio Call'}
-                  </span>
-                </button>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                  {activePeer && (
+                    <button
+                      type="button"
+                      className={styles.primaryActionBtn}
+                      onClick={() => {
+                        startDmCall(
+                          activePod.podId,
+                          activePeer.peerId,
+                          activePeer.alias,
+                          activePeer.color
+                        );
+                        setMobileVoiceOpen(false);
+                      }}
+                    >
+                      <PhoneCall size={16} />
+                      <span>Call {activePeer.alias} Privately (1:1)</span>
+                    </button>
+                  )}
+
+                  <button
+                    type="button"
+                    className={
+                      activePeer ? styles.podCardBtn : styles.primaryActionBtn
+                    }
+                    style={
+                      activePeer
+                        ? { width: '100%', justifyContent: 'center' }
+                        : undefined
+                    }
+                    onClick={() => joinVoice(activePod.podId, podDisplayTitle)}
+                  >
+                    <PhoneCall size={16} />
+                    <span>
+                      {voicePeers.length > 0
+                        ? `Join Pod Audio Call (${voicePeers.length} in call)`
+                        : 'Start Pod Audio Call'}
+                    </span>
+                  </button>
+                </div>
               )}
 
               {activePod && voicePeers.length > 0 && (
@@ -1337,7 +1901,9 @@ function WorkspaceAppInner() {
         <button
           type="button"
           className={`${styles.mobileTabBtn} ${
-            mobileVoiceOpen || voiceActive ? styles.mobileTabBtnActive : ''
+            mobileVoiceOpen || voiceActive || dmCallActive
+              ? styles.mobileTabBtnActive
+              : ''
           }`}
           onClick={() => {
             setMobileNavOpen(false);
@@ -1348,11 +1914,16 @@ function WorkspaceAppInner() {
             setAdminSettingsPodId(null);
             setMobileVoiceOpen((v) => !v);
           }}
-          aria-label={voiceActive ? 'Call (Connected)' : 'Call'}
+          aria-label={
+            voiceActive || dmCallActive ? 'Call (Connected)' : 'Call'
+          }
         >
           <span className={styles.mobileTabIconWrap}>
             <PhoneCall size={19} />
-            {(voiceActive || voicePeers.length > 0) && (
+            {(voiceActive ||
+              dmCallActive ||
+              Boolean(incomingDmCall) ||
+              voicePeers.length > 0) && (
               <span className={styles.mobileVoicePulse} aria-hidden="true" />
             )}
           </span>

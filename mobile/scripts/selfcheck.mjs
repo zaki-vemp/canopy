@@ -93,6 +93,52 @@ assert.equal(
   true,
   'Missing 1:1 DM messages /api/pods/${podId}/dms/${peerId}/messages endpoint'
 );
+assert.equal(
+  clientSrc.includes('/api/pods/${podId}/read'),
+  true,
+  'Missing read-cursor /api/pods/${podId}/read endpoint'
+);
+
+const wsSrc = fs.readFileSync(path.join(rootDir, 'src', 'api', 'ws.ts'), 'utf8');
+for (const wsEvent of [
+  'dm_read',
+  'dm_call_ringing',
+  'dm_call_incoming',
+  'dm_call_connected',
+  'dm_call_state',
+  'dm_call_ended',
+]) {
+  assert.equal(
+    wsSrc.includes(wsEvent),
+    true,
+    `Missing ${wsEvent} handler in src/api/ws.ts`
+  );
+}
+
+const chatScreenSrc = fs.readFileSync(
+  path.join(rootDir, 'src', 'screens', 'PodChatScreen.tsx'),
+  'utf8'
+);
+assert.equal(
+  chatScreenSrc.includes('dm_call_ring'),
+  true,
+  'Missing dm_call_ring trigger in PodChatScreen.tsx'
+);
+assert.equal(
+  chatScreenSrc.includes('markPodConversationRead'),
+  true,
+  'Missing markPodConversationRead auto-advance in PodChatScreen.tsx'
+);
+
+const msgCardSrc = fs.readFileSync(
+  path.join(rootDir, 'src', 'components', 'MessageCard.tsx'),
+  'utf8'
+);
+assert.equal(
+  msgCardSrc.includes('✓✓ Seen') && msgCardSrc.includes('✓ Sent'),
+  true,
+  'Missing ✓✓ Seen / ✓ Sent receipts in MessageCard.tsx'
+);
 
 // 3. Verify zero-PII inside pod screens & modals (no email/fullName/gender/nationalityCode/userPublicId rendered)
 const podFacingScreens = [
@@ -240,5 +286,5 @@ assert.equal(
 );
 
 console.log(
-  'mobile selfcheck passed: zero-violet, zero-channels, Group+1:1-DM routes, 25-seat tiers, and zero-PII verified.'
+  'mobile selfcheck passed: zero-violet, zero-channels, Group+1:1-DM, /read + Seen receipts, dm_call_ring, 25-seat tiers, and zero-PII verified.'
 );

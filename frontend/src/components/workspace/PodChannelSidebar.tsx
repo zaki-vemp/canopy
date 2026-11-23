@@ -7,6 +7,7 @@ import {
   Crown,
   LogOut,
   Mic,
+  PhoneCall,
   Plus,
   Radio,
   Scale,
@@ -26,11 +27,13 @@ import {
   interestModalTabAtom,
   inviteModalPodIdAtom,
   mobileNavOpenAtom,
+  peerReadByConvoAtom,
   presenceByPodAtom,
   rightPanelAtom,
   unreadByConvoAtom,
   voicePeersByPodAtom,
 } from '@/state/workspaceAtoms';
+import { markConversationReadInCaches } from '@/state/wsPodClient';
 import { useVoiceActions } from '@/state/voiceEngine';
 import { aliasInitials, safeAvatarColor } from '@/components/workspace/markdown';
 import {
@@ -69,6 +72,7 @@ export function PodChannelSidebar({
   const setActivePodId = useSetAtom(activePodIdAtom);
   const [dmPeerMap, setDmPeerMap] = useAtom(activeDmPeerByPodAtom);
   const [unreadMap, setUnreadMap] = useAtom(unreadByConvoAtom);
+  const setPeerReadMap = useSetAtom(peerReadByConvoAtom);
   const setInterestOpen = useSetAtom(interestModalOpenAtom);
   const setInterestTab = useSetAtom(interestModalTabAtom);
   const setInviteModalPodId = useSetAtom(inviteModalPodIdAtom);
@@ -78,7 +82,12 @@ export function PodChannelSidebar({
   const presenceByPod = useAtomValue(presenceByPodAtom);
   const voicePeersByPod = useAtomValue(voicePeersByPodAtom);
 
-  const { session: voiceSession, leaveVoice } = useVoiceActions();
+  const {
+    session: voiceSession,
+    dmSession,
+    leaveVoice,
+    endDmCall,
+  } = useVoiceActions();
 
   const [statusInput, setStatusInput] = useState('');
   const [statusSavedMsg, setStatusSavedMsg] = useState(false);
@@ -134,6 +143,9 @@ export function PodChannelSidebar({
       if (voiceSession.podId === pod.podId) {
         leaveVoice();
       }
+      if (dmSession.podId === pod.podId) {
+        endDmCall();
+      }
       const payload: LeavePodRequest = { rematch };
       return apiFetch<{ leftPodId: string; newPod: PodDetail | null }>(
         `/api/pods/${pod.podId}/leave`,
@@ -171,6 +183,24 @@ export function PodChannelSidebar({
     () => dmsQuery.data?.conversations ?? pod?.dmConversations ?? [],
     [dmsQuery.data?.conversations, pod?.dmConversations]
   );
+
+  useEffect(() => {
+    if (!pod?.podId || dmConversations.length === 0) return;
+    setPeerReadMap((prev) => {
+      let next: Record<string, number> | null = null;
+      for (const dm of dmConversations) {
+        const readId = dm.peerLastReadMessageId ?? 0;
+        if (readId > 0) {
+          const key = conversationKey(pod.podId, dm.peerId);
+          if (readId > (prev[key] ?? 0)) {
+            if (!next) next = { ...prev };
+            next[key] = readId;
+          }
+        }
+      }
+      return next ?? prev;
+    });
+  }, [dmConversations, pod?.podId, setPeerReadMap]);
 
   const dmMap = useMemo(() => {
     const map = new Map<string, DmConversationSummary>();
@@ -251,17 +281,16 @@ export function PodChannelSidebar({
   const voicePeerIdSet = new Set(voicePeers.map((p) => p.peerId));
 
   const groupConvoKey = conversationKey(pod.podId, null);
-  const groupUnread = unreadMap[groupConvoKey] || 0;
   const isGroupSelected = activePeerId === null;
+  const groupUnread = isGroupSelected
+    ? 0
+    : (unreadMap[groupConvoKey] ?? pod.unreadGroupCount ?? 0);
 
   const selectConversation = (peerId: string | null) => {
     setDmPeerMap({ ...dmPeerMap, [pod.podId]: peerId });
     const key = conversationKey(pod.podId, peerId);
-    if (unreadMap[key]) {
-      const copy = { ...unreadMap };
-      delete copy[key];
-      setUnreadMap(copy);
-    }
+    setUnreadMap((prev) => (prev[key] === 0 ? prev : { ...prev, [key]: 0 }));
+    markConversationReadInCaches(queryClient, pod.podId, peerId);
     setMobileNavOpen(false);
   };
 
@@ -551,9 +580,15 @@ export function PodChannelSidebar({
                 const isSelected = activePeerId === member.peerId;
                 const dm = dmMap.get(member.peerId);
                 const dmKey = conversationKey(pod.podId, member.peerId);
-                const unread = unreadMap[dmKey] || 0;
+                const unread = isSelected
+                  ? 0
+                  : (unreadMap[dmKey] ?? dm?.unreadCount ?? 0);
                 const inCall =
                   Boolean(member.inVoice) || voicePeerIdSet.has(member.peerId);
+                const inDmCallWithMember =
+                  dmSession.status !== 'idle' &&
+                  dmSession.podId === pod.podId &&
+                  dmSession.peerId === member.peerId;
 
                 let snippet = 'Tap to chat privately';
                 if (dm) {
@@ -621,6 +656,16 @@ export function PodChannelSidebar({
                           )}
                           {member.role === 'ADMIN' && (
                             <span className={styles.rolePillAdmin}>ADMIN</span>
+                          )}
+                          {inDmCallWithMember && (
+                            <span className={styles.convoCallPill}>
+                              <PhoneCall size={10} />
+                              <span>
+                                {dmSession.status === 'ringing'
+                                  ? 'Calling'
+                                  : '1:1 Call'}
+                              </span>
+                            </span>
                           )}
                         </span>
                         {dm?.lastCreatedAt && (

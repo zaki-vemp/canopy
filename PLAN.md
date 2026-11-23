@@ -190,3 +190,58 @@ Tables (all `ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci`, 
 - `{ "type": "voice_roster_updated", "voicePeers": [ VoicePeerDto ] }`
 - `{ "type": "webrtc_signal", "fromPeerId": "p_...", "fromAlias": "Cobalt Fox", "signal": { ... } }`
 - `{ "type": "pong" }`
+
+
+---
+
+## Phase 6 Extension: Server-Backed Read Cursors (`Unread` + `Seen ✓✓`) & Private 1:1 Member Audio Calls
+
+### 1. Database (`pod_read_cursors` in `db/migrations/001_init.sql` & `db/vschema.json`)
+- New narrow Vitess-co-located table (`pod_id_xxhash` in `db/vschema.json`):
+  ```sql
+  CREATE TABLE IF NOT EXISTS pod_read_cursors (
+    pod_id BIGINT UNSIGNED NOT NULL,
+    user_id BIGINT UNSIGNED NOT NULL,
+    peer_user_id BIGINT UNSIGNED NOT NULL DEFAULT 0,
+    last_read_message_id BIGINT UNSIGNED NOT NULL DEFAULT 0,
+    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    PRIMARY KEY (pod_id, user_id, peer_user_id),
+    KEY idx_read_cursors_peer (pod_id, peer_user_id, user_id)
+  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
+  ```
+  - `peer_user_id = 0` tracks `user_id`'s last-read message ID in the **Pod Group Chat**.
+  - `peer_user_id > 0` tracks `user_id`'s last-read message ID in the **1:1 Private DM** with `peer_user_id` inside `pod_id`.
+
+### 2. Extended DTO Fields & Read-Cursor Endpoint
+- **`PodDetailDto`** adds:
+  - `"unreadGroupCount": 0` — count of non-deleted Group Chat messages (`dm_user_low_id = 0 AND sender_user_id != myUserId AND id > myGroupLastReadId`, capped cleanly or counted via `idx_messages_convo_cursor`).
+- **`DmSummaryDto`** adds:
+  - `"unreadCount": 0` — count of non-deleted 1:1 DM messages from `peerUserId` (`sender_user_id = peerUserId AND id > myDmLastReadId`).
+  - `"peerLastReadMessageId": 0` — the other participant's `last_read_message_id` for `(pod_id, peerUserId, myUserId)`, allowing the sender's UI to show **`✓` Sent** (`msg.id > peerLastReadMessageId`) vs **`✓✓ Seen`** (`msg.id <= peerLastReadMessageId`) on own 1:1 DM bubbles!
+- **Auto-advance on Send**:
+  - When a user sends a Group message or 1:1 DM (`POST /api/pods/{podId}/messages` or `POST /api/pods/{podId}/dms/{peerId}/messages`), automatically upsert the sender's `pod_read_cursors` row (`last_read_message_id = GREATEST(last_read_message_id, newMessageId)`).
+- **`POST /api/pods/{podId}/read`** (`com.canopy.chat.ChatController`):
+  - Req: `{ "peerId": null | "p_...", "lastReadMessageId": 142 }` (`peerId == null` = Group Chat; `peerId == "p_..."` = 1:1 DM with that member).
+  - Upserts `(pod_id, myUserId, targetPeerUserIdOrZero)` with `GREATEST(last_read_message_id, :lastReadMessageId)`.
+  - When `peerId != null` (1:1 DM), sends WebSocket `{ "type": "dm_read", "peerId": "<myPeerId>", "targetPeerId": "<peerId>", "lastReadMessageId": <effectiveLastReadId> }` **STRICTLY ONLY** to `setOf(myUserId, peerUserId)` so the other member sees `✓✓ Seen` live in real time!
+  - Res `200`: `{ "ok": true, "lastReadMessageId": 142 }`.
+
+### 3. Private 1:1 Member Audio Calls over WebSocket (`/ws/pods/{podId}`)
+In addition to the shared **Pod Group Audio Call** (`voice_join` / `voice_leave`), any two members of a pod can place a **strictly private 1:1 Audio Call** inside their 1:1 DM (invisible to all other pod members!):
+
+#### Additional Client -> Server WebSocket Frames:
+- `{ "type": "dm_call_ring", "targetPeerId": "p_..." }` — Caller initiates a private 1:1 audio call to `targetPeerId`. Server verifies both are members of `podId`, stores active/ringing 1:1 call pair `(podId, minUser, maxUser)` in `PodRealtimeHub`, and sends `dm_call_incoming` ONLY to `targetUserId` (and `dm_call_ringing` ack to `callerUserId`; if `targetUserId` has zero open WS sessions in `podId`, still sends `dm_call_ringing` with `"targetOnline": false` or lets caller wait/hang up).
+- `{ "type": "dm_call_accept", "callerPeerId": "p_..." }` — Callee accepts the incoming 1:1 call. Marks the 2-peer DM call `CONNECTED` and sends `dm_call_connected` ONLY to `{callerUserId, calleeUserId}`!
+- `{ "type": "dm_call_decline", "callerPeerId": "p_..." }` — Callee declines. Clears pending 1:1 call and sends `dm_call_ended` (`reason = "declined"`) ONLY to `{callerUserId, calleeUserId}`.
+- `{ "type": "dm_call_end", "peerId": "p_..." }` — Either participant hangs up (also triggered automatically if either disconnects from WS or leaves/gets kicked from the pod!). Clears the 1:1 call and sends `dm_call_ended` (`reason = "ended"`) ONLY to `{userA, userB}`.
+- `{ "type": "dm_call_state", "peerId": "p_...", "muted": false, "speaking": false }` — Relays mute/speaking state ONLY to `{userA, userB}` (`dm_call_state`).
+- `{ "type": "webrtc_signal", "targetPeerId": "p_...", "scope": "GROUP" | "DM", "signal": { ... } }` (`scope` defaults to `"GROUP"` when omitted! When `scope == "DM"`, server verifies an active/connected 1:1 DM call exists between sender and `targetPeerId`, and relays `webrtc_signal` with `"scope": "DM"` ONLY to `targetUserId`!).
+
+#### Additional Server -> Client WebSocket Frames (ALL delivered strictly ONLY to the 2 DM participants!):
+- `{ "type": "dm_read", "peerId": "p_...", "targetPeerId": "p_...", "lastReadMessageId": 142 }`
+- `{ "type": "dm_call_ringing", "targetPeerId": "p_...", "targetAlias": "Mint Marten", "targetColor": "#1f6b3a", "targetOnline": true }`
+- `{ "type": "dm_call_incoming", "fromPeerId": "p_...", "fromAlias": "Coral Ibis", "fromColor": "#1f6b3a" }`
+- `{ "type": "dm_call_connected", "peerAId": "p_...", "peerAAlias": "Coral Ibis", "peerBId": "p_...", "peerBAlias": "Mint Marten" }`
+- `{ "type": "dm_call_state", "fromPeerId": "p_...", "muted": false, "speaking": false }`
+- `{ "type": "dm_call_ended", "byPeerId": "p_...", "reason": "ended" | "declined" | "disconnected" }`
+- `{ "type": "webrtc_signal", "fromPeerId": "p_...", "fromAlias": "Coral Ibis", "scope": "GROUP" | "DM", "signal": { ... } }`

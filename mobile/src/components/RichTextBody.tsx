@@ -12,7 +12,7 @@ export type RichBlock =
   | { kind: 'codeblock'; code: string }
   | { kind: 'paragraph'; segments: InlineSegment[] };
 
-const INLINE_TOKEN_RE = /(\|\|[^|]+\|\||\*\*[^*]+\*\*|`[^`]+`)/g;
+const INLINE_TOKEN_RE = /(\|\|[\s\S]+?\|\||\*\*[\s\S]+?\*\*|`[^`]+`)/g;
 
 export function parseInlineSegments(line: string): InlineSegment[] {
   const parts = line.split(INLINE_TOKEN_RE).filter((p) => p.length > 0);
@@ -58,7 +58,13 @@ const MONO_FONT = Platform.select({
   default: 'monospace',
 });
 
-export function RichTextBody({ body }: { body: string }) {
+export function RichTextBody({
+  body,
+  compactSystem = false,
+}: {
+  body: string;
+  compactSystem?: boolean;
+}) {
   const [revealedSpoilers, setRevealedSpoilers] = useState<
     Record<string, boolean>
   >({});
@@ -87,7 +93,14 @@ export function RichTextBody({ body }: { body: string }) {
         const hasSpoiler = block.segments.some((s) => s.kind === 'spoiler');
         if (!hasSpoiler) {
           return (
-            <Text key={`p-${bIdx}`} style={styles.paragraphText} selectable>
+            <Text
+              key={`p-${bIdx}`}
+              style={[
+                styles.paragraphText,
+                compactSystem && styles.systemParagraphText,
+              ]}
+              selectable
+            >
               {block.segments.map((seg, sIdx) => {
                 if (seg.kind === 'bold') {
                   return (
@@ -98,7 +111,13 @@ export function RichTextBody({ body }: { body: string }) {
                 }
                 if (seg.kind === 'code') {
                   return (
-                    <Text key={sIdx} style={styles.inlineCode}>
+                    <Text
+                      key={sIdx}
+                      style={[
+                        styles.inlineCode,
+                        compactSystem && styles.systemInlineCode,
+                      ]}
+                    >
                       {seg.value}
                     </Text>
                   );
@@ -181,6 +200,12 @@ const styles = StyleSheet.create({
     lineHeight: 22,
     color: PALETTE.ink,
   },
+  systemParagraphText: {
+    fontSize: 12,
+    lineHeight: 18,
+    color: PALETTE.muted,
+    textAlign: 'center',
+  },
   boldText: {
     fontWeight: '700',
     color: PALETTE.charcoal,
@@ -193,6 +218,10 @@ const styles = StyleSheet.create({
     paddingHorizontal: 5,
     paddingVertical: 1,
     borderRadius: 4,
+  },
+  systemInlineCode: {
+    fontSize: 11,
+    backgroundColor: PALETTE.card,
   },
   codeBlock: {
     backgroundColor: PALETTE.charcoal,

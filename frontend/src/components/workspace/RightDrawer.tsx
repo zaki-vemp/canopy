@@ -6,6 +6,7 @@ import { useAtom, useAtomValue, useSetAtom } from 'jotai';
 import {
   Gavel,
   MessageCircle,
+  PhoneCall,
   Plus,
   Scale,
   Settings,
@@ -27,9 +28,11 @@ import {
   voicePeersByPodAtom,
 } from '@/state/workspaceAtoms';
 import {
+  markConversationReadInCaches,
   personalizeProposal,
   syncProposalIntoCaches,
 } from '@/state/wsPodClient';
+import { useVoiceActions } from '@/state/voiceEngine';
 import {
   MessageCard,
   PodProposalVoteCard,
@@ -74,6 +77,7 @@ export function RightDrawer({ pod, allPods, members }: RightDrawerProps) {
   const setPresenceByPod = useSetAtom(presenceByPodAtom);
   const [proposeOpen, setProposeOpen] = useAtom(proposeSheetOpenAtom);
   const voicePeersByPod = useAtomValue(voicePeersByPodAtom);
+  const { dmSession, startDmCall } = useVoiceActions();
 
   // Roster vote-kick / admin action state
   const [kickPromptPeerId, setKickPromptPeerId] = useState<string | null>(null);
@@ -322,12 +326,8 @@ export function RightDrawer({ pod, allPods, members }: RightDrawerProps) {
     setActivePodId(targetPodId);
     setDmPeerMap({ ...dmPeerMap, [targetPodId]: peerId });
     const key = conversationKey(targetPodId, peerId);
-    setUnreadMap((prev) => {
-      if (!(key in prev)) return prev;
-      const copy = { ...prev };
-      delete copy[key];
-      return copy;
-    });
+    setUnreadMap((prev) => (prev[key] === 0 ? prev : { ...prev, [key]: 0 }));
+    markConversationReadInCaches(queryClient, targetPodId, peerId);
     if (typeof window !== 'undefined' && window.innerWidth <= 900) {
       setMode(null);
     }
@@ -426,6 +426,10 @@ export function RightDrawer({ pod, allPods, members }: RightDrawerProps) {
   const renderMemberActions = (m: PodMember) => {
     if (!pod || m.peerId === pod.myPeerId) return null;
     const targetRole = m.role || 'MEMBER';
+    const inPrivateCallWithMember =
+      dmSession.status !== 'idle' &&
+      dmSession.podId === pod.podId &&
+      dmSession.peerId === m.peerId;
 
     return (
       <div className={styles.rosterMemberActions}>
@@ -438,6 +442,20 @@ export function RightDrawer({ pod, allPods, members }: RightDrawerProps) {
         >
           <MessageCircle size={12} />
           <span>Message</span>
+        </button>
+
+        <button
+          type="button"
+          className={styles.rosterSmallBtn}
+          onClick={() => {
+            openMemberDm(pod.podId, m.peerId);
+            startDmCall(pod.podId, m.peerId, m.alias, m.color);
+          }}
+          title={`Start private 1:1 audio call with ${m.alias}`}
+          aria-label={`Call ${m.alias} privately`}
+        >
+          <PhoneCall size={11} />
+          <span>{inPrivateCallWithMember ? 'In 1:1 Call' : 'Call'}</span>
         </button>
 
         {isAdminPod ? (

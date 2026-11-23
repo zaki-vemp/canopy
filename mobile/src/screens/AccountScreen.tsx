@@ -22,13 +22,17 @@ import {
   updatePlanTier,
 } from '../api/client';
 import {
+  activeDmCallAtom,
   activeDmPeerByPodAtom,
   activePodIdAtom,
   activeVoiceSessionAtom,
   apiBaseUrlAtom,
   authTokenAtom,
   authUserAtom,
+  dmCallNoticeAtom,
+  peerLastReadByPodPeerAtom,
   unreadDmByPodPeerAtom,
+  unreadGroupByPodAtom,
 } from '../state/atoms';
 import { PALETTE, TOUCH_MIN } from '../theme/palette';
 import { GENDER_OPTIONS, NATIONALITY_CHIPS } from './AuthScreen';
@@ -49,8 +53,12 @@ export function AccountScreen({
   const setToken = useSetAtom(authTokenAtom);
   const setActivePodId = useSetAtom(activePodIdAtom);
   const setActiveDmPeerMap = useSetAtom(activeDmPeerByPodAtom);
+  const setUnreadGroupMap = useSetAtom(unreadGroupByPodAtom);
   const setUnreadDmMap = useSetAtom(unreadDmByPodPeerAtom);
+  const setPeerLastReadMap = useSetAtom(peerLastReadByPodPeerAtom);
   const setVoiceSession = useSetAtom(activeVoiceSessionAtom);
+  const setActiveDmCall = useSetAtom(activeDmCallAtom);
+  const setDmCallNotice = useSetAtom(dmCallNoticeAtom);
   const [apiBaseUrl, setApiBaseUrl] = useAtom(apiBaseUrlAtom);
 
   const [fullName, setFullName] = useState(user?.fullName ?? '');
@@ -143,8 +151,12 @@ export function AccountScreen({
     await logoutAccount();
     await clearStoredToken();
     setVoiceSession(null);
+    setActiveDmCall(null);
+    setDmCallNotice(null);
     setActiveDmPeerMap({});
+    setUnreadGroupMap({});
     setUnreadDmMap({});
+    setPeerLastReadMap({});
     setActivePodId(null);
     setUser(null);
     setToken(null);

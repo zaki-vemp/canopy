@@ -3,17 +3,21 @@ import { useQueryClient, type InfiniteData } from '@tanstack/react-query';
 import { useAtomValue, useSetAtom } from 'jotai';
 import { getWsBaseUrl } from './client';
 import {
+  activeDmCallAtom,
   activeDmPeerByPodAtom,
   activePodIdAtom,
   activeTabAtom,
   activeVoiceSessionAtom,
   apiBaseUrlAtom,
   authTokenAtom,
+  dmCallNoticeAtom,
   dmConvoKey,
   lastWebRtcSignalAtom,
+  peerLastReadByPodPeerAtom,
   podPresenceByPodAtom,
   typingByConvoAtom,
   unreadDmByPodPeerAtom,
+  unreadGroupByPodAtom,
   voicePeersByPodAtom,
   wsConnectedAtom,
 } from '../state/atoms';
@@ -66,7 +70,8 @@ function upsertDmSummaryList(
   existingList: DmSummaryDto[],
   partnerPeerId: string,
   msg: RichMessageDto,
-  pod: PodDetailDto | undefined
+  pod: PodDetailDto | undefined,
+  unreadDelta: number
 ): DmSummaryDto[] {
   const prev = existingList.find((c) => c.peerId === partnerPeerId);
   const member = pod?.members.find((m) => m.peerId === partnerPeerId);
@@ -88,6 +93,13 @@ function upsertDmSummaryList(
     lastSenderPeerId: msg.senderPeerId,
     lastSenderAlias: msg.senderAlias,
     lastCreatedAt: msg.createdAt,
+    unreadCount:
+      unreadDelta > 0
+        ? (prev?.unreadCount ?? 0) + unreadDelta
+        : isFromPartner
+        ? prev?.unreadCount ?? 0
+        : 0,
+    peerLastReadMessageId: prev?.peerLastReadMessageId ?? 0,
   };
 
   return [
@@ -102,7 +114,7 @@ export interface PodSocketController {
 
 /**
  * Connects to ws://<host>/ws/pods/{podId}?token=<jwt> for the active pod,
- * patching Group Chat & 1:1 DM TanStack Query caches and Jotai presence/typing/voice atoms.
+ * patching Group Chat, 1:1 DM, read cursors, and private 1:1 audio call atoms in real time.
  * ponytail: reconnects with bounded exponential backoff (1s -> 8s) for the single active pod;
  * upgrade to multiplexed multi-pod socket if background pod push badges are needed.
  */
@@ -119,9 +131,13 @@ export function usePodSocket(podId: string | null): PodSocketController {
   const setVoicePeersByPod = useSetAtom(voicePeersByPodAtom);
   const setLastSignal = useSetAtom(lastWebRtcSignalAtom);
   const setActiveDmPeerMap = useSetAtom(activeDmPeerByPodAtom);
+  const setUnreadGroupMap = useSetAtom(unreadGroupByPodAtom);
   const setUnreadDmMap = useSetAtom(unreadDmByPodPeerAtom);
+  const setPeerLastReadMap = useSetAtom(peerLastReadByPodPeerAtom);
   const setActivePodId = useSetAtom(activePodIdAtom);
   const setVoiceSession = useSetAtom(activeVoiceSessionAtom);
+  const setActiveDmCall = useSetAtom(activeDmCallAtom);
+  const setDmCallNotice = useSetAtom(dmCallNoticeAtom);
 
   const wsRef = useRef<WebSocket | null>(null);
   const selfPeerIdRef = useRef<string | null>(null);
@@ -150,6 +166,7 @@ export function usePodSocket(podId: string | null): PodSocketController {
   }, []);
 
   useEffect(() => {
+    selfPeerIdRef.current = null;
     if (!podId || !token) {
       setConnected(false);
       return;
@@ -284,7 +301,39 @@ export function usePodSocket(podId: string | null): PodSocketController {
               upsertMessageInPages(old, msg, true)
           );
 
-          if (partnerPeerId) {
+          if (partnerPeerId === null) {
+            const viewingGroup =
+              activeTabRef.current === 'chat' &&
+              (activeDmPeerMapRef.current[podId] ?? null) === null;
+            if (selfId && msg.senderPeerId !== selfId && !viewingGroup) {
+              setUnreadGroupMap((prev) => ({
+                ...prev,
+                [podId]: (prev[podId] ?? 0) + 1,
+              }));
+              queryClient.setQueryData(
+                ['pods'],
+                (oldPods: PodsListCache | undefined) =>
+                  oldPods
+                    ? {
+                        pods: oldPods.pods.map((p) =>
+                          p.podId === podId
+                            ? {
+                                ...p,
+                                unreadGroupCount: (p.unreadGroupCount ?? 0) + 1,
+                              }
+                            : p
+                        ),
+                      }
+                    : oldPods
+              );
+            }
+          } else {
+            const viewingThisDm =
+              activeTabRef.current === 'chat' &&
+              (activeDmPeerMapRef.current[podId] ?? null) === partnerPeerId;
+            const unreadDelta =
+              selfId && msg.senderPeerId !== selfId && !viewingThisDm ? 1 : 0;
+
             const cachedPods = queryClient.getQueryData<PodsListCache>(['pods']);
             const currentPod = cachedPods?.pods.find((p) => p.podId === podId);
 
@@ -295,7 +344,8 @@ export function usePodSocket(podId: string | null): PodSocketController {
                   oldDms?.conversations ?? currentPod?.dmConversations ?? [],
                   partnerPeerId,
                   msg,
-                  currentPod
+                  currentPod,
+                  unreadDelta
                 ),
               })
             );
@@ -313,7 +363,8 @@ export function usePodSocket(podId: string | null): PodSocketController {
                             p.dmConversations ?? [],
                             partnerPeerId,
                             msg,
-                            p
+                            p,
+                            unreadDelta
                           ),
                         }
                       : p
@@ -322,10 +373,7 @@ export function usePodSocket(podId: string | null): PodSocketController {
               }
             );
 
-            const viewingThisDm =
-              activeTabRef.current === 'chat' &&
-              (activeDmPeerMapRef.current[podId] ?? null) === partnerPeerId;
-            if (selfId && msg.senderPeerId !== selfId && !viewingThisDm) {
+            if (unreadDelta > 0) {
               const unreadKey = dmConvoKey(podId, partnerPeerId);
               setUnreadDmMap((prev) => ({
                 ...prev,
@@ -333,6 +381,195 @@ export function usePodSocket(podId: string | null): PodSocketController {
               }));
             }
           }
+          break;
+        }
+
+        case 'dm_read': {
+          const selfId = getSelfPeerId();
+          if (selfId && frame.peerId !== selfId) {
+            const partnerPeerId = frame.peerId;
+            const key = dmConvoKey(podId, partnerPeerId);
+            setPeerLastReadMap((prev) => ({
+              ...prev,
+              [key]: Math.max(prev[key] ?? 0, frame.lastReadMessageId),
+            }));
+
+            queryClient.setQueryData(
+              ['dms', podId],
+              (oldDms: DmsListCache | undefined) =>
+                oldDms
+                  ? {
+                      conversations: oldDms.conversations.map((dm) =>
+                        dm.peerId === partnerPeerId
+                          ? {
+                              ...dm,
+                              peerLastReadMessageId: Math.max(
+                                dm.peerLastReadMessageId ?? 0,
+                                frame.lastReadMessageId
+                              ),
+                            }
+                          : dm
+                      ),
+                    }
+                  : oldDms
+            );
+
+            queryClient.setQueryData(
+              ['pods'],
+              (oldPods: PodsListCache | undefined) =>
+                oldPods
+                  ? {
+                      pods: oldPods.pods.map((p) =>
+                        p.podId === podId
+                          ? {
+                              ...p,
+                              dmConversations: (p.dmConversations ?? []).map(
+                                (dm) =>
+                                  dm.peerId === partnerPeerId
+                                    ? {
+                                        ...dm,
+                                        peerLastReadMessageId: Math.max(
+                                          dm.peerLastReadMessageId ?? 0,
+                                          frame.lastReadMessageId
+                                        ),
+                                      }
+                                    : dm
+                              ),
+                            }
+                          : p
+                      ),
+                    }
+                  : oldPods
+            );
+          } else if (selfId && frame.peerId === selfId && frame.targetPeerId) {
+            const key = dmConvoKey(podId, frame.targetPeerId);
+            setUnreadDmMap((prev) => ({ ...prev, [key]: 0 }));
+            queryClient.setQueryData(
+              ['dms', podId],
+              (oldDms: DmsListCache | undefined) =>
+                oldDms
+                  ? {
+                      conversations: oldDms.conversations.map((dm) =>
+                        dm.peerId === frame.targetPeerId
+                          ? { ...dm, unreadCount: 0 }
+                          : dm
+                      ),
+                    }
+                  : oldDms
+            );
+            queryClient.setQueryData(
+              ['pods'],
+              (oldPods: PodsListCache | undefined) =>
+                oldPods
+                  ? {
+                      pods: oldPods.pods.map((p) =>
+                        p.podId === podId
+                          ? {
+                              ...p,
+                              dmConversations: (p.dmConversations ?? []).map(
+                                (dm) =>
+                                  dm.peerId === frame.targetPeerId
+                                    ? { ...dm, unreadCount: 0 }
+                                    : dm
+                              ),
+                            }
+                          : p
+                      ),
+                    }
+                  : oldPods
+            );
+          }
+          break;
+        }
+
+        case 'dm_call_ringing': {
+          setDmCallNotice(null);
+          setActiveDmCall({
+            podId,
+            peerId: frame.targetPeerId,
+            peerAlias: frame.targetAlias,
+            peerColor: frame.targetColor,
+            peerOnline: frame.targetOnline,
+            phase: 'ringing',
+            muted: false,
+            speaking: false,
+            peerMuted: false,
+            peerSpeaking: false,
+          });
+          break;
+        }
+
+        case 'dm_call_incoming': {
+          setDmCallNotice(null);
+          setActiveDmCall({
+            podId,
+            peerId: frame.fromPeerId,
+            peerAlias: frame.fromAlias,
+            peerColor: frame.fromColor,
+            peerOnline: true,
+            phase: 'incoming',
+            muted: false,
+            speaking: false,
+            peerMuted: false,
+            peerSpeaking: false,
+          });
+          break;
+        }
+
+        case 'dm_call_connected': {
+          const selfId = getSelfPeerId();
+          const isA = selfId === frame.peerAId;
+          const partnerId = isA ? frame.peerBId : frame.peerAId;
+          const partnerAlias = isA ? frame.peerBAlias : frame.peerAAlias;
+          setDmCallNotice(null);
+          setActiveDmCall((prev) => ({
+            podId,
+            peerId: partnerId,
+            peerAlias: partnerAlias,
+            peerColor: prev?.peerId === partnerId ? prev.peerColor : '#1f6b3a',
+            peerOnline: true,
+            phase: 'connected',
+            muted: prev?.peerId === partnerId ? prev.muted : false,
+            speaking: prev?.peerId === partnerId ? prev.speaking : false,
+            peerMuted: prev?.peerId === partnerId ? prev.peerMuted : false,
+            peerSpeaking:
+              prev?.peerId === partnerId ? prev.peerSpeaking : false,
+          }));
+          break;
+        }
+
+        case 'dm_call_state': {
+          const selfId = getSelfPeerId();
+          setActiveDmCall((prev) => {
+            if (!prev || prev.podId !== podId) return prev;
+            if (selfId && frame.fromPeerId === selfId) {
+              return {
+                ...prev,
+                muted: frame.muted,
+                speaking: frame.speaking,
+              };
+            }
+            if (frame.fromPeerId === prev.peerId) {
+              return {
+                ...prev,
+                peerMuted: frame.muted,
+                peerSpeaking: frame.speaking,
+              };
+            }
+            return prev;
+          });
+          break;
+        }
+
+        case 'dm_call_ended': {
+          setActiveDmCall(null);
+          setDmCallNotice(
+            frame.reason === 'declined'
+              ? 'Call declined.'
+              : frame.reason === 'disconnected'
+              ? 'Private 1:1 call disconnected.'
+              : 'Private 1:1 call ended.'
+          );
           break;
         }
 
@@ -553,6 +790,9 @@ export function usePodSocket(podId: string | null): PodSocketController {
           if (activeDmPeerMapRef.current[podId] === frame.peerId) {
             setActiveDmPeerMap((prev) => ({ ...prev, [podId]: null }));
           }
+          setActiveDmCall((prev) =>
+            prev?.podId === podId && prev.peerId === frame.peerId ? null : prev
+          );
           break;
         }
 
@@ -567,6 +807,7 @@ export function usePodSocket(podId: string | null): PodSocketController {
             );
             queryClient.setQueryData(['pods'], { pods: remaining });
             setVoiceSession((prev) => (prev?.podId === podId ? null : prev));
+            setActiveDmCall((prev) => (prev?.podId === podId ? null : prev));
             setActivePodId(remaining[0]?.podId ?? null);
             queryClient.invalidateQueries({ queryKey: ['pods'] });
             queryClient.invalidateQueries({ queryKey: ['publicized-pods'] });
@@ -609,6 +850,11 @@ export function usePodSocket(podId: string | null): PodSocketController {
             if (activeDmPeerMapRef.current[podId] === frame.peerId) {
               setActiveDmPeerMap((prev) => ({ ...prev, [podId]: null }));
             }
+            setActiveDmCall((prev) =>
+              prev?.podId === podId && prev.peerId === frame.peerId
+                ? null
+                : prev
+            );
           }
           break;
         }
@@ -646,6 +892,7 @@ export function usePodSocket(podId: string | null): PodSocketController {
           setLastSignal({
             fromPeerId: frame.fromPeerId,
             fromAlias: frame.fromAlias,
+            scope: frame.scope,
             receivedAt: Date.now(),
           });
           break;
@@ -743,9 +990,13 @@ export function usePodSocket(podId: string | null): PodSocketController {
     setVoicePeersByPod,
     setLastSignal,
     setActiveDmPeerMap,
+    setUnreadGroupMap,
     setUnreadDmMap,
+    setPeerLastReadMap,
     setActivePodId,
     setVoiceSession,
+    setActiveDmCall,
+    setDmCallNotice,
   ]);
 
   return { sendFrame };

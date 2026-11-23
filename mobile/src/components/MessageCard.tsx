@@ -28,6 +28,7 @@ export interface MessageCardProps {
   message: RichMessageDto;
   myPeerId?: string;
   isDmView?: boolean;
+  peerLastReadMessageId?: number;
   onOpenActions?: (message: RichMessageDto) => void;
   onMessagePrivately?: (peerId: string, alias: string) => void;
   onReplyQuote?: (message: RichMessageDto) => void;
@@ -40,6 +41,7 @@ export function MessageCard({
   message,
   myPeerId,
   isDmView = false,
+  peerLastReadMessageId = 0,
   onOpenActions,
   onMessagePrivately,
   onReplyQuote,
@@ -51,7 +53,7 @@ export function MessageCard({
     return (
       <View style={styles.systemRow}>
         <View style={styles.systemPill}>
-          <RichTextBody body={message.body} />
+          <RichTextBody body={message.body} compactSystem />
         </View>
       </View>
     );
@@ -144,10 +146,19 @@ export function MessageCard({
                 </View>
               ) : null}
             </View>
-            <Text style={styles.timestampText}>
-              {formatShortTime(message.createdAt)}
-              {message.editedAt ? ' · edited' : ''}
-            </Text>
+            <View style={styles.timestampRow}>
+              <Text style={styles.timestampText}>
+                {formatShortTime(message.createdAt)}
+                {message.editedAt ? ' · edited' : ''}
+              </Text>
+              {isDmView && isSelf && !message.isDeleted ? (
+                message.id <= peerLastReadMessageId ? (
+                  <Text style={styles.seenReceiptText}>✓✓ Seen</Text>
+                ) : (
+                  <Text style={styles.sentReceiptText}>✓ Sent</Text>
+                )
+              ) : null}
+            </View>
           </View>
         </Pressable>
 
@@ -565,8 +576,9 @@ const styles = StyleSheet.create({
   systemPill: {
     backgroundColor: PALETTE.surfaceMuted,
     paddingHorizontal: 12,
-    paddingVertical: 5,
+    paddingVertical: 6,
     borderRadius: 999,
+    maxWidth: '94%',
   },
   card: {
     backgroundColor: PALETTE.card,
@@ -678,8 +690,25 @@ const styles = StyleSheet.create({
     paddingVertical: 2,
     borderRadius: 5,
   },
+  timestampRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+  },
   timestampText: {
     fontSize: 11,
+    color: PALETTE.muted,
+    fontFamily: MONO_FONT,
+  },
+  seenReceiptText: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: PALETTE.forest,
+    fontFamily: MONO_FONT,
+  },
+  sentReceiptText: {
+    fontSize: 11,
+    fontWeight: '600',
     color: PALETTE.muted,
     fontFamily: MONO_FONT,
   },

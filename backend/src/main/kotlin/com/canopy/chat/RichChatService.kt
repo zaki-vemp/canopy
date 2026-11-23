@@ -517,8 +517,88 @@ class RichChatService(
                     .update()
             }
 
+            // Auto-advance sender's own read cursor for this Group Chat (0) or 1:1 DM (recipientUserId)
+            upsertReadCursor(
+                podInternalId = ctx.podInternalId,
+                userId = ctx.myUserId,
+                peerUserId = recipientUserId,
+                lastReadMessageId = insertedMsgId
+            )
+
             insertedMsgId
         }!!
+    }
+
+    fun markRead(principal: AuthPrincipal, podIdHexRaw: String, req: MarkReadRequest): MarkReadResponse {
+        if (req.lastReadMessageId < 0L) {
+            throw ResponseStatusException(HttpStatus.BAD_REQUEST, "lastReadMessageId must be non-negative")
+        }
+        val ctx = requirePodMemberContext(principal, podIdHexRaw)
+        val cleanPeerId = req.peerId?.trim()?.takeIf { it.isNotEmpty() }
+
+        if (cleanPeerId == null) {
+            val effectiveId = txTemplate.execute {
+                upsertReadCursor(ctx.podInternalId, principal.userId(), 0L, req.lastReadMessageId)
+                readEffectiveCursor(ctx.podInternalId, principal.userId(), 0L)
+            }!!
+            return MarkReadResponse(ok = true, lastReadMessageId = effectiveId)
+        }
+
+        val peer = resolveDmPeer(ctx, cleanPeerId)
+        val effectiveId = txTemplate.execute {
+            upsertReadCursor(ctx.podInternalId, principal.userId(), peer.peerUserId, req.lastReadMessageId)
+            readEffectiveCursor(ctx.podInternalId, principal.userId(), peer.peerUserId)
+        }!!
+
+        podRealtimeHub.sendToUsers(
+            ctx.podIdHex,
+            setOf(principal.userId(), peer.peerUserId),
+            WsServerFrame.DmReadOut(
+                peerId = ctx.myPeerId,
+                targetPeerId = peer.peerId,
+                lastReadMessageId = effectiveId
+            )
+        )
+        return MarkReadResponse(ok = true, lastReadMessageId = effectiveId)
+    }
+
+    private fun upsertReadCursor(
+        podInternalId: Long,
+        userId: Long,
+        peerUserId: Long,
+        lastReadMessageId: Long
+    ) {
+        jdbcClient.sql(
+            """
+            INSERT INTO pod_read_cursors (pod_id, user_id, peer_user_id, last_read_message_id, updated_at)
+            VALUES (:podId, :userId, :peerUserId, :lastReadId, UTC_TIMESTAMP())
+            ON DUPLICATE KEY UPDATE
+                last_read_message_id = GREATEST(last_read_message_id, VALUES(last_read_message_id)),
+                updated_at = UTC_TIMESTAMP()
+            """.trimIndent()
+        )
+            .param("podId", podInternalId)
+            .param("userId", userId)
+            .param("peerUserId", peerUserId)
+            .param("lastReadId", lastReadMessageId)
+            .update()
+    }
+
+    private fun readEffectiveCursor(podInternalId: Long, userId: Long, peerUserId: Long): Long {
+        return jdbcClient.sql(
+            """
+            SELECT last_read_message_id
+            FROM pod_read_cursors
+            WHERE pod_id = :podId AND user_id = :userId AND peer_user_id = :peerUserId
+            LIMIT 1
+            """.trimIndent()
+        )
+            .param("podId", podInternalId)
+            .param("userId", userId)
+            .param("peerUserId", peerUserId)
+            .query { rs, _ -> rs.getLong("last_read_message_id") }
+            .optional()
+            .orElse(0L)
     }
 
     fun editMessage(principal: AuthPrincipal, messageId: Long, req: EditMessageRequest): RichMessageDto {

@@ -45,7 +45,9 @@ data class DmSummaryDto(
     val lastBody: String,
     val lastSenderPeerId: String,
     val lastSenderAlias: String,
-    val lastCreatedAt: String
+    val lastCreatedAt: String,
+    val unreadCount: Int = 0,
+    val peerLastReadMessageId: Long = 0
 )
 
 data class MemberDto(
@@ -87,6 +89,7 @@ data class PodDetailDto(
     val memberCount: Int,
     val maxMembers: Int,
     val openProposalsCount: Int = 0,
+    val unreadGroupCount: Int = 0,
     val dmConversations: List<DmSummaryDto> = emptyList(),
     val members: List<MemberDto>
 )

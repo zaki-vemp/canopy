@@ -30,6 +30,7 @@ import {
   fetchPodMessages,
   fetchPods,
   leavePod,
+  markPodConversationRead,
   postDmMessage,
   postPodMessage,
   toggleBookmark,
@@ -46,12 +47,17 @@ import type {
   WsOutboundFrame,
 } from '../types/canopy';
 import {
+  activeDmCallAtom,
   activeDmPeerByPodAtom,
   activePodIdAtom,
   activeTabAtom,
+  activeVoiceSessionAtom,
+  dmCallNoticeAtom,
   dmConvoKey,
+  peerLastReadByPodPeerAtom,
   typingByConvoAtom,
   unreadDmByPodPeerAtom,
+  unreadGroupByPodAtom,
   wsConnectedAtom,
 } from '../state/atoms';
 import {
@@ -105,10 +111,19 @@ export function PodChatScreen({
   const queryClient = useQueryClient();
   const [activePodId, setActivePodId] = useAtom(activePodIdAtom);
   const [activeDmPeerMap, setActiveDmPeerMap] = useAtom(activeDmPeerByPodAtom);
+  const [unreadGroupMap, setUnreadGroupMap] = useAtom(unreadGroupByPodAtom);
   const [unreadDmMap, setUnreadDmMap] = useAtom(unreadDmByPodPeerAtom);
+  const [peerLastReadMap, setPeerLastReadMap] = useAtom(
+    peerLastReadByPodPeerAtom
+  );
+  const [voiceSession, setVoiceSession] = useAtom(activeVoiceSessionAtom);
+  const [activeDmCall, setActiveDmCall] = useAtom(activeDmCallAtom);
+  const [dmCallNotice, setDmCallNotice] = useAtom(dmCallNoticeAtom);
   const setActiveTab = useSetAtom(activeTabAtom);
   const typingByConvo = useAtomValue(typingByConvoAtom);
   const wsConnected = useAtomValue(wsConnectedAtom);
+
+  const lastMarkedReadRef = useRef<Record<string, number>>({});
 
   const [podSwitcherOpen, setPodSwitcherOpen] = useState(false);
   const [dmDirectoryOpen, setDmDirectoryOpen] = useState(false);
@@ -225,14 +240,35 @@ export function PodChatScreen({
     return orderedPeers.find((p) => p.peerId === activePeerId) ?? null;
   }, [activePeerId, orderedPeers]);
 
-  // Clear unread badge when viewing a 1:1 DM
+  // Seed peerLastRead & unreadDm atoms from fetched DM summaries
   useEffect(() => {
-    if (!podId || !activePeerId) return;
-    const key = dmConvoKey(podId, activePeerId);
-    if ((unreadDmMap[key] ?? 0) > 0) {
-      setUnreadDmMap((prev) => ({ ...prev, [key]: 0 }));
-    }
-  }, [podId, activePeerId, unreadDmMap, setUnreadDmMap]);
+    if (!podId || dmConversations.length === 0) return;
+    setPeerLastReadMap((prev) => {
+      let changed = false;
+      const next = { ...prev };
+      for (const dm of dmConversations) {
+        const key = dmConvoKey(podId, dm.peerId);
+        const incoming = dm.peerLastReadMessageId ?? 0;
+        if (incoming > (next[key] ?? 0)) {
+          next[key] = incoming;
+          changed = true;
+        }
+      }
+      return changed ? next : prev;
+    });
+    setUnreadDmMap((prev) => {
+      let changed = false;
+      const next = { ...prev };
+      for (const dm of dmConversations) {
+        const key = dmConvoKey(podId, dm.peerId);
+        if (next[key] === undefined && (dm.unreadCount ?? 0) > 0) {
+          next[key] = dm.unreadCount ?? 0;
+          changed = true;
+        }
+      }
+      return changed ? next : prev;
+    });
+  }, [podId, dmConversations, setPeerLastReadMap, setUnreadDmMap]);
 
   // Clear cross-conversation quote target on conversation switch
   useEffect(() => {
@@ -278,6 +314,84 @@ export function PodChatScreen({
     return combined;
   }, [messagesQuery.data]);
 
+  const latestMessageId =
+    chronologicalMessages.length > 0
+      ? chronologicalMessages[chronologicalMessages.length - 1].id
+      : 0;
+
+  // Auto-advance server read cursor (deduplicated by lastReadMessageId per conversation)
+  useEffect(() => {
+    if (!podId || latestMessageId <= 0) return;
+    const key = dmConvoKey(podId, activePeerId);
+    if (latestMessageId <= (lastMarkedReadRef.current[key] ?? 0)) {
+      return;
+    }
+    lastMarkedReadRef.current[key] = latestMessageId;
+
+    if (activePeerId === null) {
+      setUnreadGroupMap((prev) =>
+        (prev[podId] ?? 0) === 0 ? prev : { ...prev, [podId]: 0 }
+      );
+      queryClient.setQueryData(
+        ['pods'],
+        (old: { pods: PodDetailDto[] } | undefined) =>
+          old
+            ? {
+                pods: old.pods.map((p) =>
+                  p.podId === podId ? { ...p, unreadGroupCount: 0 } : p
+                ),
+              }
+            : old
+      );
+    } else {
+      setUnreadDmMap((prev) =>
+        (prev[key] ?? 0) === 0 ? prev : { ...prev, [key]: 0 }
+      );
+      queryClient.setQueryData(
+        ['dms', podId],
+        (old: { conversations: DmSummaryDto[] } | undefined) =>
+          old
+            ? {
+                conversations: old.conversations.map((c) =>
+                  c.peerId === activePeerId ? { ...c, unreadCount: 0 } : c
+                ),
+              }
+            : old
+      );
+      queryClient.setQueryData(
+        ['pods'],
+        (old: { pods: PodDetailDto[] } | undefined) =>
+          old
+            ? {
+                pods: old.pods.map((p) =>
+                  p.podId === podId
+                    ? {
+                        ...p,
+                        dmConversations: (p.dmConversations ?? []).map((c) =>
+                          c.peerId === activePeerId
+                            ? { ...c, unreadCount: 0 }
+                            : c
+                        ),
+                      }
+                    : p
+                ),
+              }
+            : old
+      );
+    }
+
+    markPodConversationRead(podId, activePeerId, latestMessageId).catch(
+      () => {}
+    );
+  }, [
+    podId,
+    activePeerId,
+    latestMessageId,
+    queryClient,
+    setUnreadGroupMap,
+    setUnreadDmMap,
+  ]);
+
   useEffect(() => {
     return () => {
       if (recordTimerRef.current) clearInterval(recordTimerRef.current);
@@ -308,6 +422,88 @@ export function PodChatScreen({
     setDmDirectoryOpen(false);
     setActionTarget(null);
     switchConversation(peerId);
+  };
+
+  const handleStartPrivateCall = async (
+    targetPeerId: string,
+    targetAlias: string,
+    targetColor: string,
+    targetOnline: boolean
+  ) => {
+    if (!podId || !targetPeerId) return;
+    if (voiceSession) {
+      sendFrame({ type: 'voice_leave' });
+      setVoiceSession(null);
+    }
+    if (activeDmCall && activeDmCall.peerId !== targetPeerId) {
+      sendFrame({ type: 'dm_call_end', peerId: activeDmCall.peerId });
+    }
+    try {
+      if (Platform.OS !== 'web') {
+        await Audio.requestPermissionsAsync();
+        await Audio.setAudioModeAsync({
+          allowsRecordingIOS: true,
+          playsInSilentModeIOS: true,
+        });
+      }
+    } catch {
+      // fallback to synth/listen mode cleanly
+    }
+
+    setDmCallNotice(null);
+    setActiveDmCall({
+      podId,
+      peerId: targetPeerId,
+      peerAlias: targetAlias,
+      peerColor: targetColor,
+      peerOnline: targetOnline,
+      phase: 'ringing',
+      muted: false,
+      speaking: false,
+      peerMuted: false,
+      peerSpeaking: false,
+    });
+    sendFrame({ type: 'dm_call_ring', targetPeerId });
+  };
+
+  const handleToggleDmCallMute = () => {
+    if (!activeDmCall || activeDmCall.phase !== 'connected') return;
+    const nextMuted = !activeDmCall.muted;
+    const nextSpeaking = nextMuted ? false : activeDmCall.speaking;
+    setActiveDmCall({
+      ...activeDmCall,
+      muted: nextMuted,
+      speaking: nextSpeaking,
+    });
+    sendFrame({
+      type: 'dm_call_state',
+      peerId: activeDmCall.peerId,
+      muted: nextMuted,
+      speaking: nextSpeaking,
+    });
+  };
+
+  const handleToggleDmCallSpeak = () => {
+    if (!activeDmCall || activeDmCall.phase !== 'connected') return;
+    const nextSpeaking = !activeDmCall.speaking;
+    const nextMuted = nextSpeaking ? false : activeDmCall.muted;
+    setActiveDmCall({
+      ...activeDmCall,
+      muted: nextMuted,
+      speaking: nextSpeaking,
+    });
+    sendFrame({
+      type: 'dm_call_state',
+      peerId: activeDmCall.peerId,
+      muted: nextMuted,
+      speaking: nextSpeaking,
+    });
+  };
+
+  const handleEndDmCall = () => {
+    if (!activeDmCall) return;
+    sendFrame({ type: 'dm_call_end', peerId: activeDmCall.peerId });
+    setActiveDmCall(null);
   };
 
   const postMutation = useMutation({
@@ -657,10 +853,37 @@ export function PodChatScreen({
     activePeerInfo?.alias ??
     activePod.members.find((m) => m.peerId === activePeerId)?.alias ??
     'Peer';
+  const activePeerColor =
+    activePeerInfo?.color ??
+    activePod.members.find((m) => m.peerId === activePeerId)?.color ??
+    '#1f6b3a';
+  const activePeerOnline =
+    activePeerInfo?.online ??
+    activePod.members.find((m) => m.peerId === activePeerId)?.online ??
+    false;
+
+  const groupUnreadCount =
+    unreadGroupMap[podId] ?? activePod.unreadGroupCount ?? 0;
 
   const totalUnreadDmsInPod = orderedPeers.reduce((sum, p) => {
-    return sum + (unreadDmMap[dmConvoKey(podId, p.peerId)] ?? 0);
+    const u =
+      unreadDmMap[dmConvoKey(podId, p.peerId)] ?? p.dm?.unreadCount ?? 0;
+    return sum + u;
   }, 0);
+
+  const activePeerLastReadMessageId = activePeerId
+    ? Math.max(
+        peerLastReadMap[dmConvoKey(podId, activePeerId)] ?? 0,
+        activePeerInfo?.dm?.peerLastReadMessageId ?? 0
+      )
+    : 0;
+
+  const podDmCall =
+    activeDmCall &&
+    activeDmCall.podId === podId &&
+    (activeDmCall.phase === 'ringing' || activeDmCall.phase === 'connected')
+      ? activeDmCall
+      : null;
 
   const slashChips = activePeerId ? DM_SLASH_CHIPS : GROUP_SLASH_CHIPS;
 
@@ -771,12 +994,20 @@ export function PodChatScreen({
             >
               Group Chat ({activePod.memberCount})
             </Text>
+            {activePeerId !== null && groupUnreadCount > 0 ? (
+              <View style={styles.unreadBadge}>
+                <Text style={styles.unreadBadgeText}>{groupUnreadCount}</Text>
+              </View>
+            ) : null}
           </Pressable>
 
           {/* 1:1 Member DM Pills */}
           {orderedPeers.map((peer) => {
             const selected = activePeerId === peer.peerId;
-            const unread = unreadDmMap[dmConvoKey(podId, peer.peerId)] ?? 0;
+            const unread =
+              unreadDmMap[dmConvoKey(podId, peer.peerId)] ??
+              peer.dm?.unreadCount ??
+              0;
             return (
               <Pressable
                 key={peer.peerId}
@@ -852,7 +1083,7 @@ export function PodChatScreen({
         </ScrollView>
       </View>
 
-      {/* Crisp 1:1 Private Chat Banner + Quick Return to Group */}
+      {/* Crisp 1:1 Private Chat Banner + Call + Quick Return to Group */}
       {activePeerId !== null ? (
         <View style={styles.privateDmBanner}>
           <View style={styles.privateDmBannerLeft}>
@@ -862,21 +1093,160 @@ export function PodChatScreen({
                 Private 1:1 with {activePeerAlias} · Hidden from rest of pod
               </Text>
               <Text style={styles.privateDmSub} numberOfLines={1}>
-                {activePeerInfo?.online ? '● Online now' : '○ Offline'}
+                {activePeerOnline ? '● Online now' : '○ Offline'}
                 {activePeerInfo?.customStatus
                   ? ` · ${activePeerInfo.customStatus}`
                   : ''}
               </Text>
             </View>
           </View>
-          <Pressable
-            accessibilityRole="button"
-            accessibilityLabel="Back to Pod Group Chat"
-            onPress={() => switchConversation(null)}
-            style={styles.backGroupChip}
-          >
-            <Text style={styles.backGroupChipText}>← Group</Text>
-          </Pressable>
+          <View style={styles.privateDmBannerActions}>
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel={`Start private 1:1 audio call with ${activePeerAlias}`}
+              disabled={podDmCall?.peerId === activePeerId}
+              onPress={() =>
+                handleStartPrivateCall(
+                  activePeerId,
+                  activePeerAlias,
+                  activePeerColor,
+                  activePeerOnline
+                )
+              }
+              style={[
+                styles.privateCallBtn,
+                podDmCall?.peerId === activePeerId && styles.sendBtnDisabled,
+              ]}
+            >
+              <Ionicons
+                name="call-outline"
+                size={15}
+                color={PALETTE.charcoal}
+              />
+              <Text style={styles.privateCallBtnText}>Call</Text>
+            </Pressable>
+
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel="Back to Pod Group Chat"
+              onPress={() => switchConversation(null)}
+              style={styles.backGroupChip}
+            >
+              <Text style={styles.backGroupChipText}>← Group</Text>
+            </Pressable>
+          </View>
+        </View>
+      ) : null}
+
+      {/* Active Private 1:1 Audio Call Bar */}
+      {podDmCall ? (
+        <View style={styles.dmCallBar}>
+          <View style={styles.dmCallTopRow}>
+            <View style={styles.dmCallTitleWrap}>
+              <View
+                style={[
+                  styles.dmCallPulseDot,
+                  podDmCall.phase === 'connected' &&
+                    (podDmCall.speaking || podDmCall.peerSpeaking) &&
+                    styles.dmCallPulseDotSpeaking,
+                ]}
+              />
+              <View style={styles.dmCallTextCol}>
+                <Text style={styles.dmCallTitle} numberOfLines={1}>
+                  {podDmCall.phase === 'ringing'
+                    ? `Calling ${podDmCall.peerAlias}...`
+                    : `🔒 Private 1:1 Call · ${podDmCall.peerAlias}`}
+                </Text>
+                <Text style={styles.dmCallSub} numberOfLines={1}>
+                  {podDmCall.phase === 'ringing'
+                    ? podDmCall.peerOnline
+                      ? 'Ringing privately — hidden from rest of pod'
+                      : 'Peer offline — ringing when online'
+                    : podDmCall.peerSpeaking
+                    ? `${podDmCall.peerAlias} speaking`
+                    : podDmCall.peerMuted
+                    ? `${podDmCall.peerAlias} muted`
+                    : 'Connected · 2-peer private audio'}
+                </Text>
+              </View>
+            </View>
+
+            {podDmCall.phase === 'ringing' ? (
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel="End private call"
+                onPress={handleEndDmCall}
+                style={styles.dmCallEndBtn}
+              >
+                <Ionicons name="call" size={15} color={PALETTE.card} />
+                <Text style={styles.dmCallEndText}>End Call</Text>
+              </Pressable>
+            ) : null}
+          </View>
+
+          {podDmCall.phase === 'connected' ? (
+            <View style={styles.dmCallControlsRow}>
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel={
+                  podDmCall.muted ? 'Unmute private call' : 'Mute private call'
+                }
+                onPress={handleToggleDmCallMute}
+                style={[
+                  styles.dmCallCtrlBtn,
+                  podDmCall.muted && styles.dmCallCtrlBtnWarn,
+                ]}
+              >
+                <Ionicons
+                  name={podDmCall.muted ? 'mic-off' : 'mic'}
+                  size={16}
+                  color={podDmCall.muted ? PALETTE.amber : PALETTE.card}
+                />
+                <Text
+                  style={[
+                    styles.dmCallCtrlText,
+                    podDmCall.muted && styles.dmCallCtrlTextWarn,
+                  ]}
+                >
+                  {podDmCall.muted ? 'Unmute' : 'Mute'}
+                </Text>
+              </Pressable>
+
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel="Pulse Speak in private call"
+                onPress={handleToggleDmCallSpeak}
+                style={[
+                  styles.dmCallPulseBtn,
+                  podDmCall.speaking && styles.dmCallPulseBtnActive,
+                ]}
+              >
+                <Ionicons
+                  name="pulse"
+                  size={16}
+                  color={podDmCall.speaking ? PALETTE.charcoal : PALETTE.mint}
+                />
+                <Text
+                  style={[
+                    styles.dmCallPulseText,
+                    podDmCall.speaking && styles.dmCallPulseTextActive,
+                  ]}
+                >
+                  {podDmCall.speaking ? 'Speaking' : 'Pulse Speak'}
+                </Text>
+              </Pressable>
+
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel="End private call"
+                onPress={handleEndDmCall}
+                style={styles.dmCallEndBtn}
+              >
+                <Ionicons name="call" size={15} color={PALETTE.card} />
+                <Text style={styles.dmCallEndText}>End Call</Text>
+              </Pressable>
+            </View>
+          ) : null}
         </View>
       ) : null}
 
@@ -934,6 +1304,7 @@ export function PodChatScreen({
               message={item}
               myPeerId={activePod.myPeerId}
               isDmView={activePeerId !== null}
+              peerLastReadMessageId={activePeerLastReadMessageId}
               onOpenActions={(msg) => setActionTarget(msg)}
               onMessagePrivately={(peerId) => openPrivateChat(peerId)}
               onReplyQuote={(msg) => setQuoteTarget(msg)}
@@ -968,14 +1339,17 @@ export function PodChatScreen({
         </View>
       ) : null}
 
-      {composerNotice ? (
+      {composerNotice || dmCallNotice ? (
         <View style={styles.noticeBar}>
           <Text style={styles.noticeText} numberOfLines={2}>
-            {composerNotice}
+            {composerNotice || dmCallNotice}
           </Text>
           <Pressable
             accessibilityRole="button"
-            onPress={() => setComposerNotice(null)}
+            onPress={() => {
+              setComposerNotice(null);
+              setDmCallNotice(null);
+            }}
             style={styles.smallCloseBtn}
           >
             <Ionicons name="close" size={16} color={PALETTE.ink} />
@@ -1193,7 +1567,9 @@ export function PodChatScreen({
                 orderedPeers.map((peer) => {
                   const avatarCol = safePeerColor(peer.color, peer.alias);
                   const unread =
-                    unreadDmMap[dmConvoKey(podId, peer.peerId)] ?? 0;
+                    unreadDmMap[dmConvoKey(podId, peer.peerId)] ??
+                    peer.dm?.unreadCount ??
+                    0;
                   const lastSnippet = peer.dm
                     ? `${
                         peer.dm.lastSenderPeerId === activePod.myPeerId
@@ -1703,9 +2079,31 @@ const styles = StyleSheet.create({
     color: PALETTE.ink,
     fontFamily: MONO_FONT,
   },
+  privateDmBannerActions: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+  },
+  privateCallBtn: {
+    minHeight: TOUCH_MIN,
+    paddingHorizontal: 11,
+    borderRadius: 10,
+    backgroundColor: PALETTE.mint,
+    borderWidth: 1,
+    borderColor: PALETTE.forest,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 5,
+  },
+  privateCallBtnText: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: PALETTE.charcoal,
+  },
   backGroupChip: {
     minHeight: TOUCH_MIN,
-    paddingHorizontal: 12,
+    paddingHorizontal: 11,
     borderRadius: 10,
     backgroundColor: PALETTE.card,
     borderWidth: 1,
@@ -1718,6 +2116,116 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     color: PALETTE.forest,
     fontFamily: MONO_FONT,
+  },
+  dmCallBar: {
+    backgroundColor: PALETTE.charcoal,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    borderBottomWidth: 1,
+    borderBottomColor: '#2d322d',
+    gap: 8,
+  },
+  dmCallTopRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 8,
+  },
+  dmCallTitleWrap: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  dmCallPulseDot: {
+    width: 10,
+    height: 10,
+    borderRadius: 5,
+    backgroundColor: PALETTE.amber,
+  },
+  dmCallPulseDotSpeaking: {
+    backgroundColor: PALETTE.mint,
+  },
+  dmCallTextCol: {
+    flex: 1,
+    gap: 1,
+  },
+  dmCallTitle: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: PALETTE.mint,
+  },
+  dmCallSub: {
+    fontSize: 11,
+    color: '#c9cfc9',
+    fontFamily: MONO_FONT,
+  },
+  dmCallControlsRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  dmCallCtrlBtn: {
+    flex: 1,
+    minHeight: TOUCH_MIN,
+    borderRadius: 10,
+    backgroundColor: '#2a2e2a',
+    borderWidth: 1,
+    borderColor: '#3c423c',
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 5,
+  },
+  dmCallCtrlBtnWarn: {
+    backgroundColor: PALETTE.amberSoft,
+    borderColor: PALETTE.amber,
+  },
+  dmCallCtrlText: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: PALETTE.card,
+  },
+  dmCallCtrlTextWarn: {
+    color: PALETTE.amber,
+  },
+  dmCallPulseBtn: {
+    flex: 1.2,
+    minHeight: TOUCH_MIN,
+    borderRadius: 10,
+    backgroundColor: '#243429',
+    borderWidth: 1.5,
+    borderColor: PALETTE.mint,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 5,
+  },
+  dmCallPulseBtnActive: {
+    backgroundColor: PALETTE.mint,
+  },
+  dmCallPulseText: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: PALETTE.mint,
+  },
+  dmCallPulseTextActive: {
+    color: PALETTE.charcoal,
+  },
+  dmCallEndBtn: {
+    minHeight: TOUCH_MIN,
+    paddingHorizontal: 12,
+    borderRadius: 10,
+    backgroundColor: PALETTE.danger,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 5,
+  },
+  dmCallEndText: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: PALETTE.card,
   },
   centerBox: {
     flex: 1,

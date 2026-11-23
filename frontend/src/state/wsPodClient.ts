@@ -12,6 +12,7 @@ import {
   activeDmPeerByPodAtom,
   activePodIdAtom,
   kickedNoticeAtom,
+  peerReadByConvoAtom,
   presenceByPodAtom,
   typingByConvoAtom,
   unreadByConvoAtom,
@@ -33,12 +34,28 @@ import {
 } from '@/types/canopy';
 
 type SignalFrame = Extract<WsInboundFrame, { type: 'webrtc_signal' }>;
+export type DmCallEvent =
+  | Extract<
+      WsInboundFrame,
+      {
+        type:
+          | 'dm_call_ringing'
+          | 'dm_call_incoming'
+          | 'dm_call_connected'
+          | 'dm_call_state'
+          | 'dm_call_ended';
+      }
+    >
+  | { type: 'member_removed'; peerId: string };
+
 type SignalListener = (frame: SignalFrame) => void;
+type DmCallListener = (podId: string, event: DmCallEvent) => void;
 type ReconnectListener = (podId: string) => void;
 
 let activeSocket: WebSocket | null = null;
 let activeSocketPodId: string | null = null;
 const signalListeners = new Set<SignalListener>();
+const dmCallListeners = new Set<DmCallListener>();
 const reconnectListeners = new Set<ReconnectListener>();
 
 export function sendPodWsFrame(frame: WsOutboundFrame): boolean {
@@ -59,6 +76,13 @@ export function subscribeWebRtcSignals(fn: SignalListener): () => void {
   signalListeners.add(fn);
   return () => {
     signalListeners.delete(fn);
+  };
+}
+
+export function subscribeDmCallEvents(fn: DmCallListener): () => void {
+  dmCallListeners.add(fn);
+  return () => {
+    dmCallListeners.delete(fn);
   };
 }
 
@@ -156,6 +180,9 @@ export function upsertDmSummaryInCaches(
         lastSenderPeerId: message.senderPeerId,
         lastSenderAlias: message.senderAlias,
         lastCreatedAt: message.createdAt,
+        unreadCount:
+          message.senderPeerId === myPeerId ? 0 : (existing?.unreadCount ?? 0),
+        peerLastReadMessageId: existing?.peerLastReadMessageId ?? 0,
       };
     }
     const filtered = list.filter((d) => d.peerId !== otherPeerId);
@@ -185,6 +212,110 @@ export function upsertDmSummaryInCaches(
           : p
       ),
     };
+  });
+}
+
+export function markConversationReadInCaches(
+  queryClient: QueryClient,
+  podId: string,
+  peerId: string | null
+): void {
+  if (!peerId) {
+    queryClient.setQueryData<{ pods: PodDetail[] }>(['pods'], (old) => {
+      if (!old) return old;
+      let changed = false;
+      const nextPods = old.pods.map((p) => {
+        if (p.podId === podId && (p.unreadGroupCount ?? 0) > 0) {
+          changed = true;
+          return { ...p, unreadGroupCount: 0 };
+        }
+        return p;
+      });
+      return changed ? { pods: nextPods } : old;
+    });
+    return;
+  }
+
+  const zeroDmList = (
+    list: DmConversationSummary[] = []
+  ): { list: DmConversationSummary[]; changed: boolean } => {
+    let changed = false;
+    const next = list.map((d) => {
+      if (d.peerId === peerId && (d.unreadCount ?? 0) > 0) {
+        changed = true;
+        return { ...d, unreadCount: 0 };
+      }
+      return d;
+    });
+    return { list: next, changed };
+  };
+
+  queryClient.setQueryData<{ conversations: DmConversationSummary[] }>(
+    ['dms', podId],
+    (old) => {
+      if (!old) return old;
+      const res = zeroDmList(old.conversations);
+      return res.changed ? { conversations: res.list } : old;
+    }
+  );
+
+  queryClient.setQueryData<{ pods: PodDetail[] }>(['pods'], (old) => {
+    if (!old) return old;
+    let anyChanged = false;
+    const nextPods = old.pods.map((p) => {
+      if (p.podId !== podId || !p.dmConversations) return p;
+      const res = zeroDmList(p.dmConversations);
+      if (!res.changed) return p;
+      anyChanged = true;
+      return { ...p, dmConversations: res.list };
+    });
+    return anyChanged ? { pods: nextPods } : old;
+  });
+}
+
+export function updatePeerLastReadInCaches(
+  queryClient: QueryClient,
+  podId: string,
+  peerId: string,
+  lastReadMessageId: number
+): void {
+  const patchList = (
+    list: DmConversationSummary[] = []
+  ): { list: DmConversationSummary[]; changed: boolean } => {
+    let changed = false;
+    const next = list.map((d) => {
+      if (
+        d.peerId === peerId &&
+        lastReadMessageId > (d.peerLastReadMessageId ?? 0)
+      ) {
+        changed = true;
+        return { ...d, peerLastReadMessageId: lastReadMessageId };
+      }
+      return d;
+    });
+    return { list: next, changed };
+  };
+
+  queryClient.setQueryData<{ conversations: DmConversationSummary[] }>(
+    ['dms', podId],
+    (old) => {
+      if (!old) return old;
+      const res = patchList(old.conversations);
+      return res.changed ? { conversations: res.list } : old;
+    }
+  );
+
+  queryClient.setQueryData<{ pods: PodDetail[] }>(['pods'], (old) => {
+    if (!old) return old;
+    let anyChanged = false;
+    const nextPods = old.pods.map((p) => {
+      if (p.podId !== podId || !p.dmConversations) return p;
+      const res = patchList(p.dmConversations);
+      if (!res.changed) return p;
+      anyChanged = true;
+      return { ...p, dmConversations: res.list };
+    });
+    return anyChanged ? { pods: nextPods } : old;
   });
 }
 
@@ -255,6 +386,10 @@ export function syncProposalIntoCaches(
             myAlias: updatedPod.myAlias || p.myAlias,
             myColor: updatedPod.myColor || p.myColor,
             myRole: updatedPod.myRole || p.myRole,
+            unreadGroupCount:
+              updatedPod.myPeerId && updatedPod.unreadGroupCount !== undefined
+                ? updatedPod.unreadGroupCount
+                : p.unreadGroupCount,
             dmConversations:
               updatedPod.dmConversations && updatedPod.dmConversations.length > 0
                 ? updatedPod.dmConversations
@@ -544,6 +679,7 @@ export function usePodWebSocket(): void {
   const setVoicePeersByPod = useSetAtom(voicePeersByPodAtom);
   const setTypingByConvo = useSetAtom(typingByConvoAtom);
   const setUnreadByConvo = useSetAtom(unreadByConvoAtom);
+  const setPeerReadByConvo = useSetAtom(peerReadByConvoAtom);
   const setWsConnected = useSetAtom(wsConnectedAtom);
   const setKickedNotice = useSetAtom(kickedNoticeAtom);
   const queryClient = useQueryClient();
@@ -732,29 +868,157 @@ export function usePodWebSocket(): void {
             break;
           }
 
+          case 'dm_call_ringing':
+          case 'dm_call_incoming':
+          case 'dm_call_connected':
+          case 'dm_call_state':
+          case 'dm_call_ended': {
+            dmCallListeners.forEach((fn) => fn(activePodId, frame));
+            break;
+          }
+
+          case 'dm_read': {
+            const myPeerId = getMyPeerId();
+            if (frame.peerId && frame.peerId !== myPeerId) {
+              const key = conversationKey(activePodId, frame.peerId);
+              setPeerReadByConvo((prev) => {
+                const cur = prev[key] ?? 0;
+                if (frame.lastReadMessageId <= cur) return prev;
+                return { ...prev, [key]: frame.lastReadMessageId };
+              });
+              updatePeerLastReadInCaches(
+                queryClient,
+                activePodId,
+                frame.peerId,
+                frame.lastReadMessageId
+              );
+            } else if (frame.peerId === myPeerId && frame.targetPeerId) {
+              const ownKey = conversationKey(activePodId, frame.targetPeerId);
+              setUnreadByConvo((prev) =>
+                prev[ownKey] === 0 ? prev : { ...prev, [ownKey]: 0 }
+              );
+              markConversationReadInCaches(
+                queryClient,
+                activePodId,
+                frame.targetPeerId
+              );
+            }
+            break;
+          }
+
           case 'message_created': {
             const myPeerId = getMyPeerId();
+            const msgPeerId = resolveMessagePeerId(
+              frame.message.senderPeerId,
+              frame.message.recipientPeerId,
+              myPeerId
+            );
+            const qKey = messageQueryKey(activePodId, msgPeerId);
+            const existingMsgPages =
+              queryClient.getQueryData<InfiniteData<MessagesPage, number>>(
+                qKey
+              );
+            const alreadyInMsgCache = Boolean(
+              existingMsgPages?.pages.some((p) =>
+                p.messages.some((m) => m.id === frame.message.id)
+              )
+            );
+
+            const podsSnap = queryClient.getQueryData<{ pods: PodDetail[] }>([
+              'pods',
+            ]);
+            const podSnap = podsSnap?.pods.find((p) => p.podId === activePodId);
+            const dmsSnap = queryClient.getQueryData<{
+              conversations: DmConversationSummary[];
+            }>(['dms', activePodId]);
+            const existingDm = msgPeerId
+              ? (dmsSnap?.conversations ?? podSnap?.dmConversations ?? []).find(
+                  (d) => d.peerId === msgPeerId
+                )
+              : undefined;
+            const alreadyCountedInSummary = Boolean(
+              existingDm && existingDm.lastMessageId >= frame.message.id
+            );
+            const baseServerUnread = msgPeerId
+              ? (existingDm?.unreadCount ?? 0)
+              : (podSnap?.unreadGroupCount ?? 0);
+
             upsertConversationMessageInCache(
               queryClient,
               activePodId,
               frame.message,
               myPeerId
             );
-            const msgPeerId = resolveMessagePeerId(
-              frame.message.senderPeerId,
-              frame.message.recipientPeerId,
-              myPeerId
-            );
-            const activePeerInPod = activeDmPeerMapRef.current[activePodId] ?? null;
-            if (
-              frame.message.senderPeerId !== myPeerId &&
-              activePeerInPod !== msgPeerId
+
+            const activePeerInPod =
+              activeDmPeerMapRef.current[activePodId] ?? null;
+            const key = conversationKey(activePodId, msgPeerId);
+
+            if (frame.message.senderPeerId === myPeerId) {
+              setUnreadByConvo((prev) =>
+                prev[key] === 0 ? prev : { ...prev, [key]: 0 }
+              );
+              markConversationReadInCaches(queryClient, activePodId, msgPeerId);
+            } else if (
+              activePeerInPod !== msgPeerId &&
+              !alreadyInMsgCache &&
+              !alreadyCountedInSummary
             ) {
-              const key = conversationKey(activePodId, msgPeerId);
               setUnreadByConvo((prev) => ({
                 ...prev,
-                [key]: (prev[key] || 0) + 1,
+                [key]: (prev[key] ?? baseServerUnread) + 1,
               }));
+              if (!msgPeerId) {
+                queryClient.setQueryData<{ pods: PodDetail[] }>(
+                  ['pods'],
+                  (old) =>
+                    old
+                      ? {
+                          pods: old.pods.map((p) =>
+                            p.podId === activePodId
+                              ? {
+                                  ...p,
+                                  unreadGroupCount:
+                                    (p.unreadGroupCount ?? 0) + 1,
+                                }
+                              : p
+                          ),
+                        }
+                      : old
+                );
+              } else {
+                const bumpDmUnread = (list: DmConversationSummary[] = []) =>
+                  list.map((d) =>
+                    d.peerId === msgPeerId
+                      ? { ...d, unreadCount: (d.unreadCount ?? 0) + 1 }
+                      : d
+                  );
+                queryClient.setQueryData<{
+                  conversations: DmConversationSummary[];
+                }>(['dms', activePodId], (old) =>
+                  old
+                    ? { conversations: bumpDmUnread(old.conversations) }
+                    : old
+                );
+                queryClient.setQueryData<{ pods: PodDetail[] }>(
+                  ['pods'],
+                  (old) =>
+                    old
+                      ? {
+                          pods: old.pods.map((p) =>
+                            p.podId === activePodId
+                              ? {
+                                  ...p,
+                                  dmConversations: bumpDmUnread(
+                                    p.dmConversations ?? []
+                                  ),
+                                }
+                              : p
+                          ),
+                        }
+                      : old
+                );
+              }
             }
             break;
           }
@@ -810,6 +1074,11 @@ export function usePodWebSocket(): void {
                         myAlias: frame.pod.myAlias || p.myAlias,
                         myColor: frame.pod.myColor || p.myColor,
                         myRole: frame.pod.myRole || p.myRole,
+                        unreadGroupCount:
+                          frame.pod.myPeerId &&
+                          frame.pod.unreadGroupCount !== undefined
+                            ? frame.pod.unreadGroupCount
+                            : p.unreadGroupCount,
                         dmConversations:
                           frame.pod.dmConversations &&
                           frame.pod.dmConversations.length > 0
@@ -887,6 +1156,9 @@ export function usePodWebSocket(): void {
           }
 
           case 'member_left': {
+            dmCallListeners.forEach((fn) =>
+              fn(activePodId, { type: 'member_removed', peerId: frame.peerId })
+            );
             if (activeDmPeerMapRef.current[activePodId] === frame.peerId) {
               setActiveDmPeerMap((prev) => ({
                 ...prev,
@@ -935,6 +1207,9 @@ export function usePodWebSocket(): void {
           }
 
           case 'member_kicked': {
+            dmCallListeners.forEach((fn) =>
+              fn(activePodId, { type: 'member_removed', peerId: frame.peerId })
+            );
             const podsData = queryClient.getQueryData<{ pods: PodDetail[] }>([
               'pods',
             ]);
@@ -1069,6 +1344,7 @@ export function usePodWebSocket(): void {
     setActiveDmPeerMap,
     setActivePodId,
     setKickedNotice,
+    setPeerReadByConvo,
     setPresenceByPod,
     setTypingByConvo,
     setUnreadByConvo,

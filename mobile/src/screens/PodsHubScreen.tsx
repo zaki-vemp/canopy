@@ -32,6 +32,9 @@ import {
   activePodIdAtom,
   activeTabAtom,
   authUserAtom,
+  dmConvoKey,
+  unreadDmByPodPeerAtom,
+  unreadGroupByPodAtom,
   voicePeersByPodAtom,
 } from '../state/atoms';
 import {
@@ -106,6 +109,8 @@ export function PodsHubScreen() {
   const setActiveTab = useSetAtom(activeTabAtom);
   const [authUser, setAuthUser] = useAtom(authUserAtom);
   const voicePeersByPod = useAtomValue(voicePeersByPodAtom);
+  const unreadGroupMap = useAtomValue(unreadGroupByPodAtom);
+  const unreadDmMap = useAtomValue(unreadDmByPodPeerAtom);
 
   const isPro = authUser?.planTier === 'PREMIUM';
 
@@ -556,6 +561,16 @@ export function PodsHubScreen() {
             const voiceCount = getPodVoiceCount(pod);
             const aliasColor = safePeerColor(pod.myColor, pod.myAlias);
             const isEditingStatus = editingStatusPodId === pod.podId;
+            const groupUnread =
+              unreadGroupMap[pod.podId] ?? pod.unreadGroupCount ?? 0;
+            const dmUnread = (pod.dmConversations ?? []).reduce(
+              (sum, dm) =>
+                sum +
+                (unreadDmMap[dmConvoKey(pod.podId, dm.peerId)] ??
+                  dm.unreadCount ??
+                  0),
+              0
+            );
 
             return (
               <View
@@ -600,6 +615,15 @@ export function PodsHubScreen() {
                           : '⚖️ Democratic'}
                       </Text>
                     </View>
+                    {groupUnread + dmUnread > 0 ? (
+                      <View style={styles.openVotesPill}>
+                        <Text style={styles.openVotesPillText}>
+                          {dmUnread > 0
+                            ? `${groupUnread + dmUnread} Unread (${dmUnread} DM)`
+                            : `${groupUnread} Unread`}
+                        </Text>
+                      </View>
+                    ) : null}
                     {pod.openProposalsCount > 0 ? (
                       <View style={styles.openVotesPill}>
                         <Text style={styles.openVotesPillText}>

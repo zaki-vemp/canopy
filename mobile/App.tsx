@@ -1,16 +1,18 @@
 import React, { useEffect, useState } from 'react';
 import {
   ActivityIndicator,
+  Modal,
   Platform,
   Pressable,
   StyleSheet,
   Text,
   View,
 } from 'react-native';
+import { Audio } from 'expo-av';
 import { StatusBar } from 'expo-status-bar';
 import { SafeAreaProvider, SafeAreaView } from 'react-native-safe-area-context';
 import { QueryClient, QueryClientProvider, useQuery } from '@tanstack/react-query';
-import { useAtom, useAtomValue, useSetAtom } from 'jotai';
+import { useAtom, useSetAtom } from 'jotai';
 import { Ionicons } from '@expo/vector-icons';
 import {
   ApiError,
@@ -21,16 +23,26 @@ import {
 } from './src/api/client';
 import { usePodSocket } from './src/api/ws';
 import {
+  activeDmCallAtom,
+  activeDmPeerByPodAtom,
   activePodIdAtom,
   activeTabAtom,
   activeVoiceSessionAtom,
   apiBaseUrlAtom,
   authTokenAtom,
   authUserAtom,
+  dmConvoKey,
+  peerLastReadByPodPeerAtom,
   unreadDmByPodPeerAtom,
+  unreadGroupByPodAtom,
 } from './src/state/atoms';
 import type { MobileTabKey } from './src/types/canopy';
-import { PALETTE, TOUCH_MIN } from './src/theme/palette';
+import {
+  PALETTE,
+  TOUCH_MIN,
+  aliasInitials,
+  safePeerColor,
+} from './src/theme/palette';
 import { AuthScreen } from './src/screens/AuthScreen';
 import { PodsHubScreen } from './src/screens/PodsHubScreen';
 import { PodChatScreen } from './src/screens/PodChatScreen';
@@ -94,9 +106,12 @@ const TABS: ReadonlyArray<{
 function AuthenticatedWorkspace() {
   const [activeTab, setActiveTab] = useAtom(activeTabAtom);
   const [activePodId, setActivePodId] = useAtom(activePodIdAtom);
-  const voiceSession = useAtomValue(activeVoiceSessionAtom);
-  const unreadDmMap = useAtomValue(unreadDmByPodPeerAtom);
-  const hasUnreadDm = Object.values(unreadDmMap).some((c) => c > 0);
+  const setActiveDmPeerMap = useSetAtom(activeDmPeerByPodAtom);
+  const [voiceSession, setVoiceSession] = useAtom(activeVoiceSessionAtom);
+  const [activeDmCall, setActiveDmCall] = useAtom(activeDmCallAtom);
+  const [unreadGroupMap, setUnreadGroupMap] = useAtom(unreadGroupByPodAtom);
+  const [unreadDmMap, setUnreadDmMap] = useAtom(unreadDmByPodPeerAtom);
+  const setPeerLastReadMap = useSetAtom(peerLastReadByPodPeerAtom);
 
   const podsQuery = useQuery({
     queryKey: ['pods'],
@@ -110,7 +125,91 @@ function AuthenticatedWorkspace() {
     }
   }, [podsQuery.data, activePodId, setActivePodId]);
 
+  // Seed server-backed unreadGroupCount, dm.unreadCount & dm.peerLastReadMessageId
+  useEffect(() => {
+    const pods = podsQuery.data?.pods ?? [];
+    if (pods.length === 0) return;
+
+    setUnreadGroupMap((prev) => {
+      const next = { ...prev };
+      for (const p of pods) {
+        if (typeof p.unreadGroupCount === 'number') {
+          next[p.podId] = p.unreadGroupCount;
+        }
+      }
+      return next;
+    });
+
+    setUnreadDmMap((prev) => {
+      const next = { ...prev };
+      for (const p of pods) {
+        for (const dm of p.dmConversations ?? []) {
+          if (typeof dm.unreadCount === 'number') {
+            next[dmConvoKey(p.podId, dm.peerId)] = dm.unreadCount;
+          }
+        }
+      }
+      return next;
+    });
+
+    setPeerLastReadMap((prev) => {
+      const next = { ...prev };
+      for (const p of pods) {
+        for (const dm of p.dmConversations ?? []) {
+          const key = dmConvoKey(p.podId, dm.peerId);
+          next[key] = Math.max(next[key] ?? 0, dm.peerLastReadMessageId ?? 0);
+        }
+      }
+      return next;
+    });
+  }, [
+    podsQuery.data,
+    setUnreadGroupMap,
+    setUnreadDmMap,
+    setPeerLastReadMap,
+  ]);
+
   const { sendFrame } = usePodSocket(activePodId);
+
+  const hasUnreadChat =
+    Object.values(unreadGroupMap).some((c) => c > 0) ||
+    Object.values(unreadDmMap).some((c) => c > 0);
+
+  const handleAcceptIncomingDmCall = async () => {
+    if (!activeDmCall || activeDmCall.phase !== 'incoming') return;
+    if (voiceSession) {
+      sendFrame({ type: 'voice_leave' });
+      setVoiceSession(null);
+    }
+    try {
+      if (Platform.OS !== 'web') {
+        await Audio.requestPermissionsAsync();
+        await Audio.setAudioModeAsync({
+          allowsRecordingIOS: true,
+          playsInSilentModeIOS: true,
+        });
+      }
+    } catch {
+      // fallback to listen/synth mode cleanly
+    }
+
+    sendFrame({ type: 'dm_call_accept', callerPeerId: activeDmCall.peerId });
+    const targetPod = activeDmCall.podId;
+    const callerPeerId = activeDmCall.peerId;
+    setActiveDmCall({
+      ...activeDmCall,
+      phase: 'connected',
+    });
+    setActivePodId(targetPod);
+    setActiveDmPeerMap((prev) => ({ ...prev, [targetPod]: callerPeerId }));
+    setActiveTab('chat');
+  };
+
+  const handleDeclineIncomingDmCall = () => {
+    if (!activeDmCall) return;
+    sendFrame({ type: 'dm_call_decline', callerPeerId: activeDmCall.peerId });
+    setActiveDmCall(null);
+  };
 
   return (
     <SafeAreaView style={styles.workspaceSafe} edges={['top', 'bottom']}>
@@ -126,17 +225,46 @@ function AuthenticatedWorkspace() {
           </View>
         </View>
 
-        {voiceSession ? (
-          <Pressable
-            accessibilityRole="button"
-            accessibilityLabel="Return to active pod audio call"
-            onPress={() => setActiveTab('voice')}
-            style={styles.liveVoiceChip}
-          >
-            <Ionicons name="volume-high" size={13} color={PALETTE.charcoal} />
-            <Text style={styles.liveVoiceChipText}>In Call</Text>
-          </Pressable>
-        ) : null}
+        <View style={styles.topRightRow}>
+          {activeDmCall && activeDmCall.phase !== 'incoming' ? (
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel={`Return to private 1:1 call with ${activeDmCall.peerAlias}`}
+              onPress={() => {
+                setActivePodId(activeDmCall.podId);
+                setActiveDmPeerMap((prev) => ({
+                  ...prev,
+                  [activeDmCall.podId]: activeDmCall.peerId,
+                }));
+                setActiveTab('chat');
+              }}
+              style={styles.liveVoiceChip}
+            >
+              <Ionicons
+                name="lock-closed"
+                size={12}
+                color={PALETTE.charcoal}
+              />
+              <Text style={styles.liveVoiceChipText} numberOfLines={1}>
+                1:1 · {activeDmCall.peerAlias}
+              </Text>
+            </Pressable>
+          ) : voiceSession ? (
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel="Return to active pod audio call"
+              onPress={() => setActiveTab('voice')}
+              style={styles.liveVoiceChip}
+            >
+              <Ionicons
+                name="volume-high"
+                size={13}
+                color={PALETTE.charcoal}
+              />
+              <Text style={styles.liveVoiceChipText}>In Call</Text>
+            </Pressable>
+          ) : null}
+        </View>
       </View>
 
       {/* Active Screen Viewport */}
@@ -153,6 +281,12 @@ function AuthenticatedWorkspace() {
               if (voiceSession) {
                 sendFrame({ type: 'voice_leave' });
               }
+              if (activeDmCall) {
+                sendFrame({
+                  type: 'dm_call_end',
+                  peerId: activeDmCall.peerId,
+                });
+              }
             }}
           />
         ) : null}
@@ -164,7 +298,7 @@ function AuthenticatedWorkspace() {
           const selected = activeTab === tab.key;
           const showLiveDot =
             (tab.key === 'voice' && !!voiceSession) ||
-            (tab.key === 'chat' && hasUnreadDm);
+            (tab.key === 'chat' && (hasUnreadChat || !!activeDmCall));
 
           return (
             <Pressable
@@ -200,6 +334,70 @@ function AuthenticatedWorkspace() {
           );
         })}
       </View>
+
+      {/* Incoming Private 1:1 Member Call Modal (anywhere in active pod) */}
+      <Modal
+        visible={activeDmCall?.phase === 'incoming'}
+        transparent
+        animationType="fade"
+        onRequestClose={handleDeclineIncomingDmCall}
+      >
+        <View style={styles.incomingBackdrop}>
+          <View style={styles.incomingCard}>
+            <View style={styles.incomingBadge}>
+              <Ionicons name="lock-closed" size={12} color={PALETTE.forest} />
+              <Text style={styles.incomingBadgeText}>
+                PRIVATE 1:1 MEMBER CALL
+              </Text>
+            </View>
+
+            <View
+              style={[
+                styles.incomingAvatar,
+                {
+                  backgroundColor: safePeerColor(
+                    activeDmCall?.peerColor,
+                    activeDmCall?.peerAlias ?? ''
+                  ),
+                },
+              ]}
+            >
+              <Text style={styles.incomingInitials}>
+                {aliasInitials(activeDmCall?.peerAlias ?? 'Peer')}
+              </Text>
+            </View>
+
+            <Text style={styles.incomingTitle}>
+              {activeDmCall?.peerAlias ?? 'Pod Peer'} is calling you
+            </Text>
+            <Text style={styles.incomingSub}>
+              Hidden from all other pod members · Peer-blind 1-on-1 audio
+            </Text>
+
+            <View style={styles.incomingBtnRow}>
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel="Decline incoming private call"
+                onPress={handleDeclineIncomingDmCall}
+                style={styles.declineCallBtn}
+              >
+                <Ionicons name="close" size={18} color={PALETTE.card} />
+                <Text style={styles.declineCallText}>Decline</Text>
+              </Pressable>
+
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel="Accept incoming private call"
+                onPress={handleAcceptIncomingDmCall}
+                style={styles.acceptCallBtn}
+              >
+                <Ionicons name="call" size={18} color={PALETTE.charcoal} />
+                <Text style={styles.acceptCallText}>Accept</Text>
+              </Pressable>
+            </View>
+          </View>
+        </View>
+      </Modal>
     </SafeAreaView>
   );
 }
@@ -303,11 +501,18 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
     borderBottomWidth: 1,
     borderBottomColor: '#2a2e2a',
+    gap: 8,
   },
   brandLeft: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 8,
+  },
+  topRightRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    flexShrink: 1,
   },
   mintSquare: {
     width: 12,
@@ -336,13 +541,14 @@ const styles = StyleSheet.create({
     fontFamily: MONO_FONT,
   },
   liveVoiceChip: {
-    minHeight: 34,
+    minHeight: 36,
     flexDirection: 'row',
     alignItems: 'center',
     gap: 5,
     backgroundColor: PALETTE.mint,
     paddingHorizontal: 10,
     borderRadius: 999,
+    maxWidth: 160,
   },
   liveVoiceChipText: {
     color: PALETTE.charcoal,
@@ -396,5 +602,105 @@ const styles = StyleSheet.create({
   tabLabelActive: {
     color: PALETTE.charcoal,
     fontWeight: '700',
+  },
+  incomingBackdrop: {
+    flex: 1,
+    backgroundColor: 'rgba(25, 27, 25, 0.68)',
+    alignItems: 'center',
+    justifyContent: 'center',
+    padding: 20,
+  },
+  incomingCard: {
+    width: '100%',
+    maxWidth: 360,
+    backgroundColor: PALETTE.card,
+    borderRadius: 20,
+    padding: 20,
+    borderWidth: 1.5,
+    borderColor: PALETTE.mintBorder,
+    alignItems: 'center',
+    gap: 10,
+  },
+  incomingBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+    backgroundColor: PALETTE.mintSoft,
+    borderWidth: 1,
+    borderColor: PALETTE.mintBorder,
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: 999,
+  },
+  incomingBadgeText: {
+    fontSize: 10,
+    fontWeight: '800',
+    color: PALETTE.forest,
+    fontFamily: MONO_FONT,
+    letterSpacing: 0.5,
+  },
+  incomingAvatar: {
+    width: 60,
+    height: 60,
+    borderRadius: 30,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginTop: 4,
+  },
+  incomingInitials: {
+    fontSize: 20,
+    fontWeight: '700',
+    color: PALETTE.card,
+    fontFamily: MONO_FONT,
+  },
+  incomingTitle: {
+    fontSize: 18,
+    fontWeight: '700',
+    color: PALETTE.charcoal,
+    textAlign: 'center',
+  },
+  incomingSub: {
+    fontSize: 13,
+    lineHeight: 18,
+    color: PALETTE.muted,
+    textAlign: 'center',
+  },
+  incomingBtnRow: {
+    flexDirection: 'row',
+    gap: 10,
+    width: '100%',
+    marginTop: 6,
+  },
+  declineCallBtn: {
+    flex: 1,
+    minHeight: 48,
+    borderRadius: 12,
+    backgroundColor: PALETTE.danger,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+  },
+  declineCallText: {
+    fontSize: 14,
+    fontWeight: '700',
+    color: PALETTE.card,
+  },
+  acceptCallBtn: {
+    flex: 1,
+    minHeight: 48,
+    borderRadius: 12,
+    backgroundColor: PALETTE.mint,
+    borderWidth: 1.5,
+    borderColor: PALETTE.forest,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+  },
+  acceptCallText: {
+    fontSize: 14,
+    fontWeight: '700',
+    color: PALETTE.charcoal,
   },
 });

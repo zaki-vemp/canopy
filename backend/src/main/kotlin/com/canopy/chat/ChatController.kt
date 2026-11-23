@@ -72,6 +72,15 @@ class ChatController(
         return ResponseEntity.status(status).body(res)
     }
 
+    @PostMapping("/pods/{podId}/read")
+    fun markPodRead(
+        @PathVariable podId: String,
+        @RequestBody req: MarkReadRequest
+    ): MarkReadResponse {
+        val principal = requirePrincipal()
+        return richChatService.markRead(principal, podId, req)
+    }
+
     @PatchMapping("/messages/{messageId}")
     fun editMessage(
         @PathVariable messageId: Long,

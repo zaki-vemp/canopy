@@ -1,12 +1,16 @@
 'use client';
 
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { useInfiniteQuery } from '@tanstack/react-query';
+import { useInfiniteQuery, useQueryClient } from '@tanstack/react-query';
 import { useVirtualizer } from '@tanstack/react-virtual';
-import { useAtom } from 'jotai';
+import { useAtom, useSetAtom } from 'jotai';
 import { ArrowDown, Lock, Sparkles, Users } from 'lucide-react';
 import { apiFetch } from '@/lib/api';
-import { highlightedMessageIdAtom } from '@/state/workspaceAtoms';
+import {
+  highlightedMessageIdAtom,
+  unreadByConvoAtom,
+} from '@/state/workspaceAtoms';
+import { markConversationReadInCaches } from '@/state/wsPodClient';
 import { MessageCard } from '@/components/workspace/MessageCard';
 import { aliasInitials, safeAvatarColor } from '@/components/workspace/markdown';
 import {
@@ -31,8 +35,11 @@ export function MessageStream({
   knownAliases,
 }: MessageStreamProps) {
   const viewportRef = useRef<HTMLDivElement | null>(null);
+  const queryClient = useQueryClient();
   const [highlightedId, setHighlightedId] = useAtom(highlightedMessageIdAtom);
+  const setUnreadMap = useSetAtom(unreadByConvoAtom);
   const [nearBottom, setNearBottom] = useState(true);
+  const lastPostedReadRef = useRef<Record<string, number>>({});
 
   const activePeerId = activePeer?.peerId ?? null;
   const convoKey = conversationKey(pod.podId, activePeerId);
@@ -84,6 +91,45 @@ export function MessageStream({
     prevLastMsgIdRef.current = null;
     setNearBottom(true);
   }, [convoKey]);
+
+  // Clear unread badge & advance server read cursor (deduplicated per conversation)
+  useEffect(() => {
+    setUnreadMap((prev) =>
+      prev[convoKey] === 0 ? prev : { ...prev, [convoKey]: 0 }
+    );
+    markConversationReadInCaches(queryClient, pod.podId, activePeerId);
+
+    if (messages.length === 0) return;
+    let latestId = 0;
+    for (const m of messages) {
+      if (m.id > latestId) latestId = m.id;
+    }
+    const prevPosted = lastPostedReadRef.current[convoKey] ?? 0;
+    if (latestId <= prevPosted) return;
+
+    lastPostedReadRef.current[convoKey] = latestId;
+    apiFetch<{ ok: boolean; lastReadMessageId: number }>(
+      `/api/pods/${pod.podId}/read`,
+      {
+        method: 'POST',
+        body: JSON.stringify({
+          peerId: activePeerId,
+          lastReadMessageId: latestId,
+        }),
+      }
+    ).catch(() => {
+      if (lastPostedReadRef.current[convoKey] === latestId) {
+        lastPostedReadRef.current[convoKey] = prevPosted;
+      }
+    });
+  }, [
+    activePeerId,
+    convoKey,
+    messages,
+    pod.podId,
+    queryClient,
+    setUnreadMap,
+  ]);
 
   useEffect(() => {
     if (messages.length === 0) return;

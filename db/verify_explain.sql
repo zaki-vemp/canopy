@@ -205,11 +205,19 @@ SET @ve_poll_id := LAST_INSERT_ID();
 INSERT INTO poll_votes (poll_id, user_id, option_index, voter_alias)
 VALUES (@ve_poll_id, @ve_user_id, 0, 'Cobalt Fox');
 
+-- 7. Sample server-backed read cursors (Group Chat + 1:1 DM read receipts)
+INSERT INTO pod_read_cursors (pod_id, user_id, peer_user_id, last_read_message_id)
+VALUES
+  (@ve_pod_id, @ve_user_id,   0,            @ve_group_cursor_id),
+  (@ve_pod_id, @ve_user_id,   @ve_peer_b_id, @ve_dm_cursor_id),
+  (@ve_pod_id, @ve_peer_b_id, @ve_user_id,   @ve_dm_cursor_id);
+
 -- Refresh optimizer statistics & FULLTEXT index stats before measuring
 ANALYZE TABLE
   users, interests, user_interests, pods, pod_members,
   pod_opt_outs, messages, message_reactions, user_bookmarks,
-  message_attachments, polls, poll_votes, pod_invites, pod_proposals, pod_proposal_votes;
+  message_attachments, polls, poll_votes, pod_invites, pod_proposals, pod_proposal_votes,
+  pod_read_cursors;
 
 -- ============================================================================
 -- QUERY 1: Auth login lookup (WHERE email = ? -> idx_users_email)
@@ -410,8 +418,50 @@ WHERE pod_id = @ve_pod_id
 LIMIT 50;
 
 -- ============================================================================
+-- QUERY 9: Server-backed read cursor + unread Group Chat count (PRIMARY + idx_messages_convo_cursor)
+-- ============================================================================
+SELECT '=== Q9: Read cursor + unread Group Chat count (PRIMARY + idx_messages_convo_cursor) ===' AS check_name;
+
+EXPLAIN
+SELECT pm.pod_id, COUNT(m.id) AS unread_cnt
+FROM pod_members pm
+LEFT JOIN pod_read_cursors prc
+  ON prc.pod_id = pm.pod_id
+ AND prc.user_id = pm.user_id
+ AND prc.peer_user_id = 0
+JOIN messages m FORCE INDEX (idx_messages_convo_cursor)
+  ON m.pod_id = pm.pod_id
+ AND m.dm_user_low_id = 0
+ AND m.dm_user_high_id = 0
+ AND m.id > COALESCE(prc.last_read_message_id, 0)
+WHERE pm.user_id = @ve_user_id
+  AND pm.pod_id = @ve_pod_id
+  AND m.is_deleted = 0
+  AND m.sender_user_id != @ve_user_id
+GROUP BY pm.pod_id;
+
+EXPLAIN ANALYZE
+SELECT pm.pod_id, COUNT(m.id) AS unread_cnt
+FROM pod_members pm
+LEFT JOIN pod_read_cursors prc
+  ON prc.pod_id = pm.pod_id
+ AND prc.user_id = pm.user_id
+ AND prc.peer_user_id = 0
+JOIN messages m FORCE INDEX (idx_messages_convo_cursor)
+  ON m.pod_id = pm.pod_id
+ AND m.dm_user_low_id = 0
+ AND m.dm_user_high_id = 0
+ AND m.id > COALESCE(prc.last_read_message_id, 0)
+WHERE pm.user_id = @ve_user_id
+  AND pm.pod_id = @ve_pod_id
+  AND m.is_deleted = 0
+  AND m.sender_user_id != @ve_user_id
+GROUP BY pm.pod_id;
+
+-- ============================================================================
 -- CLEANUP: Remove all synthetic test rows so `canopy` ends clean
 -- ============================================================================
+DELETE FROM pod_read_cursors WHERE pod_id >= @ve_pod_id;
 DELETE FROM poll_votes WHERE poll_id = @ve_poll_id;
 DELETE FROM polls WHERE id = @ve_poll_id;
 DELETE FROM message_attachments WHERE storage_path = 've-voice.webm';
@@ -433,4 +483,5 @@ ALTER TABLE polls AUTO_INCREMENT = 1;
 ANALYZE TABLE
   users, interests, user_interests, pods, pod_members,
   pod_opt_outs, messages, message_reactions, user_bookmarks,
-  message_attachments, polls, poll_votes, pod_invites, pod_proposals, pod_proposal_votes;
+  message_attachments, polls, poll_votes, pod_invites, pod_proposals, pod_proposal_votes,
+  pod_read_cursors;

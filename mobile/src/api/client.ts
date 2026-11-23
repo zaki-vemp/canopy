@@ -539,6 +539,20 @@ export async function postDmMessage(
   );
 }
 
+export async function markPodConversationRead(
+  podId: string,
+  peerId: string | null,
+  lastReadMessageId: number
+): Promise<{ ok: boolean; lastReadMessageId: number }> {
+  return apiFetch<{ ok: boolean; lastReadMessageId: number }>(
+    `/api/pods/${podId}/read`,
+    {
+      method: 'POST',
+      body: JSON.stringify({ peerId, lastReadMessageId }),
+    }
+  );
+}
+
 export async function editMessage(
   messageId: number,
   body: string

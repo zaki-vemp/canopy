@@ -153,6 +153,17 @@ data class VotePollRequest(
     val optionIndex: Int = 0
 )
 
+@JsonIgnoreProperties(ignoreUnknown = true)
+data class MarkReadRequest(
+    val peerId: String? = null,
+    val lastReadMessageId: Long = 0L
+)
+
+data class MarkReadResponse(
+    val ok: Boolean = true,
+    val lastReadMessageId: Long
+)
+
 internal fun msgTypeToName(code: Int): String = when (code) {
     1 -> "TEXT"
     2 -> "SYSTEM"

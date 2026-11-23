@@ -56,6 +56,9 @@ export const typingByConvoAtom = atom<Record<string, string[]>>({});
 
 export const unreadByConvoAtom = atom<Record<string, number>>({});
 
+// Keyed by conversationKey(podId, otherPeerId) -> peer's lastReadMessageId in that 1:1 DM
+export const peerReadByConvoAtom = atom<Record<string, number>>({});
+
 export const wsConnectedAtom = atom<boolean>(false);
 
 export const podsQueryAtom = atomWithQuery<{ pods: PodDetail[] }, ApiError>(

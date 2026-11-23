@@ -2,10 +2,11 @@
 
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
-import { useAtom, useSetAtom } from 'jotai';
+import { useAtom, useAtomValue, useSetAtom } from 'jotai';
 import {
   Bookmark,
   Check,
+  CheckCheck,
   Clock,
   CornerUpLeft,
   Download,
@@ -25,11 +26,13 @@ import {
   activeDmPeerByPodAtom,
   activePodIdAtom,
   highlightedMessageIdAtom,
+  peerReadByConvoAtom,
   quoteTargetByConvoAtom,
   rightPanelAtom,
   unreadByConvoAtom,
 } from '@/state/workspaceAtoms';
 import {
+  markConversationReadInCaches,
   markMessageDeletedInCaches,
   patchMessageAcrossCaches,
   syncProposalIntoCaches,
@@ -43,6 +46,7 @@ import {
   conversationKey,
   resolveMessagePeerId,
   type AttachmentItem,
+  type DmConversationSummary,
   type PodDetail,
   type PodProposalDto,
   type PollData,
@@ -511,6 +515,7 @@ export function MessageCard({
   const setActivePodId = useSetAtom(activePodIdAtom);
   const [dmPeerMap, setDmPeerMap] = useAtom(activeDmPeerByPodAtom);
   const setUnreadMap = useSetAtom(unreadByConvoAtom);
+  const peerReadMap = useAtomValue(peerReadByConvoAtom);
   const setHighlightedId = useSetAtom(highlightedMessageIdAtom);
   const setRightPanel = useSetAtom(rightPanelAtom);
 
@@ -528,6 +533,41 @@ export function MessageCard({
   const [moreEmojiOpen, setMoreEmojiOpen] = useState(false);
 
   const isOwn = Boolean(myPeerId && message.senderPeerId === myPeerId);
+
+  const peerLastReadMessageId = useMemo(() => {
+    if (!isOwn || !isDmMessage || !otherPeerId) return 0;
+    const fromAtom = peerReadMap[convoKey] ?? 0;
+    const fromDmsCache =
+      queryClient
+        .getQueryData<{ conversations: DmConversationSummary[] }>([
+          'dms',
+          message.podId,
+        ])
+        ?.conversations.find((d) => d.peerId === otherPeerId)
+        ?.peerLastReadMessageId ?? 0;
+    const fromPodsCache =
+      queryClient
+        .getQueryData<{ pods: PodDetail[] }>(['pods'])
+        ?.pods.find((p) => p.podId === message.podId)
+        ?.dmConversations?.find((d) => d.peerId === otherPeerId)
+        ?.peerLastReadMessageId ?? 0;
+    return Math.max(fromAtom, fromDmsCache, fromPodsCache);
+  }, [
+    convoKey,
+    isDmMessage,
+    isOwn,
+    message.podId,
+    otherPeerId,
+    peerReadMap,
+    queryClient,
+  ]);
+  const isSeenByPeer =
+    isOwn &&
+    isDmMessage &&
+    !message.isDeleted &&
+    peerLastReadMessageId > 0 &&
+    message.id <= peerLastReadMessageId;
+
   const canMessageSenderPrivately =
     !isOwn &&
     !isDmMessage &&
@@ -542,12 +582,14 @@ export function MessageCard({
       [message.podId]: message.senderPeerId,
     });
     const targetKey = conversationKey(message.podId, message.senderPeerId);
-    setUnreadMap((prev) => {
-      if (!(targetKey in prev)) return prev;
-      const copy = { ...prev };
-      delete copy[targetKey];
-      return copy;
-    });
+    setUnreadMap((prev) =>
+      prev[targetKey] === 0 ? prev : { ...prev, [targetKey]: 0 }
+    );
+    markConversationReadInCaches(
+      queryClient,
+      message.podId,
+      message.senderPeerId
+    );
     if (typeof window !== 'undefined' && window.innerWidth <= 900) {
       setRightPanel(null);
     }
@@ -703,7 +745,9 @@ export function MessageCard({
         aria-label={`System notice: ${message.body}`}
       >
         <div className={styles.msgSystemPill}>
-          <span>{message.body}</span>
+          <span className={styles.msgSystemBody}>
+            <RichMarkdown body={message.body} knownAliases={knownAliases} />
+          </span>
           <time className={styles.msgSystemTime} dateTime={message.createdAt}>
             {formatClock(message.createdAt)}
           </time>
@@ -828,6 +872,32 @@ export function MessageCard({
           <time className={styles.msgTime} dateTime={message.createdAt}>
             {formatClock(message.createdAt)}
           </time>
+
+          {isOwn && isDmMessage && !message.isDeleted && (
+            <span
+              className={
+                isSeenByPeer ? styles.readReceiptSeen : styles.readReceiptSent
+              }
+              title={
+                isSeenByPeer
+                  ? 'Seen by recipient'
+                  : 'Sent privately'
+              }
+              aria-label={isSeenByPeer ? 'Seen' : 'Sent'}
+            >
+              {isSeenByPeer ? (
+                <>
+                  <CheckCheck size={13} aria-hidden="true" />
+                  <span>Seen</span>
+                </>
+              ) : (
+                <>
+                  <Check size={13} aria-hidden="true" />
+                  <span>Sent</span>
+                </>
+              )}
+            </span>
+          )}
 
           {message.editedAt && !message.isDeleted && (
             <span className={styles.msgTime}>(edited)</span>

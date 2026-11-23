@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useEffect, useMemo, useState } from 'react';
-import { useQuery } from '@tanstack/react-query';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useAtom, useAtomValue, useSetAtom } from 'jotai';
 import { Lock, MessageSquare, Search, Users, Volume2, X } from 'lucide-react';
 import { apiFetch } from '@/lib/api';
@@ -13,6 +13,7 @@ import {
   presenceByPodAtom,
   unreadByConvoAtom,
 } from '@/state/workspaceAtoms';
+import { markConversationReadInCaches } from '@/state/wsPodClient';
 import { useVoiceActions } from '@/state/voiceEngine';
 import {
   conversationKey,
@@ -39,6 +40,7 @@ export function CommandSearchModal({
   pods: PodDetail[];
   activePod: PodDetail | null;
 }) {
+  const queryClient = useQueryClient();
   const [open, setOpen] = useAtom(commandModalOpenAtom);
   const setActivePodId = useSetAtom(activePodIdAtom);
   const [dmPeerMap, setDmPeerMap] = useAtom(activeDmPeerByPodAtom);
@@ -150,12 +152,8 @@ export function CommandSearchModal({
     setActivePodId(podId);
     setDmPeerMap({ ...dmPeerMap, [podId]: peerId });
     const key = conversationKey(podId, peerId);
-    setUnreadMap((prev) => {
-      if (!(key in prev)) return prev;
-      const copy = { ...prev };
-      delete copy[key];
-      return copy;
-    });
+    setUnreadMap((prev) => (prev[key] === 0 ? prev : { ...prev, [key]: 0 }));
+    markConversationReadInCaches(queryClient, podId, peerId);
   };
 
   const jumpToSearchResult = (msg: RichMessage) => {

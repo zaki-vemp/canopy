@@ -269,6 +269,14 @@
           "name": "pod_proposals_id_lookup"
         }
       ]
+    },
+    "pod_read_cursors": {
+      "column_vindexes": [
+        {
+          "column": "pod_id",
+          "name": "pod_id_xxhash"
+        }
+      ]
     }
   }
 }

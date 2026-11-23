@@ -576,7 +576,8 @@ class BlindMatchService(
                 openProposalsByPod[rs.getLong("pod_id")] = rs.getInt("open_cnt")
             }
 
-        // Batch query 3: caller's own 1:1 DM conversation summaries across pods (zero N+1)
+        // Batch query 3: caller's own unread Group Chat counts & 1:1 DM conversation summaries across pods (zero N+1)
+        val unreadGroupByPod = podRealtimeHub.loadUnreadGroupCountsByPod(principal.userId(), podIds)
         val dmsByPod = podRealtimeHub.loadDmSummariesByPod(principal.userId(), podIds)
 
         return headers.map { h ->
@@ -600,6 +601,7 @@ class BlindMatchService(
                 memberCount = h.memberCount,
                 maxMembers = h.maxMembers,
                 openProposalsCount = openProposalsByPod[h.id] ?: 0,
+                unreadGroupCount = unreadGroupByPod[h.id] ?: 0,
                 dmConversations = dmsByPod[h.id] ?: emptyList(),
                 members = members
             )

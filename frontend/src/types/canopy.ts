@@ -43,6 +43,8 @@ export interface DmConversationSummary {
   lastSenderPeerId: string;
   lastSenderAlias: string;
   lastCreatedAt: string;
+  unreadCount?: number;
+  peerLastReadMessageId?: number;
 }
 
 export type PodCapacityPreset = null | 10 | 25 | 50;
@@ -88,6 +90,7 @@ export interface PodDetail {
   memberCount: number;
   maxMembers: number;
   openProposalsCount: number;
+  unreadGroupCount?: number;
   dmConversations?: DmConversationSummary[];
   members: PodMember[];
 }
@@ -413,6 +416,8 @@ export interface VoicePeer {
   speaking: boolean;
 }
 
+export type VoiceCallScope = 'GROUP' | 'DM';
+
 export interface WebRtcSignalPayload {
   sdp?: RTCSessionDescriptionInit;
   candidate?: RTCIceCandidateInit;
@@ -432,9 +437,20 @@ export type WsOutboundFrame =
       deafened: boolean;
       speaking: boolean;
     }
+  | { type: 'dm_call_ring'; targetPeerId: string }
+  | { type: 'dm_call_accept'; callerPeerId: string }
+  | { type: 'dm_call_decline'; callerPeerId: string }
+  | { type: 'dm_call_end'; peerId: string }
+  | {
+      type: 'dm_call_state';
+      peerId: string;
+      muted: boolean;
+      speaking: boolean;
+    }
   | {
       type: 'webrtc_signal';
       targetPeerId: string;
+      scope?: VoiceCallScope;
       signal: WebRtcSignalPayload;
     }
   | { type: 'ping' };
@@ -481,6 +497,43 @@ export type WsInboundFrame =
       message: RichMessage;
     }
   | {
+      type: 'dm_read';
+      peerId: string;
+      targetPeerId: string;
+      lastReadMessageId: number;
+    }
+  | {
+      type: 'dm_call_ringing';
+      targetPeerId: string;
+      targetAlias: string;
+      targetColor: string;
+      targetOnline: boolean;
+    }
+  | {
+      type: 'dm_call_incoming';
+      fromPeerId: string;
+      fromAlias: string;
+      fromColor: string;
+    }
+  | {
+      type: 'dm_call_connected';
+      peerAId: string;
+      peerAAlias: string;
+      peerBId: string;
+      peerBAlias: string;
+    }
+  | {
+      type: 'dm_call_state';
+      fromPeerId: string;
+      muted: boolean;
+      speaking: boolean;
+    }
+  | {
+      type: 'dm_call_ended';
+      byPeerId: string;
+      reason: 'ended' | 'declined' | 'disconnected' | string;
+    }
+  | {
       type: 'member_joined';
       member: PodMember;
     }
@@ -510,6 +563,7 @@ export type WsInboundFrame =
       type: 'webrtc_signal';
       fromPeerId: string;
       fromAlias: string;
+      scope?: VoiceCallScope;
       signal: WebRtcSignalPayload;
     }
   | {

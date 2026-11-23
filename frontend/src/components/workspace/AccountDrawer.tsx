@@ -12,6 +12,7 @@ import {
   activePodIdAtom,
   interestModalOpenAtom,
   interestModalTabAtom,
+  peerReadByConvoAtom,
   presenceByPodAtom,
   typingByConvoAtom,
   unreadByConvoAtom,
@@ -34,7 +35,8 @@ export function AccountDrawer({ user }: { user: SelfUser }) {
   const setVoicePeersByPod = useSetAtom(voicePeersByPodAtom);
   const setTypingByConvo = useSetAtom(typingByConvoAtom);
   const setUnreadByConvo = useSetAtom(unreadByConvoAtom);
-  const { leaveVoice } = useVoiceActions();
+  const setPeerReadByConvo = useSetAtom(peerReadByConvoAtom);
+  const { leaveVoice, endDmCall } = useVoiceActions();
 
   const [fullName, setFullName] = useState(user.fullName);
   const [gender, setGender] = useState(user.gender);
@@ -88,6 +90,7 @@ export function AccountDrawer({ user }: { user: SelfUser }) {
 
   const handleLogout = async () => {
     leaveVoice();
+    endDmCall();
     await performLogout();
     queryClient.clear();
     setActivePodId(null);
@@ -95,6 +98,7 @@ export function AccountDrawer({ user }: { user: SelfUser }) {
     setVoicePeersByPod({});
     setTypingByConvo({});
     setUnreadByConvo({});
+    setPeerReadByConvo({});
     setOpen(false);
     router.replace('/login');
   };

@@ -30,6 +30,11 @@ data class VoicePeerDto(
     JsonSubTypes.Type(value = WsClientFrame.VoiceJoinIn::class, name = "voice_join"),
     JsonSubTypes.Type(value = WsClientFrame.VoiceLeaveIn::class, name = "voice_leave"),
     JsonSubTypes.Type(value = WsClientFrame.VoiceStateIn::class, name = "voice_state"),
+    JsonSubTypes.Type(value = WsClientFrame.DmCallRingIn::class, name = "dm_call_ring"),
+    JsonSubTypes.Type(value = WsClientFrame.DmCallAcceptIn::class, name = "dm_call_accept"),
+    JsonSubTypes.Type(value = WsClientFrame.DmCallDeclineIn::class, name = "dm_call_decline"),
+    JsonSubTypes.Type(value = WsClientFrame.DmCallEndIn::class, name = "dm_call_end"),
+    JsonSubTypes.Type(value = WsClientFrame.DmCallStateIn::class, name = "dm_call_state"),
     JsonSubTypes.Type(value = WsClientFrame.WebRtcSignalIn::class, name = "webrtc_signal"),
     JsonSubTypes.Type(value = WsClientFrame.PingIn::class, name = "ping")
 )
@@ -61,8 +66,36 @@ sealed interface WsClientFrame {
     ) : WsClientFrame
 
     @JsonIgnoreProperties(ignoreUnknown = true)
+    data class DmCallRingIn(
+        val targetPeerId: String = ""
+    ) : WsClientFrame
+
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    data class DmCallAcceptIn(
+        val callerPeerId: String = ""
+    ) : WsClientFrame
+
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    data class DmCallDeclineIn(
+        val callerPeerId: String = ""
+    ) : WsClientFrame
+
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    data class DmCallEndIn(
+        val peerId: String = ""
+    ) : WsClientFrame
+
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    data class DmCallStateIn(
+        val peerId: String = "",
+        val muted: Boolean = false,
+        val speaking: Boolean = false
+    ) : WsClientFrame
+
+    @JsonIgnoreProperties(ignoreUnknown = true)
     data class WebRtcSignalIn(
         val targetPeerId: String = "",
+        val scope: String = "GROUP",
         val signal: Any? = null
     ) : WsClientFrame
 
@@ -156,10 +189,54 @@ sealed interface WsServerFrame {
         val voicePeers: List<VoicePeerDto>
     ) : WsServerFrame
 
+    data class DmReadOut(
+        override val type: String = "dm_read",
+        val peerId: String,
+        val targetPeerId: String,
+        val lastReadMessageId: Long
+    ) : WsServerFrame
+
+    data class DmCallRingingOut(
+        override val type: String = "dm_call_ringing",
+        val targetPeerId: String,
+        val targetAlias: String,
+        val targetColor: String,
+        val targetOnline: Boolean
+    ) : WsServerFrame
+
+    data class DmCallIncomingOut(
+        override val type: String = "dm_call_incoming",
+        val fromPeerId: String,
+        val fromAlias: String,
+        val fromColor: String
+    ) : WsServerFrame
+
+    data class DmCallConnectedOut(
+        override val type: String = "dm_call_connected",
+        val peerAId: String,
+        val peerAAlias: String,
+        val peerBId: String,
+        val peerBAlias: String
+    ) : WsServerFrame
+
+    data class DmCallStateOut(
+        override val type: String = "dm_call_state",
+        val fromPeerId: String,
+        val muted: Boolean,
+        val speaking: Boolean
+    ) : WsServerFrame
+
+    data class DmCallEndedOut(
+        override val type: String = "dm_call_ended",
+        val byPeerId: String,
+        val reason: String
+    ) : WsServerFrame
+
     data class WebRtcSignalOut(
         override val type: String = "webrtc_signal",
         val fromPeerId: String,
         val fromAlias: String,
+        val scope: String = "GROUP",
         val signal: Any?
     ) : WsServerFrame
 

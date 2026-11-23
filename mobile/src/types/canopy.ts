@@ -49,6 +49,8 @@ export interface DmSummaryDto {
   lastSenderPeerId: string;
   lastSenderAlias: string;
   lastCreatedAt: string;
+  unreadCount?: number;
+  peerLastReadMessageId?: number;
 }
 
 export interface PodDetailDto {
@@ -70,6 +72,7 @@ export interface PodDetailDto {
   memberCount: number;
   maxMembers: number;
   openProposalsCount: number;
+  unreadGroupCount?: number;
   dmConversations: DmSummaryDto[];
   members: MemberDto[];
 }
@@ -365,9 +368,20 @@ export type WsOutboundFrame =
       deafened: boolean;
       speaking: boolean;
     }
+  | { type: 'dm_call_ring'; targetPeerId: string }
+  | { type: 'dm_call_accept'; callerPeerId: string }
+  | { type: 'dm_call_decline'; callerPeerId: string }
+  | { type: 'dm_call_end'; peerId: string }
+  | {
+      type: 'dm_call_state';
+      peerId: string;
+      muted: boolean;
+      speaking: boolean;
+    }
   | {
       type: 'webrtc_signal';
       targetPeerId: string;
+      scope?: 'GROUP' | 'DM';
       signal: WebRtcSignalPayload;
     }
   | { type: 'ping' };
@@ -414,6 +428,43 @@ export type WsInboundFrame =
       message: RichMessageDto;
     }
   | {
+      type: 'dm_read';
+      peerId: string;
+      targetPeerId: string;
+      lastReadMessageId: number;
+    }
+  | {
+      type: 'dm_call_ringing';
+      targetPeerId: string;
+      targetAlias: string;
+      targetColor: string;
+      targetOnline: boolean;
+    }
+  | {
+      type: 'dm_call_incoming';
+      fromPeerId: string;
+      fromAlias: string;
+      fromColor: string;
+    }
+  | {
+      type: 'dm_call_connected';
+      peerAId: string;
+      peerAAlias: string;
+      peerBId: string;
+      peerBAlias: string;
+    }
+  | {
+      type: 'dm_call_state';
+      fromPeerId: string;
+      muted: boolean;
+      speaking: boolean;
+    }
+  | {
+      type: 'dm_call_ended';
+      byPeerId: string;
+      reason: 'ended' | 'declined' | 'disconnected' | string;
+    }
+  | {
       type: 'proposal_updated';
       proposal: PodProposalDto;
     }
@@ -443,6 +494,7 @@ export type WsInboundFrame =
       type: 'webrtc_signal';
       fromPeerId: string;
       fromAlias: string;
+      scope?: 'GROUP' | 'DM';
       signal: WebRtcSignalPayload;
     }
   | { type: 'pong' };
