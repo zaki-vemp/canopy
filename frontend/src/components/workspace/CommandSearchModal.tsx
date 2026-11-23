@@ -2,19 +2,35 @@
 
 import React, { useEffect, useMemo, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
-import { useAtom, useSetAtom } from 'jotai';
-import { Hash, MessageSquare, Search, Volume2, X } from 'lucide-react';
+import { useAtom, useAtomValue, useSetAtom } from 'jotai';
+import { Lock, MessageSquare, Search, Users, Volume2, X } from 'lucide-react';
 import { apiFetch } from '@/lib/api';
 import {
-  activeChannelIdMapAtom,
+  activeDmPeerByPodAtom,
   activePodIdAtom,
-  activeThreadMessageIdAtom,
   commandModalOpenAtom,
   highlightedMessageIdAtom,
+  presenceByPodAtom,
+  unreadByConvoAtom,
 } from '@/state/workspaceAtoms';
 import { useVoiceActions } from '@/state/voiceEngine';
-import type { PodDetail, RichMessage } from '@/types/canopy';
+import {
+  conversationKey,
+  resolveMessagePeerId,
+  type PodDetail,
+  type RichMessage,
+} from '@/types/canopy';
 import styles from '@/app/app/workspace.module.css';
+
+interface QuickSwitchItem {
+  key: string;
+  podId: string;
+  podCode: string;
+  podTitle: string;
+  label: string;
+  kind: 'GROUP' | 'CALL' | 'DM';
+  peerId: string | null;
+}
 
 export function CommandSearchModal({
   pods,
@@ -25,9 +41,10 @@ export function CommandSearchModal({
 }) {
   const [open, setOpen] = useAtom(commandModalOpenAtom);
   const setActivePodId = useSetAtom(activePodIdAtom);
-  const [channelMap, setChannelMap] = useAtom(activeChannelIdMapAtom);
-  const setActiveThreadId = useSetAtom(activeThreadMessageIdAtom);
+  const [dmPeerMap, setDmPeerMap] = useAtom(activeDmPeerByPodAtom);
+  const setUnreadMap = useSetAtom(unreadByConvoAtom);
   const setHighlightedId = useSetAtom(highlightedMessageIdAtom);
+  const presenceByPod = useAtomValue(presenceByPodAtom);
   const { joinVoice } = useVoiceActions();
 
   const [query, setQuery] = useState('');
@@ -69,47 +86,88 @@ export function CommandSearchModal({
     enabled: Boolean(open && activePod && debouncedQuery.length >= 1),
   });
 
-  const filteredChannels = useMemo(() => {
+  const quickItems = useMemo(() => {
     const q = query.trim().toLowerCase();
-    const items: Array<{
-      podId: string;
-      podCode: string;
-      channelId: string;
-      label: string;
-      kind: 'TEXT' | 'VOICE';
-    }> = [];
+    const items: QuickSwitchItem[] = [];
     for (const p of pods) {
-      for (const ch of p.channels) {
+      const podDisplay = p.title || `#${p.code}`;
+      const podMatches =
+        !q ||
+        p.code.toLowerCase().includes(q) ||
+        p.title.toLowerCase().includes(q) ||
+        p.interestLabel.toLowerCase().includes(q);
+
+      if (podMatches || 'pod group chat'.includes(q)) {
+        items.push({
+          key: `${p.podId}-group`,
+          podId: p.podId,
+          podCode: p.code,
+          podTitle: podDisplay,
+          label: `Pod Group Chat (${p.memberCount}/${p.maxMembers})`,
+          kind: 'GROUP',
+          peerId: null,
+        });
+      }
+
+      if (podMatches || 'pod audio call voice'.includes(q)) {
+        items.push({
+          key: `${p.podId}-call`,
+          podId: p.podId,
+          podCode: p.code,
+          podTitle: podDisplay,
+          label: 'Pod Audio Call',
+          kind: 'CALL',
+          peerId: null,
+        });
+      }
+
+      const members = presenceByPod[p.podId]?.members ?? p.members;
+      for (const m of members) {
+        if (m.isSelf || m.peerId === p.myPeerId) continue;
         if (
           !q ||
-          p.code.toLowerCase().includes(q) ||
-          p.interestLabel.toLowerCase().includes(q) ||
-          ch.label.toLowerCase().includes(q)
+          m.alias.toLowerCase().includes(q) ||
+          m.customStatus.toLowerCase().includes(q)
         ) {
           items.push({
+            key: `${p.podId}-dm-${m.peerId}`,
             podId: p.podId,
             podCode: p.code,
-            channelId: ch.channelId,
-            label: ch.label,
-            kind: ch.kind,
+            podTitle: podDisplay,
+            label: `${m.alias} · Private 1:1`,
+            kind: 'DM',
+            peerId: m.peerId,
           });
         }
       }
     }
     return items.slice(0, 12);
-  }, [pods, query]);
+  }, [pods, presenceByPod, query]);
 
   if (!open) return null;
 
+  const openConversation = (podId: string, peerId: string | null) => {
+    setActivePodId(podId);
+    setDmPeerMap({ ...dmPeerMap, [podId]: peerId });
+    const key = conversationKey(podId, peerId);
+    setUnreadMap((prev) => {
+      if (!(key in prev)) return prev;
+      const copy = { ...prev };
+      delete copy[key];
+      return copy;
+    });
+  };
+
   const jumpToSearchResult = (msg: RichMessage) => {
-    setActivePodId(msg.podId);
-    setChannelMap({ ...channelMap, [msg.podId]: msg.channelId });
-    if (msg.parentMessageId > 0) {
-      setActiveThreadId(msg.parentMessageId);
-    } else {
-      setActiveThreadId(null);
-      setHighlightedId(msg.id);
-    }
+    const msgPod = pods.find((p) => p.podId === msg.podId) || activePod;
+    const myPeerId = msgPod?.myPeerId || '';
+    const otherPeerId = resolveMessagePeerId(
+      msg.senderPeerId,
+      msg.recipientPeerId,
+      myPeerId
+    );
+    openConversation(msg.podId, otherPeerId);
+    setHighlightedId(msg.id);
     setOpen(false);
   };
 
@@ -141,8 +199,8 @@ export function CommandSearchModal({
             onChange={(e) => setQuery(e.target.value)}
             placeholder={
               activePod
-                ? `Jump to pod/channel or search messages in #${activePod.code}...`
-                : 'Jump to pod or channel...'
+                ? `Jump to Group Chat, member DM, or search #${activePod.code}...`
+                : 'Jump to pod or member DM...'
             }
             style={{
               flex: 1,
@@ -152,7 +210,7 @@ export function CommandSearchModal({
               fontFamily: 'var(--m-font-sans)',
               color: '#232323',
             }}
-            aria-label="Search pods, channels, and messages"
+            aria-label="Search pods, member chats, and messages"
           />
           <button
             type="button"
@@ -166,32 +224,31 @@ export function CommandSearchModal({
 
         <div className={styles.modalBody} style={{ padding: '12px 14px' }}>
           <div className={styles.sectionHeader}>
-            <span>Pods &amp; Channels</span>
+            <span>Group Chats &amp; Private Member DMs</span>
           </div>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
-            {filteredChannels.map((item) => (
+            {quickItems.map((item) => (
               <button
-                key={`${item.podId}-${item.channelId}`}
+                key={item.key}
                 type="button"
                 className={styles.autocompleteItem}
                 onClick={() => {
-                  setActivePodId(item.podId);
-                  if (item.kind === 'VOICE') {
-                    joinVoice(item.podId, item.channelId, item.label);
+                  if (item.kind === 'CALL') {
+                    setActivePodId(item.podId);
+                    joinVoice(item.podId, item.podTitle);
                   } else {
-                    setChannelMap({
-                      ...channelMap,
-                      [item.podId]: item.channelId,
-                    });
+                    openConversation(item.podId, item.peerId);
                   }
                   setOpen(false);
                 }}
               >
                 <span style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                  {item.kind === 'VOICE' ? (
+                  {item.kind === 'CALL' ? (
                     <Volume2 size={15} color="#1f6b3a" />
+                  ) : item.kind === 'DM' ? (
+                    <Lock size={14} color="#1f6b3a" />
                   ) : (
-                    <Hash size={15} />
+                    <Users size={15} color="#1f6b3a" />
                   )}
                   <strong>{item.label}</strong>
                 </span>
@@ -212,7 +269,7 @@ export function CommandSearchModal({
             <div style={{ marginTop: 16 }}>
               <div className={styles.sectionHeader}>
                 <span>
-                  Messages in #{activePod.code} (FULLTEXT Search)
+                  Messages in #{activePod.code} (Group + Your Private DMs)
                 </span>
               </div>
               {searchQuery.isLoading ? (
@@ -228,9 +285,16 @@ export function CommandSearchModal({
                   style={{ display: 'flex', flexDirection: 'column', gap: 6 }}
                 >
                   {searchQuery.data!.messages.map((msg) => {
-                    const ch = activePod.channels.find(
-                      (c) => c.channelId === msg.channelId
+                    const otherPeerId = resolveMessagePeerId(
+                      msg.senderPeerId,
+                      msg.recipientPeerId,
+                      activePod.myPeerId
                     );
+                    const otherAlias =
+                      msg.senderPeerId === activePod.myPeerId
+                        ? msg.recipientAlias || 'Member'
+                        : msg.senderAlias;
+
                     return (
                       <button
                         key={msg.id}
@@ -257,8 +321,9 @@ export function CommandSearchModal({
                             <strong style={{ color: '#232323' }}>
                               {msg.senderAlias}
                             </strong>{' '}
-                            in #{ch?.label || 'channel'}
-                            {msg.parentMessageId > 0 ? ' (thread)' : ''}
+                            {otherPeerId
+                              ? `· Private 1:1 with ${otherAlias}`
+                              : '· Pod Group Chat'}
                           </span>
                           <MessageSquare size={13} />
                         </div>

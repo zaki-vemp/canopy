@@ -1,6 +1,7 @@
 package com.canopy.ws
 
 import com.fasterxml.jackson.databind.ObjectMapper
+import com.canopy.pods.DmSummaryDto
 import com.canopy.pods.MemberDto
 import com.canopy.pods.PodDetailDto
 import com.canopy.util.UuidV7
@@ -10,6 +11,8 @@ import org.springframework.stereotype.Component
 import org.springframework.web.socket.CloseStatus
 import org.springframework.web.socket.TextMessage
 import org.springframework.web.socket.WebSocketSession
+import java.time.LocalDateTime
+import java.time.ZoneOffset
 import java.util.concurrent.ConcurrentHashMap
 
 @Component
@@ -33,16 +36,25 @@ class PodRealtimeHub(
         val peerId: String,
         val alias: String,
         val color: String,
-        val voiceChannelId: String,
         val muted: Boolean,
         val deafened: Boolean,
         val speaking: Boolean
     )
 
+    private data class ActiveDmTyping(
+        val senderUserId: Long,
+        val senderPeerId: String,
+        val senderAlias: String,
+        val targetUserId: Long,
+        val targetPeerId: String,
+        val expiresAtMs: Long
+    )
+
     // ponytail: single-node in-memory WS/voice/typing state; add Redis Pub/Sub when scaling >1 backend instance
     private val sessionsByPod = ConcurrentHashMap<String, ConcurrentHashMap<String, ConnectedSession>>()
     private val voiceByPod = ConcurrentHashMap<String, ConcurrentHashMap<String, VoiceMemberState>>()
-    private val typingByPodChannel = ConcurrentHashMap<String, ConcurrentHashMap<String, Long>>()
+    private val groupTypingByPod = ConcurrentHashMap<String, ConcurrentHashMap<String, Long>>()
+    private val dmTypingByPod = ConcurrentHashMap<String, ConcurrentHashMap<String, ActiveDmTyping>>()
 
     fun registerSession(conn: ConnectedSession) {
         sessionsByPod.computeIfAbsent(conn.podIdHex) { ConcurrentHashMap() }[conn.session.id] = conn
@@ -59,11 +71,13 @@ class PodRealtimeHub(
 
         val stillConnected = podSessions.values.any { it.peerId == removed.peerId && it.session.isOpen }
         if (!stillConnected) {
-            clearAllTypingForAlias(podIdHex, removed.alias)
+            clearAllTypingForMember(podIdHex, removed.peerId, removed.alias)
             val leftVoice = voiceByPod[podIdHex]?.remove(removed.peerId)
             if (leftVoice != null) {
-                resetDbVoiceChannel(removed.podInternalId, removed.userId)
-                broadcastFrame(podIdHex, WsServerFrame.VoiceRosterUpdatedOut(voiceRoster = getVoiceRoster(podIdHex)))
+                setDbInVoice(removed.podInternalId, removed.userId, false)
+                broadcastToPod(podIdHex, WsServerFrame.VoiceRosterUpdatedOut(voicePeers = getVoicePeers(podIdHex)))
+            } else {
+                setDbInVoice(removed.podInternalId, removed.userId, false)
             }
             broadcastPresenceSnapshot(removed.podInternalId, podIdHex)
         }
@@ -74,6 +88,10 @@ class PodRealtimeHub(
         return podSessions.values.any { it.peerId == peerId && it.session.isOpen }
     }
 
+    fun isPeerInVoice(podIdHex: String, peerId: String): Boolean {
+        return voiceByPod[podIdHex]?.containsKey(peerId) == true
+    }
+
     fun getOnlinePeerIds(podIdHex: String): Set<String> {
         val podSessions = sessionsByPod[podIdHex] ?: return emptySet()
         return podSessions.values.asSequence()
@@ -82,29 +100,21 @@ class PodRealtimeHub(
             .toSet()
     }
 
-    fun getPeerVoiceChannelId(podIdHex: String, peerId: String): String? {
-        return voiceByPod[podIdHex]?.get(peerId)?.voiceChannelId
-    }
-
-    fun getVoiceRoster(podIdHex: String): Map<String, List<VoicePeerDto>> {
-        val podVoice = voiceByPod[podIdHex] ?: return emptyMap()
-        if (podVoice.isEmpty()) return emptyMap()
-        val grouped = LinkedHashMap<String, MutableList<VoicePeerDto>>()
-        podVoice.values
+    fun getVoicePeers(podIdHex: String): List<VoicePeerDto> {
+        val podVoice = voiceByPod[podIdHex] ?: return emptyList()
+        if (podVoice.isEmpty()) return emptyList()
+        return podVoice.values
             .sortedBy { it.alias }
-            .forEach { st ->
-                grouped.computeIfAbsent(st.voiceChannelId) { mutableListOf() }.add(
-                    VoicePeerDto(
-                        peerId = st.peerId,
-                        alias = st.alias,
-                        color = st.color,
-                        muted = st.muted,
-                        deafened = st.deafened,
-                        speaking = st.speaking
-                    )
+            .map { st ->
+                VoicePeerDto(
+                    peerId = st.peerId,
+                    alias = st.alias,
+                    color = st.color,
+                    muted = st.muted,
+                    deafened = st.deafened,
+                    speaking = st.speaking
                 )
             }
-        return grouped
     }
 
     fun handleClientFrame(conn: ConnectedSession, frame: WsClientFrame) {
@@ -120,56 +130,122 @@ class PodRealtimeHub(
     }
 
     private fun handleTyping(conn: ConnectedSession, frame: WsClientFrame.TypingIn) {
-        val chId = frame.channelId.trim()
-        if (chId.isEmpty() || chId.length > 64) return
-        val key = "${conn.podIdHex}:$chId"
-        if (frame.isTyping) {
-            typingByPodChannel.computeIfAbsent(key) { ConcurrentHashMap() }[conn.alias] =
-                System.currentTimeMillis() + 8_000L
-        } else {
-            typingByPodChannel[key]?.remove(conn.alias)
+        val rawTarget = frame.targetPeerId?.trim()?.takeIf { it.isNotEmpty() }
+        if (rawTarget == null) {
+            if (frame.isTyping) {
+                groupTypingByPod.computeIfAbsent(conn.podIdHex) { ConcurrentHashMap() }[conn.alias] =
+                    System.currentTimeMillis() + 8_000L
+            } else {
+                groupTypingByPod[conn.podIdHex]?.remove(conn.alias)
+            }
+            broadcastToPod(
+                conn.podIdHex,
+                WsServerFrame.TypingUpdateOut(
+                    targetPeerId = null,
+                    fromPeerId = null,
+                    typingAliases = activeGroupTypingAliases(conn.podIdHex)
+                )
+            )
+            return
         }
-        broadcastFrame(
+
+        if (rawTarget.length > 32 || rawTarget == conn.peerId) return
+        val podPublicBytes = runCatching { UuidV7.fromHex(conn.podIdHex) }.getOrNull() ?: return
+        val targetUserId = resolveMemberUserIdByPeerId(conn.podInternalId, podPublicBytes, rawTarget) ?: return
+        if (targetUserId == conn.userId) return
+
+        val pairKey = "${conn.peerId}->$rawTarget"
+        if (frame.isTyping) {
+            dmTypingByPod.computeIfAbsent(conn.podIdHex) { ConcurrentHashMap() }[pairKey] = ActiveDmTyping(
+                senderUserId = conn.userId,
+                senderPeerId = conn.peerId,
+                senderAlias = conn.alias,
+                targetUserId = targetUserId,
+                targetPeerId = rawTarget,
+                expiresAtMs = System.currentTimeMillis() + 8_000L
+            )
+        } else {
+            dmTypingByPod[conn.podIdHex]?.remove(pairKey)
+        }
+
+        sendToUsers(
             conn.podIdHex,
+            setOf(conn.userId, targetUserId),
             WsServerFrame.TypingUpdateOut(
-                channelId = chId,
-                typingAliases = activeTypingAliases(conn.podIdHex, chId)
+                targetPeerId = rawTarget,
+                fromPeerId = conn.peerId,
+                typingAliases = if (frame.isTyping) listOf(conn.alias) else emptyList()
             )
         )
     }
 
-    fun clearTyping(podIdHex: String, channelIdHex: String, alias: String) {
-        val key = "$podIdHex:$channelIdHex"
-        val removed = typingByPodChannel[key]?.remove(alias)
+    fun clearGroupTyping(podIdHex: String, alias: String) {
+        val removed = groupTypingByPod[podIdHex]?.remove(alias)
         if (removed != null) {
-            broadcastFrame(
+            broadcastToPod(
                 podIdHex,
                 WsServerFrame.TypingUpdateOut(
-                    channelId = channelIdHex,
-                    typingAliases = activeTypingAliases(podIdHex, channelIdHex)
+                    targetPeerId = null,
+                    fromPeerId = null,
+                    typingAliases = activeGroupTypingAliases(podIdHex)
                 )
             )
         }
     }
 
-    private fun clearAllTypingForAlias(podIdHex: String, alias: String) {
-        val prefix = "$podIdHex:"
-        typingByPodChannel.forEach { (key, map) ->
-            if (key.startsWith(prefix) && map.remove(alias) != null) {
-                val chId = key.removePrefix(prefix)
-                broadcastFrame(
+    fun clearDmTyping(
+        podIdHex: String,
+        senderUserId: Long,
+        senderPeerId: String,
+        targetUserId: Long,
+        targetPeerId: String
+    ) {
+        val pairKey = "$senderPeerId->$targetPeerId"
+        val removed = dmTypingByPod[podIdHex]?.remove(pairKey)
+        if (removed != null) {
+            sendToUsers(
+                podIdHex,
+                setOf(senderUserId, targetUserId),
+                WsServerFrame.TypingUpdateOut(
+                    targetPeerId = targetPeerId,
+                    fromPeerId = senderPeerId,
+                    typingAliases = emptyList()
+                )
+            )
+        }
+    }
+
+    private fun clearAllTypingForMember(podIdHex: String, peerId: String, alias: String) {
+        if (groupTypingByPod[podIdHex]?.remove(alias) != null) {
+            broadcastToPod(
+                podIdHex,
+                WsServerFrame.TypingUpdateOut(
+                    targetPeerId = null,
+                    fromPeerId = null,
+                    typingAliases = activeGroupTypingAliases(podIdHex)
+                )
+            )
+        }
+
+        val dmMap = dmTypingByPod[podIdHex] ?: return
+        val prefix = "$peerId->"
+        dmMap.entries.forEach { (key, entry) ->
+            if (key.startsWith(prefix) && dmMap.remove(key, entry)) {
+                sendToUsers(
                     podIdHex,
+                    setOf(entry.senderUserId, entry.targetUserId),
                     WsServerFrame.TypingUpdateOut(
-                        channelId = chId,
-                        typingAliases = activeTypingAliases(podIdHex, chId)
+                        targetPeerId = entry.targetPeerId,
+                        fromPeerId = entry.senderPeerId,
+                        typingAliases = emptyList()
                     )
                 )
             }
         }
     }
 
-    private fun activeTypingAliases(podIdHex: String, channelIdHex: String): List<String> {
-        val map = typingByPodChannel["$podIdHex:$channelIdHex"] ?: return emptyList()
+    private fun activeGroupTypingAliases(podIdHex: String): List<String> {
+        val map = groupTypingByPod[podIdHex] ?: return emptyList()
         val now = System.currentTimeMillis()
         val active = mutableListOf<String>()
         map.entries.forEach { (alias, exp) ->
@@ -182,50 +258,46 @@ class PodRealtimeHub(
         return active.sorted()
     }
 
-    private fun handleVoiceJoin(conn: ConnectedSession, frame: WsClientFrame.VoiceJoinIn) {
-        val vcBytes = try {
-            UuidV7.fromHex(frame.voiceChannelId)
-        } catch (_: IllegalArgumentException) {
-            return
-        }
-        val vcRow = jdbcClient.sql(
+    private fun resolveMemberUserIdByPeerId(
+        podInternalId: Long,
+        podPublicBytes: ByteArray,
+        targetPeerId: String
+    ): Long? {
+        return jdbcClient.sql(
             """
-            SELECT id, public_id
-            FROM pod_channels
-            WHERE pod_id = :podId AND public_id = :publicId AND kind = 2
-            LIMIT 1
+            SELECT pm.user_id, u.public_id AS user_public_id
+            FROM pod_members pm
+            JOIN users u ON u.id = pm.user_id
+            WHERE pm.pod_id = :podId
             """.trimIndent()
         )
-            .param("podId", conn.podInternalId)
-            .param("publicId", vcBytes)
-            .query { rs, _ -> rs.getLong("id") to UuidV7.toHex(rs.getBytes("public_id")) }
-            .optional()
-            .orElse(null) ?: return
+            .param("podId", podInternalId)
+            .query { rs, _ ->
+                rs.getLong("user_id") to UuidV7.peerId(podPublicBytes, rs.getBytes("user_public_id"))
+            }
+            .list()
+            .firstOrNull { it.second == targetPeerId }
+            ?.first
+    }
 
-        val (vcInternalId, vcHex) = vcRow
-        jdbcClient.sql("UPDATE pod_members SET voice_channel_id = :vcId WHERE pod_id = :podId AND user_id = :userId")
-            .param("vcId", vcInternalId)
-            .param("podId", conn.podInternalId)
-            .param("userId", conn.userId)
-            .update()
-
+    private fun handleVoiceJoin(conn: ConnectedSession, frame: WsClientFrame.VoiceJoinIn) {
+        setDbInVoice(conn.podInternalId, conn.userId, true)
         voiceByPod.computeIfAbsent(conn.podIdHex) { ConcurrentHashMap() }[conn.peerId] = VoiceMemberState(
             peerId = conn.peerId,
             alias = conn.alias,
             color = conn.color,
-            voiceChannelId = vcHex,
             muted = frame.muted,
             deafened = frame.deafened,
             speaking = false
         )
-        broadcastFrame(conn.podIdHex, WsServerFrame.VoiceRosterUpdatedOut(voiceRoster = getVoiceRoster(conn.podIdHex)))
+        broadcastToPod(conn.podIdHex, WsServerFrame.VoiceRosterUpdatedOut(voicePeers = getVoicePeers(conn.podIdHex)))
         broadcastPresenceSnapshot(conn.podInternalId, conn.podIdHex)
     }
 
     private fun handleVoiceLeave(conn: ConnectedSession) {
         voiceByPod[conn.podIdHex]?.remove(conn.peerId)
-        resetDbVoiceChannel(conn.podInternalId, conn.userId)
-        broadcastFrame(conn.podIdHex, WsServerFrame.VoiceRosterUpdatedOut(voiceRoster = getVoiceRoster(conn.podIdHex)))
+        setDbInVoice(conn.podInternalId, conn.userId, false)
+        broadcastToPod(conn.podIdHex, WsServerFrame.VoiceRosterUpdatedOut(voicePeers = getVoicePeers(conn.podIdHex)))
         broadcastPresenceSnapshot(conn.podInternalId, conn.podIdHex)
     }
 
@@ -238,16 +310,18 @@ class PodRealtimeHub(
             )
         }
         if (updated != null) {
-            broadcastFrame(conn.podIdHex, WsServerFrame.VoiceRosterUpdatedOut(voiceRoster = getVoiceRoster(conn.podIdHex)))
+            broadcastToPod(conn.podIdHex, WsServerFrame.VoiceRosterUpdatedOut(voicePeers = getVoicePeers(conn.podIdHex)))
         }
     }
 
     private fun handleWebRtcSignal(conn: ConnectedSession, frame: WsClientFrame.WebRtcSignalIn) {
         val targetPeer = frame.targetPeerId.trim()
         if (targetPeer.isEmpty() || targetPeer == conn.peerId) return
+        val podVoice = voiceByPod[conn.podIdHex] ?: return
+        if (!podVoice.containsKey(conn.peerId) || !podVoice.containsKey(targetPeer)) return
+
         val podSessions = sessionsByPod[conn.podIdHex] ?: return
         val out = WsServerFrame.WebRtcSignalOut(
-            voiceChannelId = frame.voiceChannelId,
             fromPeerId = conn.peerId,
             fromAlias = conn.alias,
             signal = frame.signal
@@ -260,103 +334,81 @@ class PodRealtimeHub(
         }
     }
 
-    fun broadcastToPod(podIdHex: String, payloadMap: Map<String, Any?>) {
+    fun sendToUsers(podIdHex: String, userIds: Set<Long>, frame: WsServerFrame) {
+        if (userIds.isEmpty()) return
         val podSessions = sessionsByPod[podIdHex] ?: return
         if (podSessions.isEmpty()) return
-        val json = objectMapper.writeValueAsString(payloadMap)
-        podSessions.values.forEach { target -> sendSafe(target.session, json) }
+
+        podSessions.values.forEach { target ->
+            if (target.userId in userIds && target.session.isOpen) {
+                val personalized = personalizeFrameForTarget(frame, target)
+                sendSafe(target.session, objectMapper.writeValueAsString(personalized))
+            }
+        }
+    }
+
+    fun broadcastToPod(podIdHex: String, frame: WsServerFrame) {
+        val podSessions = sessionsByPod[podIdHex] ?: return
+        if (podSessions.isEmpty()) return
+
+        if (frame is WsServerFrame.PodUpdatedOut) {
+            broadcastPodUpdated(frame.pod)
+            return
+        }
+
+        podSessions.values.forEach { target ->
+            if (target.session.isOpen) {
+                val personalized = personalizeFrameForTarget(frame, target)
+                sendSafe(target.session, objectMapper.writeValueAsString(personalized))
+            }
+        }
     }
 
     fun broadcastFrame(podIdHex: String, frame: WsServerFrame) {
-        val podSessions = sessionsByPod[podIdHex] ?: return
-        if (podSessions.isEmpty()) return
+        broadcastToPod(podIdHex, frame)
+    }
 
-        when (frame) {
-            is WsServerFrame.MemberJoinedOut -> {
-                podSessions.values.forEach { target ->
-                    val personalized = frame.copy(member = frame.member.copy(isSelf = frame.member.peerId == target.peerId))
-                    sendSafe(target.session, objectMapper.writeValueAsString(personalized))
-                }
-            }
-            is WsServerFrame.MessageCreatedOut -> {
-                podSessions.values.forEach { target ->
-                    val personalized = frame.copy(message = frame.message.personalizedForAlias(target.alias))
-                    sendSafe(target.session, objectMapper.writeValueAsString(personalized))
-                }
-            }
-            is WsServerFrame.MessageUpdatedOut -> {
-                podSessions.values.forEach { target ->
-                    val personalized = frame.copy(message = frame.message.personalizedForAlias(target.alias))
-                    sendSafe(target.session, objectMapper.writeValueAsString(personalized))
-                }
-            }
-            is WsServerFrame.ReactionUpdatedOut -> {
-                podSessions.values.forEach { target ->
-                    val personalized = frame.copy(message = frame.message.personalizedForAlias(target.alias))
-                    sendSafe(target.session, objectMapper.writeValueAsString(personalized))
-                }
-            }
-            is WsServerFrame.PinUpdatedOut -> {
-                podSessions.values.forEach { target ->
-                    val personalized = frame.copy(message = frame.message.personalizedForAlias(target.alias))
-                    sendSafe(target.session, objectMapper.writeValueAsString(personalized))
-                }
-            }
-            is WsServerFrame.PollUpdatedOut -> {
-                podSessions.values.forEach { target ->
-                    val personalized = frame.copy(message = frame.message.personalizedForAlias(target.alias))
-                    sendSafe(target.session, objectMapper.writeValueAsString(personalized))
-                }
-            }
-            is WsServerFrame.ThreadReplyCreatedOut -> {
-                podSessions.values.forEach { target ->
-                    val personalized = frame.copy(reply = frame.reply.personalizedForAlias(target.alias))
-                    sendSafe(target.session, objectMapper.writeValueAsString(personalized))
-                }
-            }
-            is WsServerFrame.ProposalUpdatedOut -> {
-                podSessions.values.forEach { target ->
-                    val personalized = frame.copy(proposal = frame.proposal.personalizedForAlias(target.alias))
-                    sendSafe(target.session, objectMapper.writeValueAsString(personalized))
-                }
-            }
-            is WsServerFrame.PodUpdatedOut -> {
-                broadcastPodUpdated(frame.pod)
-            }
-            else -> {
-                val json = objectMapper.writeValueAsString(frame)
-                podSessions.values.forEach { target -> sendSafe(target.session, json) }
-            }
+    private fun personalizeFrameForTarget(frame: WsServerFrame, target: ConnectedSession): WsServerFrame {
+        return when (frame) {
+            is WsServerFrame.MemberJoinedOut ->
+                frame.copy(member = frame.member.copy(isSelf = frame.member.peerId == target.peerId))
+            is WsServerFrame.MessageCreatedOut ->
+                frame.copy(message = frame.message.personalizedForAlias(target.alias))
+            is WsServerFrame.MessageUpdatedOut ->
+                frame.copy(message = frame.message.personalizedForAlias(target.alias))
+            is WsServerFrame.ReactionUpdatedOut ->
+                frame.copy(message = frame.message.personalizedForAlias(target.alias))
+            is WsServerFrame.PinUpdatedOut ->
+                frame.copy(message = frame.message.personalizedForAlias(target.alias))
+            is WsServerFrame.PollUpdatedOut ->
+                frame.copy(message = frame.message.personalizedForAlias(target.alias))
+            is WsServerFrame.ProposalUpdatedOut ->
+                frame.copy(proposal = frame.proposal.personalizedForAlias(target.alias))
+            else -> frame
         }
     }
 
     fun broadcastPodUpdated(pod: PodDetailDto) {
         val podSessions = sessionsByPod[pod.podId] ?: return
         if (podSessions.isEmpty()) return
+
+        val dmCacheByUser = HashMap<Long, List<DmSummaryDto>>()
         podSessions.values.forEach { target ->
+            if (!target.session.isOpen) return@forEach
             val selfMember = pod.members.firstOrNull { it.peerId == target.peerId }
+            val myDms = dmCacheByUser.computeIfAbsent(target.userId) { uid ->
+                loadDmSummariesByPod(uid, listOf(target.podInternalId))[target.podInternalId] ?: emptyList()
+            }
             val personalized = pod.copy(
                 myPeerId = target.peerId,
                 myAlias = selfMember?.alias ?: target.alias,
                 myColor = selfMember?.color ?: target.color,
                 myRole = selfMember?.role ?: "MEMBER",
                 myStatus = selfMember?.customStatus ?: "",
+                dmConversations = myDms,
                 members = pod.members.map { m -> m.copy(isSelf = m.peerId == target.peerId) }
             )
             sendSafe(target.session, objectMapper.writeValueAsString(WsServerFrame.PodUpdatedOut(pod = personalized)))
-        }
-    }
-
-    fun evictVoiceChannel(podIdHex: String, channelIdHex: String) {
-        val podVoice = voiceByPod[podIdHex] ?: return
-        var removedAny = false
-        podVoice.entries.forEach { (peerId, st) ->
-            if (st.voiceChannelId == channelIdHex && podVoice.remove(peerId, st)) {
-                removedAny = true
-            }
-        }
-        if (removedAny) {
-            broadcastFrame(podIdHex, WsServerFrame.VoiceRosterUpdatedOut(voiceRoster = getVoiceRoster(podIdHex)))
         }
     }
 
@@ -366,7 +418,7 @@ class PodRealtimeHub(
 
         val podPublicBytes = UuidV7.fromHex(podIdHex)
         val onlinePeers = getOnlinePeerIds(podIdHex)
-        val roster = getVoiceRoster(podIdHex)
+        val voicePeers = getVoicePeers(podIdHex)
 
         val baseMembers = jdbcClient.sql(
             """
@@ -375,10 +427,9 @@ class PodRealtimeHub(
                    pm.alias_color,
                    pm.role,
                    pm.custom_status,
-                   vc.public_id AS vc_public_id
+                   pm.in_voice
             FROM pod_members pm
             JOIN users u ON u.id = pm.user_id
-            LEFT JOIN pod_channels vc ON vc.id = pm.voice_channel_id AND vc.pod_id = pm.pod_id
             WHERE pm.pod_id = :podId
             ORDER BY pm.joined_at ASC
             """.trimIndent()
@@ -386,16 +437,16 @@ class PodRealtimeHub(
             .param("podId", podInternalId)
             .query { rs, _ ->
                 val peerId = UuidV7.peerId(podPublicBytes, rs.getBytes("user_public_id"))
-                val dbVcHex = rs.getBytes("vc_public_id")?.let { UuidV7.toHex(it) }
-                val activeVc = getPeerVoiceChannelId(podIdHex, peerId) ?: if (peerId in onlinePeers) dbVcHex else null
+                val online = peerId in onlinePeers
+                val inVoice = isPeerInVoice(podIdHex, peerId) || (online && rs.getInt("in_voice") != 0)
                 MemberDto(
                     peerId = peerId,
                     alias = rs.getString("alias"),
                     color = rs.getString("alias_color"),
                     role = rs.getString("role") ?: "MEMBER",
                     customStatus = rs.getString("custom_status") ?: "",
-                    online = peerId in onlinePeers,
-                    voiceChannelId = activeVc,
+                    online = online,
+                    inVoice = inVoice,
                     isSelf = false
                 )
             }
@@ -409,14 +460,14 @@ class PodRealtimeHub(
                 selfPeerId = target.peerId,
                 onlinePeerIds = sortedOnline,
                 members = personalizedMembers,
-                voiceRoster = roster
+                voicePeers = voicePeers
             )
             sendSafe(target.session, objectMapper.writeValueAsString(snapshot))
         }
     }
 
     fun evictMember(podIdHex: String, peerId: String, alias: String) {
-        clearAllTypingForAlias(podIdHex, alias)
+        clearAllTypingForMember(podIdHex, peerId, alias)
         val hadVoice = voiceByPod[podIdHex]?.remove(peerId) != null
 
         val podSessions = sessionsByPod[podIdHex]
@@ -443,23 +494,186 @@ class PodRealtimeHub(
             }
         }
 
-        broadcastFrame(podIdHex, WsServerFrame.MemberLeftOut(peerId = peerId, alias = alias))
+        broadcastToPod(podIdHex, WsServerFrame.MemberLeftOut(peerId = peerId, alias = alias))
         if (hadVoice) {
-            broadcastFrame(podIdHex, WsServerFrame.VoiceRosterUpdatedOut(voiceRoster = getVoiceRoster(podIdHex)))
+            broadcastToPod(podIdHex, WsServerFrame.VoiceRosterUpdatedOut(voicePeers = getVoicePeers(podIdHex)))
         }
         if (remainingPodInternalId != null) {
             broadcastPresenceSnapshot(remainingPodInternalId!!, podIdHex)
         }
     }
 
-    private fun resetDbVoiceChannel(podInternalId: Long, userId: Long) {
+    /**
+     * Batch-loads 1:1 DM conversation summaries (`lastMessageId DESC`) for `callerUserId` across `podIds`
+     * using `idx_messages_convo_cursor` (low side) and `idx_messages_dm_high` (high side) with zero N+1 queries.
+     */
+    fun loadDmSummariesByPod(callerUserId: Long, podIds: List<Long>): Map<Long, List<DmSummaryDto>> {
+        if (callerUserId <= 0L || podIds.isEmpty()) return emptyMap()
+
+        val lastMsgIds = jdbcClient.sql(
+            """
+            SELECT MAX(id) AS last_msg_id
+            FROM messages FORCE INDEX (idx_messages_convo_cursor)
+            WHERE pod_id IN (:podIds) AND dm_user_low_id = :userId
+            GROUP BY pod_id, dm_user_high_id
+            UNION ALL
+            SELECT MAX(id) AS last_msg_id
+            FROM messages FORCE INDEX (idx_messages_dm_high)
+            WHERE pod_id IN (:podIds) AND dm_user_high_id = :userId AND dm_user_low_id > 0
+            GROUP BY pod_id, dm_user_low_id
+            """.trimIndent()
+        )
+            .param("podIds", podIds)
+            .param("userId", callerUserId)
+            .query { rs, _ -> rs.getLong("last_msg_id") }
+            .list()
+            .filter { it > 0L }
+            .distinct()
+
+        if (lastMsgIds.isEmpty()) return emptyMap()
+
+        data class RawDmSummaryRow(
+            val msgId: Long,
+            val podInternalId: Long,
+            val podPublicBytes: ByteArray,
+            val senderUserId: Long,
+            val senderAlias: String,
+            val senderColor: String,
+            val recipientUserId: Long,
+            val recipientAlias: String,
+            val msgType: Int,
+            val body: String,
+            val isDeleted: Boolean,
+            val createdAtIso: String,
+            val callerPublicBytes: ByteArray,
+            val callerLiveAlias: String?,
+            val peerUserId: Long,
+            val peerPublicBytes: ByteArray,
+            val peerLiveAlias: String?,
+            val peerLiveColor: String?
+        )
+
+        val rows = jdbcClient.sql(
+            """
+            SELECT m.id,
+                   m.pod_id,
+                   p.public_id AS pod_public_id,
+                   m.sender_user_id,
+                   m.sender_alias,
+                   m.sender_color,
+                   m.recipient_user_id,
+                   m.recipient_alias,
+                   m.msg_type,
+                   m.body,
+                   m.is_deleted,
+                   m.created_at,
+                   caller_u.public_id AS caller_public_id,
+                   caller_pm.alias AS caller_live_alias,
+                   peer_u.id AS peer_uid,
+                   peer_u.public_id AS peer_public_id,
+                   peer_pm.alias AS peer_live_alias,
+                   peer_pm.alias_color AS peer_live_color
+            FROM messages m
+            JOIN pods p ON p.id = m.pod_id
+            JOIN users caller_u ON caller_u.id = :callerUserId
+            LEFT JOIN pod_members caller_pm ON caller_pm.pod_id = m.pod_id AND caller_pm.user_id = :callerUserId
+            JOIN users peer_u ON peer_u.id = CASE WHEN m.sender_user_id = :callerUserId THEN m.recipient_user_id ELSE m.sender_user_id END
+            LEFT JOIN pod_members peer_pm ON peer_pm.pod_id = m.pod_id AND peer_pm.user_id = peer_u.id
+            WHERE m.id IN (:lastMsgIds)
+            """.trimIndent()
+        )
+            .param("callerUserId", callerUserId)
+            .param("lastMsgIds", lastMsgIds)
+            .query { rs, _ ->
+                val createdLdt = rs.getObject("created_at", LocalDateTime::class.java)
+                RawDmSummaryRow(
+                    msgId = rs.getLong("id"),
+                    podInternalId = rs.getLong("pod_id"),
+                    podPublicBytes = rs.getBytes("pod_public_id"),
+                    senderUserId = rs.getLong("sender_user_id"),
+                    senderAlias = rs.getString("sender_alias"),
+                    senderColor = rs.getString("sender_color"),
+                    recipientUserId = rs.getLong("recipient_user_id"),
+                    recipientAlias = rs.getString("recipient_alias") ?: "",
+                    msgType = rs.getInt("msg_type"),
+                    body = rs.getString("body") ?: "",
+                    isDeleted = rs.getInt("is_deleted") != 0,
+                    createdAtIso = (createdLdt ?: LocalDateTime.now(ZoneOffset.UTC)).toInstant(ZoneOffset.UTC).toString(),
+                    callerPublicBytes = rs.getBytes("caller_public_id"),
+                    callerLiveAlias = rs.getString("caller_live_alias"),
+                    peerUserId = rs.getLong("peer_uid"),
+                    peerPublicBytes = rs.getBytes("peer_public_id"),
+                    peerLiveAlias = rs.getString("peer_live_alias"),
+                    peerLiveColor = rs.getString("peer_live_color")
+                )
+            }
+            .list()
+
+        val blankActiveMsgIds = rows.filter { !it.isDeleted && it.body.isBlank() }.map { it.msgId }
+        val voiceNoteMsgIds = HashSet<Long>()
+        if (blankActiveMsgIds.isNotEmpty()) {
+            jdbcClient.sql(
+                """
+                SELECT message_id, kind
+                FROM message_attachments
+                WHERE message_id IN (:msgIds)
+                """.trimIndent()
+            )
+                .param("msgIds", blankActiveMsgIds)
+                .query { rs ->
+                    if (rs.getString("kind").equals("voice_note", ignoreCase = true)) {
+                        voiceNoteMsgIds.add(rs.getLong("message_id"))
+                    }
+                }
+        }
+
+        val grouped = HashMap<Long, MutableList<DmSummaryDto>>()
+        for (r in rows) {
+            val podHex = UuidV7.toHex(r.podPublicBytes)
+            val peerId = UuidV7.peerId(r.podPublicBytes, r.peerPublicBytes)
+            val callerPeerId = UuidV7.peerId(r.podPublicBytes, r.callerPublicBytes)
+
+            val peerAlias = r.peerLiveAlias
+                ?: (if (r.senderUserId == r.peerUserId) r.senderAlias else r.recipientAlias).ifBlank { "Member" }
+            val peerColor = r.peerLiveColor
+                ?: (if (r.senderUserId == r.peerUserId) r.senderColor else "#334155")
+            val callerAlias = r.callerLiveAlias
+                ?: (if (r.senderUserId == callerUserId) r.senderAlias else r.recipientAlias)
+
+            val lastBody = when {
+                r.isDeleted -> "Message deleted"
+                r.body.isNotBlank() -> r.body.take(240)
+                r.msgType == 4 || r.msgId in voiceNoteMsgIds -> "Voice note"
+                else -> "Sent an attachment"
+            }
+
+            grouped.computeIfAbsent(r.podInternalId) { mutableListOf() }.add(
+                DmSummaryDto(
+                    peerId = peerId,
+                    peerAlias = peerAlias,
+                    peerColor = peerColor,
+                    online = isPeerOnline(podHex, peerId),
+                    lastMessageId = r.msgId,
+                    lastBody = lastBody,
+                    lastSenderPeerId = if (r.senderUserId == callerUserId) callerPeerId else peerId,
+                    lastSenderAlias = if (r.senderUserId == callerUserId) callerAlias else peerAlias,
+                    lastCreatedAt = r.createdAtIso
+                )
+            )
+        }
+
+        return grouped.mapValues { (_, list) -> list.sortedByDescending { it.lastMessageId } }
+    }
+
+    private fun setDbInVoice(podInternalId: Long, userId: Long, inVoice: Boolean) {
         try {
-            jdbcClient.sql("UPDATE pod_members SET voice_channel_id = 0 WHERE pod_id = :podId AND user_id = :userId")
+            jdbcClient.sql("UPDATE pod_members SET in_voice = :inVoice WHERE pod_id = :podId AND user_id = :userId")
+                .param("inVoice", if (inVoice) 1 else 0)
                 .param("podId", podInternalId)
                 .param("userId", userId)
                 .update()
         } catch (ex: Exception) {
-            log.debug("Voice channel DB reset skipped: {}", ex.message)
+            log.debug("in_voice DB update skipped: {}", ex.message)
         }
     }
 

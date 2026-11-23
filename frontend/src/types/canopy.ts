@@ -18,17 +18,6 @@ export interface InterestItem {
   selected: boolean;
 }
 
-export type ChannelKind = 'TEXT' | 'VOICE';
-
-export interface PodChannel {
-  channelId: string;
-  slug: string;
-  label: string;
-  topic: string;
-  kind: ChannelKind;
-  position: number;
-}
-
 export type PodMemberRole = 'OWNER' | 'ADMIN' | 'MEMBER';
 
 export type PodGovernanceMode = 'DEMOCRATIC' | 'ADMIN';
@@ -40,8 +29,20 @@ export interface PodMember {
   role: PodMemberRole;
   customStatus: string;
   online: boolean;
-  voiceChannelId: string | null;
+  inVoice: boolean;
   isSelf?: boolean;
+}
+
+export interface DmConversationSummary {
+  peerId: string;
+  peerAlias: string;
+  peerColor: string;
+  online: boolean;
+  lastMessageId: number;
+  lastBody: string;
+  lastSenderPeerId: string;
+  lastSenderAlias: string;
+  lastCreatedAt: string;
 }
 
 export type PodCapacityPreset = null | 10 | 25 | 50;
@@ -87,14 +88,12 @@ export interface PodDetail {
   memberCount: number;
   maxMembers: number;
   openProposalsCount: number;
-  channels: PodChannel[];
+  dmConversations?: DmConversationSummary[];
   members: PodMember[];
 }
 
 export type ProposalKind =
   | 'KICK_MEMBER'
-  | 'ADD_CHANNEL'
-  | 'REMOVE_CHANNEL'
   | 'RENAME_POD'
   | 'UPDATE_TOPIC'
   | 'CHANGE_CAPACITY'
@@ -127,12 +126,10 @@ export interface PodProposalDto {
 export interface CreateProposalRequest {
   kind: ProposalKind;
   targetPeerId?: string;
-  channelId?: string;
   label?: string;
   title?: string;
   topic?: string;
   description?: string;
-  channelKind?: ChannelKind;
   maxMembers?: 10 | 25 | 50;
   locked?: boolean;
   messageId?: number;
@@ -311,15 +308,14 @@ export interface QuotedMessage {
 export interface RichMessage {
   id: number;
   podId: string;
-  channelId: string;
   senderPeerId: string;
   senderAlias: string;
   senderColor: string;
-  parentMessageId: number;
+  recipientPeerId: string | null;
+  recipientAlias: string | null;
   quoteMessage: QuotedMessage | null;
   msgType: MessageKind;
   body: string;
-  replyCount: number;
   isPinned: boolean;
   isBookmarked: boolean;
   isDeleted: boolean;
@@ -336,14 +332,76 @@ export interface MessagesPage {
   nextBeforeId: number;
 }
 
-export interface ThreadPayload {
-  parent: RichMessage;
-  replies: RichMessage[];
+export interface PostMessageResponse {
+  message?: RichMessage | null;
+  commandHandled?: string | null;
 }
 
-export interface PostMessageResponse {
-  message?: RichMessage;
-  commandHandled?: string;
+export function conversationKey(podId: string, peerId: string | null): string {
+  return peerId ? `${podId}:dm:${peerId}` : `${podId}:group`;
+}
+
+export function resolveMessagePeerId(
+  senderPeerId: string,
+  recipientPeerId: string | null | undefined,
+  myPeerId: string
+): string | null {
+  if (!recipientPeerId) return null;
+  return senderPeerId === myPeerId ? recipientPeerId : senderPeerId;
+}
+
+export function messageQueryKey(
+  podId: string,
+  peerId: string | null
+): readonly ['messages', string, 'group'] | readonly ['messages', string, 'dm', string] {
+  return peerId
+    ? (['messages', podId, 'dm', peerId] as const)
+    : (['messages', podId, 'group'] as const);
+}
+
+export function deriveDmPreviewBody(
+  msg: Pick<RichMessage, 'body' | 'attachments' | 'isDeleted'>
+): string {
+  if (msg.isDeleted) return 'Message deleted';
+  const trimmed = msg.body.trim();
+  if (trimmed) return trimmed;
+  if (
+    msg.attachments.some(
+      (a) => a.kind === 'voice_note' || a.mimeType.startsWith('audio/')
+    )
+  ) {
+    return 'Sent a voice note';
+  }
+  if (msg.attachments.some((a) => a.kind === 'image' || a.mimeType.startsWith('image/'))) {
+    return 'Sent a photo';
+  }
+  if (msg.attachments.length > 0) {
+    return 'Sent an attachment';
+  }
+  return '';
+}
+
+export function sortMembersWithDmConversations(
+  members: PodMember[],
+  myPeerId: string,
+  dmConversations: DmConversationSummary[] = []
+): PodMember[] {
+  const dmByPeer = new Map<string, DmConversationSummary>();
+  for (const dm of dmConversations) {
+    dmByPeer.set(dm.peerId, dm);
+  }
+  return members
+    .filter((m) => !m.isSelf && m.peerId !== myPeerId)
+    .sort((a, b) => {
+      const dmA = dmByPeer.get(a.peerId);
+      const dmB = dmByPeer.get(b.peerId);
+      if (dmA && dmB) return dmB.lastMessageId - dmA.lastMessageId;
+      if (dmA) return -1;
+      if (dmB) return 1;
+      if (a.online !== b.online) return a.online ? -1 : 1;
+      if (a.inVoice !== b.inVoice) return a.inVoice ? -1 : 1;
+      return a.alias.localeCompare(b.alias);
+    });
 }
 
 export interface VoicePeer {
@@ -361,10 +419,9 @@ export interface WebRtcSignalPayload {
 }
 
 export type WsOutboundFrame =
-  | { type: 'typing'; channelId: string; isTyping: boolean }
+  | { type: 'typing'; targetPeerId: string | null; isTyping: boolean }
   | {
       type: 'voice_join';
-      voiceChannelId: string;
       muted: boolean;
       deafened: boolean;
     }
@@ -378,9 +435,9 @@ export type WsOutboundFrame =
   | {
       type: 'webrtc_signal';
       targetPeerId: string;
-      voiceChannelId: string;
       signal: WebRtcSignalPayload;
-    };
+    }
+  | { type: 'ping' };
 
 export type WsInboundFrame =
   | {
@@ -389,58 +446,39 @@ export type WsInboundFrame =
       selfPeerId: string;
       onlinePeerIds: string[];
       members: PodMember[];
-      voiceRoster: Record<string, VoicePeer[]>;
+      voicePeers: VoicePeer[];
     }
   | {
       type: 'typing_update';
-      channelId: string;
+      targetPeerId: string | null;
+      fromPeerId: string | null;
       typingAliases: string[];
     }
   | {
       type: 'message_created';
-      channelId: string;
       message: RichMessage;
     }
   | {
-      type: 'thread_reply_created';
-      channelId: string;
-      parentMessageId: number;
-      reply: RichMessage;
-      parentReplyCount: number;
-    }
-  | {
       type: 'message_updated';
-      channelId: string;
       message: RichMessage;
     }
   | {
       type: 'message_deleted';
-      channelId: string;
       messageId: number;
-      parentMessageId: number;
+      senderPeerId: string;
+      recipientPeerId: string | null;
     }
   | {
       type: 'reaction_updated';
-      channelId: string;
       message: RichMessage;
     }
   | {
       type: 'pin_updated';
-      channelId: string;
       message: RichMessage;
     }
   | {
       type: 'poll_updated';
-      channelId: string;
       message: RichMessage;
-    }
-  | {
-      type: 'channel_created';
-      channel: PodChannel;
-    }
-  | {
-      type: 'channel_deleted';
-      channelId: string;
     }
   | {
       type: 'member_joined';
@@ -466,20 +504,21 @@ export type WsInboundFrame =
     }
   | {
       type: 'voice_roster_updated';
-      voiceRoster: Record<string, VoicePeer[]>;
+      voicePeers: VoicePeer[];
     }
   | {
       type: 'webrtc_signal';
-      voiceChannelId: string;
       fromPeerId: string;
       fromAlias: string;
       signal: WebRtcSignalPayload;
+    }
+  | {
+      type: 'pong';
     };
 
 export type RightPanelMode =
   | 'members'
   | 'votes'
-  | 'thread'
   | 'pins'
   | 'bookmarks'
   | 'search'

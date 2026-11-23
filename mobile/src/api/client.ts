@@ -7,6 +7,7 @@ import type {
   CreateCustomPodRequest,
   CreateInviteRequest,
   CreateProposalRequest,
+  DmSummaryDto,
   InterestItem,
   LeavePodRequest,
   LeavePodResponse,
@@ -14,16 +15,14 @@ import type {
   MatchPodsResponse,
   MessagesPage,
   PlanTier,
-  PodChannel,
-  PodDetail,
+  PodDetailDto,
   PodInviteDto,
   PodMemberRole,
   PodProposalDto,
   PostMessageResponse,
   PublicizedPodDto,
-  RichMessage,
+  RichMessageDto,
   SelfUser,
-  ThreadPayload,
   UpdatePodSettingsRequest,
 } from '../types/canopy';
 
@@ -255,7 +254,7 @@ export async function updatePlanTier(
   });
 }
 
-// --- Blind Pods, Matching & Channels ---
+// --- Blind Pods & Matching ---
 
 export async function fetchInterests(): Promise<{ interests: InterestItem[] }> {
   return apiFetch<{ interests: InterestItem[] }>('/api/interests');
@@ -279,18 +278,8 @@ export async function matchPods(
   });
 }
 
-export async function fetchPods(): Promise<{ pods: PodDetail[] }> {
-  return apiFetch<{ pods: PodDetail[] }>('/api/pods');
-}
-
-export async function createChannel(
-  podId: string,
-  payload: { label: string; topic: string; kind: 'TEXT' | 'VOICE' }
-): Promise<{ channel: PodChannel }> {
-  return apiFetch<{ channel: PodChannel }>(`/api/pods/${podId}/channels`, {
-    method: 'POST',
-    body: JSON.stringify(payload),
-  });
+export async function fetchPods(): Promise<{ pods: PodDetailDto[] }> {
+  return apiFetch<{ pods: PodDetailDto[] }>('/api/pods');
 }
 
 export async function updatePodStatus(
@@ -326,8 +315,8 @@ export async function fetchPodProposals(
 export async function createPodProposal(
   podId: string,
   payload: CreateProposalRequest
-): Promise<{ proposal: PodProposalDto; pod: PodDetail }> {
-  return apiFetch<{ proposal: PodProposalDto; pod: PodDetail }>(
+): Promise<{ proposal: PodProposalDto; pod: PodDetailDto }> {
+  return apiFetch<{ proposal: PodProposalDto; pod: PodDetailDto }>(
     `/api/pods/${podId}/proposals`,
     {
       method: 'POST',
@@ -339,8 +328,8 @@ export async function createPodProposal(
 export async function voteProposal(
   proposalId: number,
   vote: boolean
-): Promise<{ proposal: PodProposalDto; pod: PodDetail | null }> {
-  return apiFetch<{ proposal: PodProposalDto; pod: PodDetail | null }>(
+): Promise<{ proposal: PodProposalDto; pod: PodDetailDto | null }> {
+  return apiFetch<{ proposal: PodProposalDto; pod: PodDetailDto | null }>(
     `/api/proposals/${proposalId}/vote`,
     {
       method: 'POST',
@@ -351,8 +340,8 @@ export async function voteProposal(
 
 export async function resolveProposal(
   proposalId: number
-): Promise<{ proposal: PodProposalDto; pod: PodDetail | null }> {
-  return apiFetch<{ proposal: PodProposalDto; pod: PodDetail | null }>(
+): Promise<{ proposal: PodProposalDto; pod: PodDetailDto | null }> {
+  return apiFetch<{ proposal: PodProposalDto; pod: PodDetailDto | null }>(
     `/api/proposals/${proposalId}/resolve`,
     { method: 'POST' }
   );
@@ -371,8 +360,8 @@ export async function fetchPublicizedPods(
 
 export async function joinPublicizedPod(
   podId: string
-): Promise<{ pod: PodDetail; pods: PodDetail[] }> {
-  return apiFetch<{ pod: PodDetail; pods: PodDetail[] }>(
+): Promise<{ pod: PodDetailDto; pods: PodDetailDto[] }> {
+  return apiFetch<{ pod: PodDetailDto; pods: PodDetailDto[] }>(
     `/api/pods/${podId}/join`,
     { method: 'POST' }
   );
@@ -380,8 +369,8 @@ export async function joinPublicizedPod(
 
 export async function createCustomPod(
   payload: CreateCustomPodRequest
-): Promise<{ pod: PodDetail; pods: PodDetail[] }> {
-  return apiFetch<{ pod: PodDetail; pods: PodDetail[] }>('/api/pods/custom', {
+): Promise<{ pod: PodDetailDto; pods: PodDetailDto[] }> {
+  return apiFetch<{ pod: PodDetailDto; pods: PodDetailDto[] }>('/api/pods/custom', {
     method: 'POST',
     body: JSON.stringify(payload),
   });
@@ -390,8 +379,8 @@ export async function createCustomPod(
 export async function updatePodSettings(
   podId: string,
   payload: UpdatePodSettingsRequest
-): Promise<{ pod: PodDetail }> {
-  return apiFetch<{ pod: PodDetail }>(`/api/pods/${podId}/settings`, {
+): Promise<{ pod: PodDetailDto }> {
+  return apiFetch<{ pod: PodDetailDto }>(`/api/pods/${podId}/settings`, {
     method: 'PATCH',
     body: JSON.stringify(payload),
   });
@@ -400,8 +389,8 @@ export async function updatePodSettings(
 export async function adminKickMember(
   podId: string,
   targetPeerId: string
-): Promise<{ pod: PodDetail }> {
-  return apiFetch<{ pod: PodDetail }>(`/api/pods/${podId}/admin/kick`, {
+): Promise<{ pod: PodDetailDto }> {
+  return apiFetch<{ pod: PodDetailDto }>(`/api/pods/${podId}/admin/kick`, {
     method: 'POST',
     body: JSON.stringify({ targetPeerId }),
   });
@@ -411,21 +400,11 @@ export async function adminUpdateMemberRole(
   podId: string,
   targetPeerId: string,
   role: Exclude<PodMemberRole, 'OWNER'>
-): Promise<{ pod: PodDetail }> {
-  return apiFetch<{ pod: PodDetail }>(`/api/pods/${podId}/admin/role`, {
+): Promise<{ pod: PodDetailDto }> {
+  return apiFetch<{ pod: PodDetailDto }>(`/api/pods/${podId}/admin/role`, {
     method: 'POST',
     body: JSON.stringify({ targetPeerId, role }),
   });
-}
-
-export async function deletePodChannel(
-  podId: string,
-  channelId: string
-): Promise<{ pod: PodDetail }> {
-  return apiFetch<{ pod: PodDetail }>(
-    `/api/pods/${podId}/channels/${channelId}`,
-    { method: 'DELETE' }
-  );
 }
 
 // --- Pod Invites & Join-by-Code ---
@@ -491,46 +470,68 @@ export async function acceptPodInvite(
   );
 }
 
-// --- Rich Chat, Threads, Polls, Pins, Bookmarks, Search & Voice Notes ---
+// --- Pod Group Chat + 1:1 Private Member Messages (DMs) ---
 
-export async function fetchMessages(
+export async function fetchPodMessages(
   podId: string,
-  channelId: string,
   beforeId = 0,
   limit = 40
 ): Promise<MessagesPage> {
   return apiFetch<MessagesPage>(
-    `/api/pods/${podId}/channels/${channelId}/messages?beforeId=${beforeId}&limit=${limit}`
+    `/api/pods/${podId}/messages?beforeId=${beforeId}&limit=${limit}`
   );
 }
 
-export async function fetchThread(
+export async function postPodMessage(
   podId: string,
-  channelId: string,
-  parentMessageId: number
-): Promise<ThreadPayload> {
-  return apiFetch<ThreadPayload>(
-    `/api/pods/${podId}/channels/${channelId}/threads/${parentMessageId}`
-  );
-}
-
-export async function postMessage(
-  podId: string,
-  channelId: string,
   payload: {
     body: string;
-    parentMessageId?: number;
+    quoteMessageId?: number;
+    attachmentIds?: number[];
+  }
+): Promise<PostMessageResponse> {
+  return apiFetch<PostMessageResponse>(`/api/pods/${podId}/messages`, {
+    method: 'POST',
+    body: JSON.stringify({
+      body: payload.body,
+      quoteMessageId: payload.quoteMessageId ?? 0,
+      attachmentIds: payload.attachmentIds ?? [],
+    }),
+  });
+}
+
+export async function fetchPodDms(
+  podId: string
+): Promise<{ conversations: DmSummaryDto[] }> {
+  return apiFetch<{ conversations: DmSummaryDto[] }>(`/api/pods/${podId}/dms`);
+}
+
+export async function fetchDmMessages(
+  podId: string,
+  peerId: string,
+  beforeId = 0,
+  limit = 40
+): Promise<MessagesPage> {
+  return apiFetch<MessagesPage>(
+    `/api/pods/${podId}/dms/${encodeURIComponent(peerId)}/messages?beforeId=${beforeId}&limit=${limit}`
+  );
+}
+
+export async function postDmMessage(
+  podId: string,
+  peerId: string,
+  payload: {
+    body: string;
     quoteMessageId?: number;
     attachmentIds?: number[];
   }
 ): Promise<PostMessageResponse> {
   return apiFetch<PostMessageResponse>(
-    `/api/pods/${podId}/channels/${channelId}/messages`,
+    `/api/pods/${podId}/dms/${encodeURIComponent(peerId)}/messages`,
     {
       method: 'POST',
       body: JSON.stringify({
         body: payload.body,
-        parentMessageId: payload.parentMessageId ?? 0,
         quoteMessageId: payload.quoteMessageId ?? 0,
         attachmentIds: payload.attachmentIds ?? [],
       }),
@@ -541,8 +542,8 @@ export async function postMessage(
 export async function editMessage(
   messageId: number,
   body: string
-): Promise<{ message: RichMessage }> {
-  return apiFetch<{ message: RichMessage }>(`/api/messages/${messageId}`, {
+): Promise<{ message: RichMessageDto }> {
+  return apiFetch<{ message: RichMessageDto }>(`/api/messages/${messageId}`, {
     method: 'PATCH',
     body: JSON.stringify({ body }),
   });
@@ -559,8 +560,8 @@ export async function deleteMessage(
 export async function toggleReaction(
   messageId: number,
   emoji: string
-): Promise<{ message: RichMessage }> {
-  return apiFetch<{ message: RichMessage }>(
+): Promise<{ message: RichMessageDto }> {
+  return apiFetch<{ message: RichMessageDto }>(
     `/api/messages/${messageId}/reactions`,
     {
       method: 'POST',
@@ -571,16 +572,16 @@ export async function toggleReaction(
 
 export async function togglePin(
   messageId: number
-): Promise<{ message: RichMessage }> {
-  return apiFetch<{ message: RichMessage }>(`/api/messages/${messageId}/pin`, {
+): Promise<{ message: RichMessageDto }> {
+  return apiFetch<{ message: RichMessageDto }>(`/api/messages/${messageId}/pin`, {
     method: 'POST',
   });
 }
 
 export async function toggleBookmark(
   messageId: number
-): Promise<{ bookmarked: boolean; message: RichMessage }> {
-  return apiFetch<{ bookmarked: boolean; message: RichMessage }>(
+): Promise<{ bookmarked: boolean; message: RichMessageDto }> {
+  return apiFetch<{ bookmarked: boolean; message: RichMessageDto }>(
     `/api/messages/${messageId}/bookmark`,
     { method: 'POST' }
   );
@@ -589,8 +590,8 @@ export async function toggleBookmark(
 export async function votePoll(
   pollId: number,
   optionIndex: number
-): Promise<{ message: RichMessage }> {
-  return apiFetch<{ message: RichMessage }>(`/api/polls/${pollId}/vote`, {
+): Promise<{ message: RichMessageDto }> {
+  return apiFetch<{ message: RichMessageDto }>(`/api/polls/${pollId}/vote`, {
     method: 'POST',
     body: JSON.stringify({ optionIndex }),
   });
@@ -598,19 +599,19 @@ export async function votePoll(
 
 export async function fetchPins(
   podId: string
-): Promise<{ messages: RichMessage[] }> {
-  return apiFetch<{ messages: RichMessage[] }>(`/api/pods/${podId}/pins`);
+): Promise<{ messages: RichMessageDto[] }> {
+  return apiFetch<{ messages: RichMessageDto[] }>(`/api/pods/${podId}/pins`);
 }
 
-export async function fetchBookmarks(): Promise<{ messages: RichMessage[] }> {
-  return apiFetch<{ messages: RichMessage[] }>('/api/bookmarks');
+export async function fetchBookmarks(): Promise<{ messages: RichMessageDto[] }> {
+  return apiFetch<{ messages: RichMessageDto[] }>('/api/bookmarks');
 }
 
 export async function searchPodMessages(
   podId: string,
   query: string
-): Promise<{ messages: RichMessage[] }> {
-  return apiFetch<{ messages: RichMessage[] }>(
+): Promise<{ messages: RichMessageDto[] }> {
+  return apiFetch<{ messages: RichMessageDto[] }>(
     `/api/pods/${podId}/search?q=${encodeURIComponent(query)}`
   );
 }

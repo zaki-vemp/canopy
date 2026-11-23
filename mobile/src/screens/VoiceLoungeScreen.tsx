@@ -17,19 +17,19 @@ import {
   activeTabAtom,
   activeVoiceSessionAtom,
   lastWebRtcSignalAtom,
-  voiceRosterByPodAtom,
+  voicePeersByPodAtom,
   wsConnectedAtom,
 } from '../state/atoms';
 import type {
-  PodChannel,
-  PodDetail,
-  VoicePeer,
+  PodDetailDto,
+  VoicePeerDto,
   WsOutboundFrame,
 } from '../types/canopy';
 import {
   PALETTE,
   TOUCH_MIN,
   aliasInitials,
+  capacityTierBadge,
   safePeerColor,
 } from '../theme/palette';
 
@@ -47,7 +47,7 @@ export function VoiceLoungeScreen({
   const [activePodId, setActivePodId] = useAtom(activePodIdAtom);
   const setActiveTab = useSetAtom(activeTabAtom);
   const [voiceSession, setVoiceSession] = useAtom(activeVoiceSessionAtom);
-  const voiceRosters = useAtomValue(voiceRosterByPodAtom);
+  const voicePeersByPod = useAtomValue(voicePeersByPodAtom);
   const wsConnected = useAtomValue(wsConnectedAtom);
   const lastSignal = useAtomValue(lastWebRtcSignalAtom);
 
@@ -62,7 +62,7 @@ export function VoiceLoungeScreen({
   });
 
   const pods = podsQuery.data?.pods ?? [];
-  const activePod: PodDetail | null = useMemo(() => {
+  const activePod: PodDetailDto | null = useMemo(() => {
     if (pods.length === 0) return null;
     return pods.find((p) => p.podId === activePodId) ?? pods[0];
   }, [pods, activePodId]);
@@ -123,7 +123,7 @@ export function VoiceLoungeScreen({
     }
   };
 
-  const handleJoinChannel = async (channel: PodChannel) => {
+  const handleJoinCall = async () => {
     if (!activePod) return;
     setStatusNotice(null);
     stopLocalCapture();
@@ -131,14 +131,12 @@ export function VoiceLoungeScreen({
     const micMode = await acquireMicWithFallback();
     const sent = sendFrame({
       type: 'voice_join',
-      voiceChannelId: channel.channelId,
       muted: micMode !== 'live',
       deafened: false,
     });
 
     setVoiceSession({
       podId: activePod.podId,
-      voiceChannelId: channel.channelId,
       muted: micMode !== 'live',
       deafened: false,
       speaking: false,
@@ -147,22 +145,22 @@ export function VoiceLoungeScreen({
 
     if (!sent) {
       setStatusNotice(
-        'Joining lounge (reconnecting live WebSocket to server)...'
+        'Joining Pod Audio Call (reconnecting live WebSocket to server)...'
       );
     } else if (micMode === 'listen-synth') {
       setStatusNotice(
         'Connected in Listen / Synth mode (no hardware mic detected — use Push-to-Talk Pulse to test speaking ring).'
       );
     } else {
-      setStatusNotice(`Connected to 🔊 ${channel.label} with live mic.`);
+      setStatusNotice('Connected to Pod Audio Call with live mic.');
     }
   };
 
-  const handleLeaveVoice = () => {
+  const handleLeaveCall = () => {
     stopLocalCapture();
     sendFrame({ type: 'voice_leave' });
     setVoiceSession(null);
-    setStatusNotice('Left voice lounge.');
+    setStatusNotice('Left Pod Audio Call.');
   };
 
   const handleToggleMute = () => {
@@ -228,7 +226,7 @@ export function VoiceLoungeScreen({
         <Ionicons name="mic-circle-outline" size={38} color={PALETTE.forest} />
         <Text style={styles.emptyTitle}>No Active Pod Selected</Text>
         <Text style={styles.emptySub}>
-          Join a pod first to drop into Lounge Voice or Co-op & Focus.
+          Join a pod first to hop into its shared peer-blind Audio Call.
         </Text>
         <Pressable
           accessibilityRole="button"
@@ -241,65 +239,64 @@ export function VoiceLoungeScreen({
     );
   }
 
-  const voiceChannels = activePod.channels.filter((c) => c.kind === 'VOICE');
-  const podRoster = voiceRosters[activePod.podId] ?? {};
-
-  const getPeersForChannel = (channelId: string): VoicePeer[] => {
-    const fromWs = podRoster[channelId];
-    if (fromWs && fromWs.length > 0) return fromWs;
-
-    // Fallback to initial pod member snapshot + local optimistic session
-    const snapshotPeers: VoicePeer[] = activePod.members
-      .filter((m) => m.voiceChannelId === channelId)
-      .map((m) => ({
-        peerId: m.peerId,
-        alias: m.alias,
-        color: m.color,
-        muted: false,
-        deafened: false,
-        speaking: false,
-      }));
-
-    if (
-      voiceSession &&
-      voiceSession.podId === activePod.podId &&
-      voiceSession.voiceChannelId === channelId &&
-      !snapshotPeers.some((p) => p.peerId === activePod.myPeerId)
-    ) {
-      snapshotPeers.push({
-        peerId: activePod.myPeerId,
-        alias: activePod.myAlias,
-        color: activePod.myColor,
-        muted: voiceSession.muted,
-        deafened: voiceSession.deafened,
-        speaking: voiceSession.speaking,
-      });
-    }
-    return snapshotPeers;
-  };
-
   const activeSessionInThisPod =
     voiceSession && voiceSession.podId === activePod.podId
       ? voiceSession
       : null;
 
-  const connectedChannel = activeSessionInThisPod
-    ? voiceChannels.find(
-        (c) => c.channelId === activeSessionInThisPod.voiceChannelId
-      )
-    : null;
+  const connectedPeers: VoicePeerDto[] = (() => {
+    const wsPeers = voicePeersByPod[activePod.podId];
+    const base: VoicePeerDto[] =
+      wsPeers && wsPeers.length > 0
+        ? [...wsPeers]
+        : activePod.members
+            .filter((m) => m.inVoice)
+            .map((m) => ({
+              peerId: m.peerId,
+              alias: m.alias,
+              color: m.color,
+              muted: false,
+              deafened: false,
+              speaking: false,
+            }));
+
+    if (
+      activeSessionInThisPod &&
+      !base.some((p) => p.peerId === activePod.myPeerId)
+    ) {
+      base.push({
+        peerId: activePod.myPeerId,
+        alias: activePod.myAlias,
+        color: activePod.myColor,
+        muted: activeSessionInThisPod.muted,
+        deafened: activeSessionInThisPod.deafened,
+        speaking: activeSessionInThisPod.speaking,
+      });
+    }
+    return base;
+  })();
+
+  const displayPodTitle = activePod.title?.trim()
+    ? activePod.title
+    : `#${activePod.code}`;
 
   return (
     <ScrollView
       style={styles.container}
       contentContainerStyle={styles.content}
     >
-      {/* Top Pod Switcher Strip */}
+      {/* Top Pod Audio Call Header */}
       <View style={styles.headerCard}>
         <View style={styles.headerTopRow}>
-          <View>
-            <Text style={styles.headerLabel}>PERSISTENT VOICE LOUNGES</Text>
-            <Text style={styles.headerTitle}>#{activePod.code}</Text>
+          <View style={styles.headerTitleWrap}>
+            <Text style={styles.headerLabel}>POD AUDIO CALL</Text>
+            <Text style={styles.headerTitle} numberOfLines={1}>
+              {displayPodTitle}
+            </Text>
+            <Text style={styles.headerTier}>
+              #{activePod.code} ·{' '}
+              {capacityTierBadge(activePod.memberCount, activePod.maxMembers)}
+            </Text>
           </View>
           <View style={styles.wsBadge}>
             <View
@@ -315,9 +312,9 @@ export function VoiceLoungeScreen({
         </View>
 
         <Text style={styles.headerSub}>
-          You appear strictly as{' '}
-          <Text style={styles.boldMint}>{activePod.myAlias}</Text>. Peers with
-          active audio glow with a signal-mint speaking ring.
+          One shared drop-in audio call for this pod. You appear strictly as{' '}
+          <Text style={styles.boldMint}>{activePod.myAlias}</Text> — active
+          voices glow with a signal-mint ring.
         </Text>
 
         {pods.length > 1 ? (
@@ -332,7 +329,16 @@ export function VoiceLoungeScreen({
                 <Pressable
                   key={p.podId}
                   accessibilityRole="button"
-                  onPress={() => setActivePodId(p.podId)}
+                  onPress={() => {
+                    if (
+                      voiceSession &&
+                      voiceSession.podId === activePod.podId &&
+                      p.podId !== activePod.podId
+                    ) {
+                      handleLeaveCall();
+                    }
+                    setActivePodId(p.podId);
+                  }}
                   style={[
                     styles.podSwitchChip,
                     selected && styles.podSwitchChipActive,
@@ -344,7 +350,7 @@ export function VoiceLoungeScreen({
                       selected && styles.podSwitchChipTextActive,
                     ]}
                   >
-                    #{p.code}
+                    {p.title?.trim() ? p.title : `#${p.code}`}
                   </Text>
                 </Pressable>
               );
@@ -355,153 +361,142 @@ export function VoiceLoungeScreen({
 
       {statusNotice ? (
         <View style={styles.noticeCard}>
-          <Ionicons
-            name="radio-outline"
-            size={16}
-            color={PALETTE.forest}
-          />
+          <Ionicons name="radio-outline" size={16} color={PALETTE.forest} />
           <Text style={styles.noticeText}>{statusNotice}</Text>
         </View>
       ) : null}
 
-      {/* Voice Channels List (🔊 Lounge Voice, 🔊 Co-op & Focus, etc.) */}
-      <View style={styles.channelsList}>
-        {voiceChannels.map((channel) => {
-          const peers = getPeersForChannel(channel.channelId);
-          const isJoinedHere =
-            activeSessionInThisPod?.voiceChannelId === channel.channelId;
+      {/* Single Shared Pod Audio Call Card */}
+      <View
+        style={[
+          styles.callRoomCard,
+          !!activeSessionInThisPod && styles.callRoomCardConnected,
+        ]}
+      >
+        <View style={styles.roomHeaderRow}>
+          <View style={styles.roomTitleCol}>
+            <Text style={styles.roomTitle}>🔊 Pod Audio Call</Text>
+            <Text style={styles.roomTopic}>
+              Drop-in anonymous group audio for {displayPodTitle}
+            </Text>
+          </View>
+          <View style={styles.peerCountPill}>
+            <Text style={styles.peerCountText}>
+              {connectedPeers.length} in call
+            </Text>
+          </View>
+        </View>
 
-          return (
-            <View
-              key={channel.channelId}
-              style={[
-                styles.channelCard,
-                isJoinedHere && styles.channelCardConnected,
-              ]}
-            >
-              <View style={styles.channelHeaderRow}>
-                <View style={styles.channelTitleCol}>
-                  <Text style={styles.channelTitle}>🔊 {channel.label}</Text>
-                  <Text style={styles.channelTopic}>
-                    {channel.topic || 'Drop-in anonymous voice room'}
-                  </Text>
-                </View>
-                <View style={styles.peerCountPill}>
-                  <Text style={styles.peerCountText}>{peers.length} live</Text>
-                </View>
-              </View>
+        {/* Connected Anonymous Peers with #a1ffcb Mint Speaking Rings */}
+        {connectedPeers.length === 0 ? (
+          <View style={styles.quietBox}>
+            <Text style={styles.quietText}>
+              Call is quiet right now — tap Join Audio Call below to hop in.
+            </Text>
+          </View>
+        ) : (
+          <View style={styles.peersGrid}>
+            {connectedPeers.map((peer) => {
+              const isSelf = peer.peerId === activePod.myPeerId;
+              const speaking =
+                isSelf && activeSessionInThisPod
+                  ? activeSessionInThisPod.speaking
+                  : peer.speaking;
+              const muted =
+                isSelf && activeSessionInThisPod
+                  ? activeSessionInThisPod.muted
+                  : peer.muted;
+              const deafened =
+                isSelf && activeSessionInThisPod
+                  ? activeSessionInThisPod.deafened
+                  : peer.deafened;
+              const avatarBg = safePeerColor(peer.color, peer.alias);
 
-              {/* Connected Anonymous Peers with #a1ffcb Mint Speaking Rings */}
-              {peers.length === 0 ? (
-                <View style={styles.quietBox}>
-                  <Text style={styles.quietText}>
-                    Room is quiet — tap Join Voice Lounge to hop in.
-                  </Text>
-                </View>
-              ) : (
-                <View style={styles.peersGrid}>
-                  {peers.map((peer) => {
-                    // Reflect immediate local toggle state for self
-                    const isSelf = peer.peerId === activePod.myPeerId;
-                    const speaking =
-                      isSelf && isJoinedHere
-                        ? activeSessionInThisPod.speaking
-                        : peer.speaking;
-                    const muted =
-                      isSelf && isJoinedHere
-                        ? activeSessionInThisPod.muted
-                        : peer.muted;
-                    const deafened =
-                      isSelf && isJoinedHere
-                        ? activeSessionInThisPod.deafened
-                        : peer.deafened;
-                    const avatarBg = safePeerColor(peer.color, peer.alias);
-
-                    return (
-                      <View
-                        key={peer.peerId}
-                        style={[
-                          styles.peerTile,
-                          speaking && styles.peerTileSpeaking,
-                        ]}
-                      >
-                        <View
-                          style={[
-                            styles.speakingRing,
-                            speaking && styles.speakingRingActive,
-                          ]}
-                        >
-                          <View
-                            style={[
-                              styles.peerAvatar,
-                              { backgroundColor: avatarBg },
-                            ]}
-                          >
-                            <Text style={styles.peerInitials}>
-                              {aliasInitials(peer.alias)}
-                            </Text>
-                          </View>
-                        </View>
-
-                        <Text style={styles.peerAliasText} numberOfLines={1}>
-                          {peer.alias}
-                          {isSelf ? ' (You)' : ''}
-                        </Text>
-
-                        <View style={styles.peerStateRow}>
-                          {speaking ? (
-                            <Text style={styles.speakingTag}>SPEAKING</Text>
-                          ) : deafened ? (
-                            <Text style={styles.mutedTag}>DEAFENED</Text>
-                          ) : muted ? (
-                            <Text style={styles.mutedTag}>MUTED</Text>
-                          ) : (
-                            <Text style={styles.listeningTag}>LISTENING</Text>
-                          )}
-                        </View>
-                      </View>
-                    );
-                  })}
-                </View>
-              )}
-
-              {!isJoinedHere ? (
-                <Pressable
-                  accessibilityRole="button"
-                  accessibilityLabel={`Join Voice Lounge ${channel.label}`}
-                  onPress={() => handleJoinChannel(channel)}
-                  style={styles.joinVoiceBtn}
+              return (
+                <View
+                  key={peer.peerId}
+                  style={[
+                    styles.peerTile,
+                    speaking && styles.peerTileSpeaking,
+                  ]}
                 >
-                  <Ionicons
-                    name="headset-outline"
-                    size={18}
-                    color={PALETTE.charcoal}
-                  />
-                  <Text style={styles.joinVoiceBtnText}>Join Voice Lounge</Text>
-                </Pressable>
-              ) : (
-                <View style={styles.connectedTagBar}>
-                  <Ionicons
-                    name="checkmark-circle"
-                    size={16}
-                    color={PALETTE.forest}
-                  />
-                  <Text style={styles.connectedTagText}>
-                    Connected · {activeSessionInThisPod.micMode === 'live' ? 'Live Mic' : 'Synth / Listen Mode'}
+                  <View
+                    style={[
+                      styles.speakingRing,
+                      speaking && styles.speakingRingActive,
+                    ]}
+                  >
+                    <View
+                      style={[
+                        styles.peerAvatar,
+                        { backgroundColor: avatarBg },
+                      ]}
+                    >
+                      <Text style={styles.peerInitials}>
+                        {aliasInitials(peer.alias)}
+                      </Text>
+                    </View>
+                  </View>
+
+                  <Text style={styles.peerAliasText} numberOfLines={1}>
+                    {peer.alias}
+                    {isSelf ? ' (You)' : ''}
                   </Text>
+
+                  <View style={styles.peerStateRow}>
+                    {speaking ? (
+                      <Text style={styles.speakingTag}>SPEAKING</Text>
+                    ) : deafened ? (
+                      <Text style={styles.mutedTag}>DEAFENED</Text>
+                    ) : muted ? (
+                      <Text style={styles.mutedTag}>MUTED</Text>
+                    ) : (
+                      <Text style={styles.listeningTag}>LISTENING</Text>
+                    )}
+                  </View>
                 </View>
-              )}
-            </View>
-          );
-        })}
+              );
+            })}
+          </View>
+        )}
+
+        {!activeSessionInThisPod ? (
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel={`Join Pod Audio Call for ${displayPodTitle}`}
+            onPress={handleJoinCall}
+            style={styles.joinCallBtn}
+          >
+            <Ionicons
+              name="call-outline"
+              size={18}
+              color={PALETTE.charcoal}
+            />
+            <Text style={styles.joinCallBtnText}>Join Audio Call</Text>
+          </Pressable>
+        ) : (
+          <View style={styles.connectedTagBar}>
+            <Ionicons
+              name="checkmark-circle"
+              size={16}
+              color={PALETTE.forest}
+            />
+            <Text style={styles.connectedTagText}>
+              In Audio Call ·{' '}
+              {activeSessionInThisPod.micMode === 'live'
+                ? 'Live Mic'
+                : 'Synth / Listen Mode'}
+            </Text>
+          </View>
+        )}
       </View>
 
-      {/* Big Tactile Mobile Call Controls Deck */}
+      {/* Tactile Mobile Call Controls Deck */}
       {activeSessionInThisPod ? (
         <View style={styles.callDeck}>
           <View style={styles.callDeckHeader}>
             <Text style={styles.callDeckTitle}>
-              Active Call · 🔊 {connectedChannel?.label ?? 'Voice'}
+              Active Call · {displayPodTitle}
             </Text>
             {lastSignal ? (
               <Text style={styles.signalMeta}>
@@ -514,7 +509,9 @@ export function VoiceLoungeScreen({
             <Pressable
               accessibilityRole="button"
               accessibilityLabel={
-                activeSessionInThisPod.muted ? 'Unmute microphone' : 'Mute microphone'
+                activeSessionInThisPod.muted
+                  ? 'Unmute microphone'
+                  : 'Mute microphone'
               }
               onPress={handleToggleMute}
               style={[
@@ -529,15 +526,23 @@ export function VoiceLoungeScreen({
                   activeSessionInThisPod.muted ? PALETTE.amber : PALETTE.card
                 }
               />
-              <Text style={styles.callControlLabel}>
-                {activeSessionInThisPod.muted ? 'Unmute' : 'Mute Mic'}
+              <Text
+                style={[
+                  styles.callControlLabel,
+                  activeSessionInThisPod.muted &&
+                    styles.callControlLabelActiveWarn,
+                ]}
+              >
+                {activeSessionInThisPod.muted ? 'Unmute' : 'Mute'}
               </Text>
             </Pressable>
 
             <Pressable
               accessibilityRole="button"
               accessibilityLabel={
-                activeSessionInThisPod.deafened ? 'Undeafen audio' : 'Deafen audio'
+                activeSessionInThisPod.deafened
+                  ? 'Undeafen audio'
+                  : 'Deafen audio'
               }
               onPress={handleToggleDeafen}
               style={[
@@ -554,12 +559,16 @@ export function VoiceLoungeScreen({
                 }
                 size={20}
                 color={
-                  activeSessionInThisPod.deafened
-                    ? PALETTE.amber
-                    : PALETTE.card
+                  activeSessionInThisPod.deafened ? PALETTE.amber : PALETTE.card
                 }
               />
-              <Text style={styles.callControlLabel}>
+              <Text
+                style={[
+                  styles.callControlLabel,
+                  activeSessionInThisPod.deafened &&
+                    styles.callControlLabelActiveWarn,
+                ]}
+              >
                 {activeSessionInThisPod.deafened ? 'Undeafen' : 'Deafen'}
               </Text>
             </Pressable>
@@ -598,12 +607,12 @@ export function VoiceLoungeScreen({
 
             <Pressable
               accessibilityRole="button"
-              accessibilityLabel="Leave Voice"
-              onPress={handleLeaveVoice}
-              style={styles.leaveVoiceBtn}
+              accessibilityLabel="Leave Call"
+              onPress={handleLeaveCall}
+              style={styles.leaveCallBtn}
             >
               <Ionicons name="call" size={18} color={PALETTE.card} />
-              <Text style={styles.leaveVoiceText}>Leave Voice</Text>
+              <Text style={styles.leaveCallText}>Leave Call</Text>
             </Pressable>
           </View>
         </View>
@@ -666,6 +675,11 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'flex-start',
     justifyContent: 'space-between',
+    gap: 10,
+  },
+  headerTitleWrap: {
+    flex: 1,
+    gap: 2,
   },
   headerLabel: {
     fontSize: 11,
@@ -678,6 +692,10 @@ const styles = StyleSheet.create({
     fontSize: 20,
     fontWeight: '700',
     color: PALETTE.card,
+  },
+  headerTier: {
+    fontSize: 12,
+    color: '#b7beb7',
     fontFamily: MONO_FONT,
   },
   wsBadge: {
@@ -750,10 +768,7 @@ const styles = StyleSheet.create({
     color: PALETTE.forest,
     fontWeight: '600',
   },
-  channelsList: {
-    gap: 12,
-  },
-  channelCard: {
+  callRoomCard: {
     backgroundColor: PALETTE.card,
     borderRadius: 16,
     padding: 14,
@@ -761,26 +776,26 @@ const styles = StyleSheet.create({
     borderColor: PALETTE.border,
     gap: 12,
   },
-  channelCardConnected: {
+  callRoomCardConnected: {
     borderColor: PALETTE.forest,
     borderWidth: 1.5,
   },
-  channelHeaderRow: {
+  roomHeaderRow: {
     flexDirection: 'row',
     alignItems: 'flex-start',
     justifyContent: 'space-between',
     gap: 8,
   },
-  channelTitleCol: {
+  roomTitleCol: {
     flex: 1,
     gap: 2,
   },
-  channelTitle: {
+  roomTitle: {
     fontSize: 16,
     fontWeight: '700',
     color: PALETTE.charcoal,
   },
-  channelTopic: {
+  roomTopic: {
     fontSize: 12,
     color: PALETTE.muted,
   },
@@ -874,7 +889,7 @@ const styles = StyleSheet.create({
     color: PALETTE.muted,
     fontFamily: MONO_FONT,
   },
-  joinVoiceBtn: {
+  joinCallBtn: {
     minHeight: 46,
     borderRadius: 12,
     backgroundColor: PALETTE.mint,
@@ -885,7 +900,7 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     gap: 8,
   },
-  joinVoiceBtnText: {
+  joinCallBtnText: {
     fontSize: 14,
     fontWeight: '700',
     color: PALETTE.charcoal,
@@ -914,11 +929,13 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
+    gap: 8,
   },
   callDeckTitle: {
     color: PALETTE.mint,
     fontSize: 14,
     fontWeight: '700',
+    flex: 1,
   },
   signalMeta: {
     color: '#b8bfb8',
@@ -950,6 +967,9 @@ const styles = StyleSheet.create({
     fontSize: 13,
     fontWeight: '700',
   },
+  callControlLabelActiveWarn: {
+    color: PALETTE.amber,
+  },
   pttBtn: {
     flex: 1.3,
     minHeight: 48,
@@ -974,7 +994,7 @@ const styles = StyleSheet.create({
   pttBtnTextSpeaking: {
     color: PALETTE.charcoal,
   },
-  leaveVoiceBtn: {
+  leaveCallBtn: {
     flex: 0.9,
     minHeight: 48,
     borderRadius: 12,
@@ -984,7 +1004,7 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     gap: 6,
   },
-  leaveVoiceText: {
+  leaveCallText: {
     color: PALETTE.card,
     fontSize: 13,
     fontWeight: '700',

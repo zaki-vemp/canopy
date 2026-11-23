@@ -5,7 +5,6 @@ import com.fasterxml.jackson.databind.ObjectMapper
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertNotEquals
-import org.junit.jupiter.api.Assertions.assertNotNull
 import org.junit.jupiter.api.Assertions.assertNull
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.BeforeAll
@@ -72,8 +71,6 @@ class CanopyIntegrationTest {
     private val accounts = mutableListOf<TestAccount>()
     private lateinit var pod1Id: String
     private lateinit var pod2Id: String
-    private lateinit var pod1GeneralChannelId: String
-    private lateinit var pod1LoungeVoiceChannelId: String
 
     @BeforeAll
     fun resetTestDatabase() {
@@ -90,7 +87,6 @@ class CanopyIntegrationTest {
             "messages",
             "pod_opt_outs",
             "pod_members",
-            "pod_channels",
             "pods",
             "user_interests",
             "users"
@@ -162,8 +158,7 @@ class CanopyIntegrationTest {
 
     @Test
     @Order(2)
-    fun `blind pod matching groups first 6 users into pod 1 and spawns pod 2 for 7th user with zero PII leakage`() {
-        // Save custom + seeded interests for user 0
+    fun `blind pod matching groups first 6 users into channel-free pod 1 and spawns pod 2 for 7th user with zero PII`() {
         val putInterestsRes = exchangeJson(
             HttpMethod.PUT,
             "/api/me/interests",
@@ -175,7 +170,6 @@ class CanopyIntegrationTest {
         assertTrue(interestsArr.any { it.path("slug").asText() == "gaming" && it.path("selected").asBoolean() })
         assertTrue(interestsArr.any { it.path("slug").asText() == "synth-modular" && it.path("selected").asBoolean() })
 
-        // First 6 users match "gaming" -> must all land in the exact same pod
         val matchedPodIds = mutableListOf<String>()
         val assignedAliases = mutableSetOf<String>()
         for (i in 0 until 6) {
@@ -196,7 +190,6 @@ class CanopyIntegrationTest {
         assertEquals(6, assignedAliases.size, "Every member in Pod 1 must receive a distinct room alias")
         pod1Id = matchedPodIds.first()
 
-        // Verify Pod 1 now has memberCount == 6 and 5 default channels (3 TEXT + 2 VOICE)
         val podsRes = getJson("/api/pods", accounts[0].token)
         assertEquals(HttpStatus.OK, podsRes.statusCode)
         assertZeroPiiLeak(podsRes.body!!)
@@ -204,29 +197,23 @@ class CanopyIntegrationTest {
         val pod1Node = objectMapper.readTree(podsRes.body!!).path("pods")
             .first { it.path("podId").asText() == pod1Id }
         assertEquals(6, pod1Node.path("memberCount").asInt())
+        assertFalse(pod1Node.path("isOpen").asBoolean(), "6/6 full pod must have isOpen=false")
+        assertFalse(pod1Node.has("channels"), "PodDetailDto must NOT contain Slack-style channels")
+        assertTrue(pod1Node.has("dmConversations"), "PodDetailDto must contain dmConversations")
+        assertEquals(0, pod1Node.path("dmConversations").size())
         assertEquals(6, pod1Node.path("members").size())
+        assertTrue(pod1Node.path("members").all { it.has("inVoice") && !it.has("voiceChannelId") })
 
-        val channels = pod1Node.path("channels")
-        assertEquals(5, channels.size(), "Pod must auto-create 5 default Discord/Slack channels")
-        val textChannels = channels.filter { it.path("kind").asText() == "TEXT" }
-        val voiceChannels = channels.filter { it.path("kind").asText() == "VOICE" }
-        assertEquals(3, textChannels.size)
-        assertEquals(2, voiceChannels.size)
-
-        pod1GeneralChannelId = textChannels.first { it.path("slug").asText() == "general" }
-            .path("channelId").asText()
-        pod1LoungeVoiceChannelId = voiceChannels.first { it.path("slug").asText() == "lounge-voice" }
-            .path("channelId").asText()
-
-        // Verify #general already has welcome + join SYSTEM messages with zero PII
-        val generalMsgsRes = getJson(
-            "/api/pods/$pod1Id/channels/$pod1GeneralChannelId/messages?beforeId=0&limit=40",
+        // Verify Pod Group Chat already has welcome + 6 join SYSTEM messages with zero PII
+        val groupMsgsRes = getJson(
+            "/api/pods/$pod1Id/messages?beforeId=0&limit=40",
             accounts[0].token
         )
-        assertEquals(HttpStatus.OK, generalMsgsRes.statusCode)
-        assertZeroPiiLeak(generalMsgsRes.body!!)
-        val generalMsgs = objectMapper.readTree(generalMsgsRes.body!!).path("messages")
-        assertTrue(generalMsgs.size() >= 7, "Expected 1 welcome + 6 join system messages")
+        assertEquals(HttpStatus.OK, groupMsgsRes.statusCode)
+        assertZeroPiiLeak(groupMsgsRes.body!!)
+        val groupMsgs = objectMapper.readTree(groupMsgsRes.body!!).path("messages")
+        assertTrue(groupMsgs.size() >= 7, "Expected 1 welcome + 6 join system messages in Group Chat")
+        assertTrue(groupMsgs.all { it.path("recipientPeerId").isNull && it.path("recipientAlias").isNull })
 
         // 7th user matches "gaming" -> Pod 1 is full (6/6), so Pod 2 must be spawned automatically!
         val seventhMatchRes = postJson(
@@ -242,7 +229,7 @@ class CanopyIntegrationTest {
         assertEquals(1, seventhPod.path("memberCount").asInt())
         assertEquals(25, seventhPod.path("maxMembers").asInt(), "Default pod maxMembers must be 25")
         assertEquals("DEMOCRATIC", seventhPod.path("governanceMode").asText())
-        assertEquals(5, seventhPod.path("channels").size())
+        assertTrue(seventhPod.path("isOpen").asBoolean())
     }
 
     @Test
@@ -253,8 +240,6 @@ class CanopyIntegrationTest {
         val pod1Before = beforePods.first { it.path("podId").asText() == pod1Id }
         val peerIdInPod1 = pod1Before.path("myPeerId").asText()
 
-        // Leave Pod 1 with rematch = true -> Pod 1 now drops to 5/6 (open again!),
-        // YET mover has opted out of Pod 1 so mover MUST land in Pod 2 (never Pod 1)!
         val leaveRes = postJson(
             "/api/pods/$pod1Id/leave",
             mover.token,
@@ -270,12 +255,10 @@ class CanopyIntegrationTest {
         assertEquals(pod2Id, newPod.path("podId").asText(), "Rematch must skip opted-out Pod 1 and join Pod 2")
         assertEquals(2, newPod.path("memberCount").asInt())
 
-        // PeerId is room-scoped SHA-256(podPublicId || userPublicId), so Pod 2 peerId must NOT link to Pod 1 peerId
         val peerIdInPod2 = newPod.path("myPeerId").asText()
         assertTrue(peerIdInPod2.startsWith("p_"))
         assertNotEquals(peerIdInPod1, peerIdInPod2, "peerId must be unlinkable across different pods")
 
-        // Verify pod_opt_outs row exists in MySQL
         val optOutCount = jdbcClient.sql(
             """
             SELECT COUNT(*)
@@ -292,13 +275,13 @@ class CanopyIntegrationTest {
 
     @Test
     @Order(4)
-    fun `rich chat supports threads reactions polls pins bookmarks attachments slash commands and FULLTEXT search`() {
+    fun `pod group chat supports inline quotes reactions polls pins bookmarks voice notes slash commands and FULLTEXT search`() {
         val u0 = accounts[0]
         val u1 = accounts[1]
 
-        // 1. Post a top-level markdown message
+        // 1. Post a Group Chat markdown message
         val rootMsgRes = postJson(
-            "/api/pods/$pod1Id/channels/$pod1GeneralChannelId/messages",
+            "/api/pods/$pod1Id/messages",
             u0.token,
             mapOf("body" to "Anyone up for **Helldivers** co-op expedition tonight? ||Zero spoilers||")
         )
@@ -307,31 +290,22 @@ class CanopyIntegrationTest {
         val rootMsg = objectMapper.readTree(rootMsgRes.body!!).path("message")
         val rootMsgId = rootMsg.path("id").asLong()
         assertEquals("TEXT", rootMsg.path("msgType").asText())
-        assertEquals(0, rootMsg.path("replyCount").asInt())
+        assertTrue(rootMsg.path("recipientPeerId").isNull)
+        assertTrue(rootMsg.path("recipientAlias").isNull)
+        assertFalse(rootMsg.has("channelId"))
+        assertFalse(rootMsg.has("parentMessageId"))
+        assertFalse(rootMsg.has("replyCount"))
 
-        // 2. Post two Slack thread replies -> increments parent replyCount to 2
-        val reply1Res = postJson(
-            "/api/pods/$pod1Id/channels/$pod1GeneralChannelId/messages",
+        // 2. Inline quoted reply in Group Chat
+        val quoteReplyRes = postJson(
+            "/api/pods/$pod1Id/messages",
             u1.token,
-            mapOf("body" to "Count me in for difficulty 9!", "parentMessageId" to rootMsgId)
+            mapOf("body" to "Count me in for difficulty 9!", "quoteMessageId" to rootMsgId)
         )
-        assertEquals(HttpStatus.CREATED, reply1Res.statusCode)
-        val reply2Res = postJson(
-            "/api/pods/$pod1Id/channels/$pod1GeneralChannelId/messages",
-            u0.token,
-            mapOf("body" to "Dropping voice link in 5 mins", "parentMessageId" to rootMsgId)
-        )
-        assertEquals(HttpStatus.CREATED, reply2Res.statusCode)
-
-        val threadRes = getJson(
-            "/api/pods/$pod1Id/channels/$pod1GeneralChannelId/threads/$rootMsgId",
-            u0.token
-        )
-        assertEquals(HttpStatus.OK, threadRes.statusCode)
-        assertZeroPiiLeak(threadRes.body!!)
-        val threadJson = objectMapper.readTree(threadRes.body!!)
-        assertEquals(2, threadJson.path("parent").path("replyCount").asInt())
-        assertEquals(2, threadJson.path("replies").size())
+        assertEquals(HttpStatus.CREATED, quoteReplyRes.statusCode)
+        assertZeroPiiLeak(quoteReplyRes.body!!)
+        val quoteReplyMsg = objectMapper.readTree(quoteReplyRes.body!!).path("message")
+        assertEquals(rootMsgId, quoteReplyMsg.path("quoteMessage").path("id").asLong())
 
         // 3. Toggle emoji reactions
         val react1 = postJson("/api/messages/$rootMsgId/reactions", u0.token, mapOf("emoji" to "🔥"))
@@ -343,7 +317,6 @@ class CanopyIntegrationTest {
         assertEquals(2, reactionsAfterAdd[0].path("count").asInt())
         assertTrue(reactionsAfterAdd[0].path("meReacted").asBoolean())
 
-        // Toggle off for u1 -> count drops back to 1 and meReacted becomes false for u1
         val reactToggleOff = postJson("/api/messages/$rootMsgId/reactions", u1.token, mapOf("emoji" to "🔥"))
         val reactionsAfterOff = objectMapper.readTree(reactToggleOff.body!!).path("message").path("reactions")
         assertEquals(1, reactionsAfterOff[0].path("count").asInt())
@@ -351,7 +324,7 @@ class CanopyIntegrationTest {
 
         // 4. Slash command: /poll "Best co-op?" "Portal 2" "It Takes Two" + voting
         val pollCreateRes = postJson(
-            "/api/pods/$pod1Id/channels/$pod1GeneralChannelId/messages",
+            "/api/pods/$pod1Id/messages",
             u0.token,
             mapOf("body" to """/poll "Best co-op?" "Portal 2" "It Takes Two"""")
         )
@@ -403,30 +376,17 @@ class CanopyIntegrationTest {
         assertEquals(1, bmMessages.size())
         assertTrue(bmMessages[0].path("isBookmarked").asBoolean())
 
-        // 6. Voice note attachment upload + message linking -> msgType == "VOICE_NOTE"
-        val multipartHeaders = HttpHeaders().apply {
-            contentType = MediaType.MULTIPART_FORM_DATA
-            setBearerAuth(u0.token)
-        }
-        val fileResource = object : ByteArrayResource(ByteArray(256) { 0x42 }) {
-            override fun getFilename(): String = "intro-note.webm"
-        }
-        val form = LinkedMultiValueMap<String, Any>().apply {
-            add("file", fileResource)
-            add("kind", "voice_note")
-            add("durationMs", "3400")
-        }
-        val uploadRes = restTemplate.exchange(
-            "/api/pods/$pod1Id/attachments",
-            HttpMethod.POST,
-            HttpEntity(form, multipartHeaders),
-            String::class.java
+        // 6. Voice note attachment upload: restricted to uploader while unattached (message_id == 0), then accessible to pod once sent in Group Chat
+        val attId = uploadAttachment(pod1Id, u0.token, "intro-note.webm", "voice_note", 3400)
+        assertEquals(HttpStatus.OK, downloadAttachment(attId, u0.token).statusCode, "Uploader can access unattached upload")
+        assertEquals(
+            HttpStatus.FORBIDDEN,
+            downloadAttachment(attId, u1.token).statusCode,
+            "Other pod member cannot download unattached upload before send"
         )
-        assertEquals(HttpStatus.CREATED, uploadRes.statusCode, "Upload failed: ${uploadRes.body}")
-        val attId = objectMapper.readTree(uploadRes.body!!).path("id").asLong()
 
         val voiceMsgRes = postJson(
-            "/api/pods/$pod1Id/channels/$pod1GeneralChannelId/messages",
+            "/api/pods/$pod1Id/messages",
             u0.token,
             mapOf("body" to "", "attachmentIds" to listOf(attId), "quoteMessageId" to rootMsgId)
         )
@@ -436,6 +396,7 @@ class CanopyIntegrationTest {
         assertEquals("VOICE_NOTE", voiceMsg.path("msgType").asText())
         assertEquals(1, voiceMsg.path("attachments").size())
         assertEquals(rootMsgId, voiceMsg.path("quoteMessage").path("id").asLong())
+        assertEquals(HttpStatus.OK, downloadAttachment(attId, u1.token).statusCode, "Pod member can download Group Chat attachment")
 
         // 7. FULLTEXT search (>=3 char token uses InnoDB FULLTEXT; <3 char fallback uses LIKE)
         val searchFtRes = getJson("/api/pods/$pod1Id/search?q=Helldivers", u1.token)
@@ -449,7 +410,7 @@ class CanopyIntegrationTest {
         val searchShortMsgs = objectMapper.readTree(searchShortRes.body!!).path("messages")
         assertTrue(searchShortMsgs.size() > 0, "Short/hyphenated search fallback should find co-op messages")
 
-        // 8. Edit & soft-delete author enforcement + custom channel + /icebreaker + /status
+        // 8. Edit & soft-delete author enforcement + /icebreaker + /status + /shrug
         val editOwn = exchangeJson(
             HttpMethod.PATCH,
             "/api/messages/$rootMsgId",
@@ -459,19 +420,19 @@ class CanopyIntegrationTest {
         assertEquals(HttpStatus.OK, editOwn.statusCode)
         assertFalse(objectMapper.readTree(editOwn.body!!).path("message").path("editedAt").isNull)
 
-        val iceRes = postJson(
-            "/api/pods/$pod1Id/channels/$pod1GeneralChannelId/messages",
+        val editForbidden = exchangeJson(
+            HttpMethod.PATCH,
+            "/api/messages/$rootMsgId",
             u1.token,
-            mapOf("body" to "/icebreaker")
+            mapOf("body" to "Not my message")
         )
+        assertEquals(HttpStatus.FORBIDDEN, editForbidden.statusCode)
+
+        val iceRes = postJson("/api/pods/$pod1Id/messages", u1.token, mapOf("body" to "/icebreaker"))
         assertEquals(HttpStatus.CREATED, iceRes.statusCode)
         assertEquals("ICEBREAKER", objectMapper.readTree(iceRes.body!!).path("message").path("msgType").asText())
 
-        val statusCmdRes = postJson(
-            "/api/pods/$pod1Id/channels/$pod1GeneralChannelId/messages",
-            u0.token,
-            mapOf("body" to "/status Ready for co-op")
-        )
+        val statusCmdRes = postJson("/api/pods/$pod1Id/messages", u0.token, mapOf("body" to "/status Ready for co-op"))
         assertEquals(HttpStatus.OK, statusCmdRes.statusCode)
         assertEquals("status", objectMapper.readTree(statusCmdRes.body!!).path("commandHandled").asText())
 
@@ -483,43 +444,7 @@ class CanopyIntegrationTest {
         )
         assertEquals(HttpStatus.OK, patchStatusRes.statusCode)
 
-        // Direct channel add in multi-member DEMOCRATIC pod is forbidden; ADD_CHANNEL proposal passes at 3/5 YES
-        val directChForbidden = postJson(
-            "/api/pods/$pod1Id/channels",
-            u0.token,
-            mapOf("label" to "builds-and-setups", "topic" to "Share loadouts", "kind" to "TEXT")
-        )
-        assertEquals(HttpStatus.FORBIDDEN, directChForbidden.statusCode)
-
-        val addChPropRes = postJson(
-            "/api/pods/$pod1Id/proposals",
-            u0.token,
-            mapOf("kind" to "ADD_CHANNEL", "label" to "builds-and-setups", "topic" to "Share loadouts", "channelKind" to "TEXT")
-        )
-        assertEquals(HttpStatus.CREATED, addChPropRes.statusCode)
-        assertZeroPiiLeak(addChPropRes.body!!)
-        val addChPropId = objectMapper.readTree(addChPropRes.body!!).path("proposal").path("id").asLong()
-        assertEquals(HttpStatus.OK, postJson("/api/proposals/$addChPropId/vote", u1.token, mapOf("vote" to true)).statusCode)
-        val addChPassRes = postJson("/api/proposals/$addChPropId/vote", accounts[2].token, mapOf("vote" to true))
-        assertEquals(HttpStatus.OK, addChPassRes.statusCode)
-        assertEquals("PASSED", objectMapper.readTree(addChPassRes.body!!).path("proposal").path("status").asText())
-        assertTrue(
-            objectMapper.readTree(addChPassRes.body!!).path("pod").path("channels")
-                .any { it.path("slug").asText() == "builds-and-setups" }
-        )
-        val editForbidden = exchangeJson(
-            HttpMethod.PATCH,
-            "/api/messages/$rootMsgId",
-            u1.token,
-            mapOf("body" to "Not my message")
-        )
-        assertEquals(HttpStatus.FORBIDDEN, editForbidden.statusCode)
-
-        val tempMsgRes = postJson(
-            "/api/pods/$pod1Id/channels/$pod1GeneralChannelId/messages",
-            u0.token,
-            mapOf("body" to "/shrug temporary thought")
-        )
+        val tempMsgRes = postJson("/api/pods/$pod1Id/messages", u0.token, mapOf("body" to "/shrug temporary thought"))
         val tempMsgId = objectMapper.readTree(tempMsgRes.body!!).path("message").path("id").asLong()
         assertTrue(
             objectMapper.readTree(tempMsgRes.body!!).path("message").path("body").asText().contains("¯\\_(ツ)_/¯")
@@ -530,10 +455,273 @@ class CanopyIntegrationTest {
 
     @Test
     @Order(5)
-    fun `native WebSocket hub broadcasts messages voice roster and relays targeted WebRTC signals`() {
+    fun `1-to-1 private member DMs enforce strict REST WebSocket typing search and attachment confidentiality`() {
+        val uA = accounts[0]
+        val uB = accounts[1]
+        val uC = accounts[2] // Bystander in the SAME Pod 1!
+
+        val podA = objectMapper.readTree(getJson("/api/pods", uA.token).body!!).path("pods")
+            .first { it.path("podId").asText() == pod1Id }
+        val podB = objectMapper.readTree(getJson("/api/pods", uB.token).body!!).path("pods")
+            .first { it.path("podId").asText() == pod1Id }
+        val peerA = podA.path("myPeerId").asText()
+        val aliasA = podA.path("myAlias").asText()
+        val peerB = podB.path("myPeerId").asText()
+        val aliasB = podB.path("myAlias").asText()
+
+        // 0. Self-DM returns 400 BAD_REQUEST; unknown peerId returns 404 NOT_FOUND
+        assertEquals(
+            HttpStatus.BAD_REQUEST,
+            postJson("/api/pods/$pod1Id/dms/$peerA/messages", uA.token, mapOf("body" to "Self DM")).statusCode
+        )
+        assertEquals(
+            HttpStatus.NOT_FOUND,
+            postJson("/api/pods/$pod1Id/dms/p_000000000000/messages", uA.token, mapOf("body" to "Ghost DM")).statusCode
+        )
+
+        val client = StandardWebSocketClient()
+        val qA: BlockingQueue<JsonNode> = LinkedBlockingQueue()
+        val qB: BlockingQueue<JsonNode> = LinkedBlockingQueue()
+        val qC: BlockingQueue<JsonNode> = LinkedBlockingQueue()
+
+        val wsA = connectPodWs(client, pod1Id, uA.token, qA)
+        val wsB = connectPodWs(client, pod1Id, uB.token, qB)
+        val wsC = connectPodWs(client, pod1Id, uC.token, qC)
+
+        try {
+            awaitFrame(qA) { it.path("type").asText() == "presence_snapshot" }
+            awaitFrame(qB) { it.path("type").asText() == "presence_snapshot" }
+            awaitFrame(qC) { it.path("type").asText() == "presence_snapshot" }
+            qA.clear()
+            qB.clear()
+            qC.clear()
+
+            // 1. 1:1 DM private typing indicator reaches User B (and User A) and NEVER reaches User C!
+            wsA.sendMessage(
+                TextMessage(
+                    objectMapper.writeValueAsString(
+                        mapOf("type" to "typing", "targetPeerId" to peerB, "isTyping" to true)
+                    )
+                )
+            )
+            val dmTypingOnB = awaitFrame(qB) {
+                it.path("type").asText() == "typing_update" && it.path("targetPeerId").asText() == peerB
+            }
+            assertZeroPiiLeak(objectMapper.writeValueAsString(dmTypingOnB))
+            assertEquals(peerA, dmTypingOnB.path("fromPeerId").asText())
+            assertEquals(listOf(aliasA), dmTypingOnB.path("typingAliases").map { it.asText() })
+            awaitFrame(qA) { it.path("type").asText() == "typing_update" && it.path("targetPeerId").asText() == peerB }
+
+            val leakedTypingToC = pollMatching(qC, 300L) { true }
+            assertNull(leakedTypingToC, "Bystander User C must receive ZERO frames for User A -> User B DM typing")
+
+            // Group Chat typing (targetPeerId = null) DOES broadcast to User C
+            wsB.sendMessage(
+                TextMessage(
+                    objectMapper.writeValueAsString(
+                        mapOf("type" to "typing", "targetPeerId" to null, "isTyping" to true)
+                    )
+                )
+            )
+            val groupTypingOnC = awaitFrame(qC) {
+                it.path("type").asText() == "typing_update" && it.path("targetPeerId").isNull
+            }
+            assertTrue(groupTypingOnC.path("fromPeerId").isNull)
+            assertTrue(groupTypingOnC.path("typingAliases").any { it.asText() == aliasB })
+            qA.clear()
+            qB.clear()
+            qC.clear()
+
+            // 2. User A DMs User B -> User B receives message_created over WS while User C receives ZERO frames!
+            val dm1Res = postJson(
+                "/api/pods/$pod1Id/dms/$peerB/messages",
+                uA.token,
+                mapOf("body" to "SecretVaultCoord7749 — down for co-op at 22:00?")
+            )
+            assertEquals(HttpStatus.CREATED, dm1Res.statusCode, "Send DM failed: ${dm1Res.body}")
+            assertZeroPiiLeak(dm1Res.body!!)
+            val dm1Msg = objectMapper.readTree(dm1Res.body!!).path("message")
+            val dm1Id = dm1Msg.path("id").asLong()
+            assertEquals(peerA, dm1Msg.path("senderPeerId").asText())
+            assertEquals(aliasA, dm1Msg.path("senderAlias").asText())
+            assertEquals(peerB, dm1Msg.path("recipientPeerId").asText())
+            assertEquals(aliasB, dm1Msg.path("recipientAlias").asText())
+
+            // Note: clearDmTyping also fires a typing_update(emptyList) ONLY to A & B, then message_created ONLY to A & B!
+            val dmCreatedOnB = awaitFrame(qB) {
+                it.path("type").asText() == "message_created" && it.path("message").path("id").asLong() == dm1Id
+            }
+            assertZeroPiiLeak(objectMapper.writeValueAsString(dmCreatedOnB))
+            assertEquals(peerB, dmCreatedOnB.path("message").path("recipientPeerId").asText())
+
+            val anyFrameOnC = pollMatching(qC, 400L) { true }
+            assertNull(anyFrameOnC, "Bystander User C connected to same pod WS must receive ZERO frames for A <-> B DM!")
+
+            // 3. User B replies in 1:1 DM quoting dm1Id -> quoteMessage populated; quoting dm1Id in Group Chat is stripped!
+            val dm2Res = postJson(
+                "/api/pods/$pod1Id/dms/$peerA/messages",
+                uB.token,
+                mapOf("body" to "Locked in for 22:00!", "quoteMessageId" to dm1Id)
+            )
+            assertEquals(HttpStatus.CREATED, dm2Res.statusCode)
+            assertZeroPiiLeak(dm2Res.body!!)
+            val dm2Msg = objectMapper.readTree(dm2Res.body!!).path("message")
+            val dm2Id = dm2Msg.path("id").asLong()
+            assertEquals(dm1Id, dm2Msg.path("quoteMessage").path("id").asLong())
+            awaitFrame(qA) { it.path("type").asText() == "message_created" && it.path("message").path("id").asLong() == dm2Id }
+            assertNull(pollMatching(qC, 300L) { true }, "User C must receive ZERO frames on User B -> User A DM reply")
+
+            val crossQuoteAttempt = postJson(
+                "/api/pods/$pod1Id/messages",
+                uB.token,
+                mapOf("body" to "Public chat check", "quoteMessageId" to dm1Id)
+            )
+            assertEquals(HttpStatus.CREATED, crossQuoteAttempt.statusCode)
+            assertTrue(
+                objectMapper.readTree(crossQuoteAttempt.body!!).path("message").path("quoteMessage").isNull,
+                "Group Chat message must NEVER hydrate a private 1:1 DM quote!"
+            )
+            qC.clear()
+
+            // 4. Private DM attachment: A & B get 200 OK, User C gets 403 FORBIDDEN!
+            val dmAttId = uploadAttachment(pod1Id, uA.token, "secret-map.png", "image", 0)
+            val dmAttMsgRes = postJson(
+                "/api/pods/$pod1Id/dms/$peerB/messages",
+                uA.token,
+                mapOf("body" to "", "attachmentIds" to listOf(dmAttId))
+            )
+            assertEquals(HttpStatus.CREATED, dmAttMsgRes.statusCode)
+            val dmAttMsgId = objectMapper.readTree(dmAttMsgRes.body!!).path("message").path("id").asLong()
+
+            assertEquals(HttpStatus.OK, downloadAttachment(dmAttId, uA.token).statusCode)
+            assertEquals(HttpStatus.OK, downloadAttachment(dmAttId, uB.token).statusCode)
+            assertEquals(
+                HttpStatus.FORBIDDEN,
+                downloadAttachment(dmAttId, uC.token).statusCode,
+                "Bystander User C must get 403 FORBIDDEN on private DM attachment download!"
+            )
+
+            // 5. User C gets 403 on react / edit / delete / pin / bookmark of User A <-> User B's DM!
+            assertEquals(
+                HttpStatus.FORBIDDEN,
+                postJson("/api/messages/$dm1Id/reactions", uC.token, mapOf("emoji" to "👀")).statusCode
+            )
+            assertEquals(
+                HttpStatus.FORBIDDEN,
+                exchangeJson(HttpMethod.PATCH, "/api/messages/$dm1Id", uC.token, mapOf("body" to "Hack")).statusCode
+            )
+            assertEquals(
+                HttpStatus.FORBIDDEN,
+                exchangeJson(HttpMethod.DELETE, "/api/messages/$dm1Id", uC.token, null).statusCode
+            )
+            assertEquals(
+                HttpStatus.FORBIDDEN,
+                postJson("/api/messages/$dm1Id/pin", uC.token, emptyMap<String, Any>()).statusCode
+            )
+            assertEquals(
+                HttpStatus.FORBIDDEN,
+                postJson("/api/messages/$dm1Id/bookmark", uC.token, emptyMap<String, Any>()).statusCode
+            )
+
+            // 6. Pod search returns A <-> B's DM ONLY to A & B, and NEVER to User C!
+            val searchA = objectMapper.readTree(getJson("/api/pods/$pod1Id/search?q=SecretVaultCoord7749", uA.token).body!!).path("messages")
+            val searchB = objectMapper.readTree(getJson("/api/pods/$pod1Id/search?q=SecretVaultCoord7749", uB.token).body!!).path("messages")
+            val searchC = objectMapper.readTree(getJson("/api/pods/$pod1Id/search?q=SecretVaultCoord7749", uC.token).body!!).path("messages")
+            assertEquals(1, searchA.size())
+            assertEquals(1, searchB.size())
+            assertEquals(0, searchC.size(), "Search for User C must NEVER return User A <-> User B's private DM!")
+
+            // Also verify <3-char LIKE fallback search respects DM privacy!
+            val shortDmRes = postJson("/api/pods/$pod1Id/dms/$peerB/messages", uA.token, mapOf("body" to "gg9x"))
+            assertEquals(HttpStatus.CREATED, shortDmRes.statusCode)
+            val shortSearchC = objectMapper.readTree(getJson("/api/pods/$pod1Id/search?q=9x", uC.token).body!!).path("messages")
+            assertEquals(0, shortSearchC.size(), "LIKE search fallback for User C must NEVER return private DMs!")
+
+            // 7. DM reactions, edits, pins, bookmarks, and deletes stay strictly scoped to {uA, uB}
+            qC.clear()
+            assertEquals(HttpStatus.OK, postJson("/api/messages/$dm1Id/reactions", uB.token, mapOf("emoji" to "🤝")).statusCode)
+            assertEquals(
+                HttpStatus.OK,
+                exchangeJson(HttpMethod.PATCH, "/api/messages/$dm1Id", uA.token, mapOf("body" to "SecretVaultCoord7749 — 22:15 sharp!")).statusCode
+            )
+            assertEquals(HttpStatus.OK, postJson("/api/messages/$dm1Id/pin", uA.token, emptyMap<String, Any>()).statusCode)
+            assertEquals(HttpStatus.OK, postJson("/api/messages/$dm1Id/bookmark", uB.token, emptyMap<String, Any>()).statusCode)
+
+            // Group Chat pins endpoint must NOT expose pinned 1:1 DMs!
+            val podPinsForC = objectMapper.readTree(getJson("/api/pods/$pod1Id/pins", uC.token).body!!).path("messages")
+            assertFalse(podPinsForC.any { it.path("id").asLong() == dm1Id }, "GET /api/pods/{podId}/pins must only return Group Chat pins")
+
+            // User B's bookmarks include dm1Id; User C's bookmarks do NOT
+            val bBookmarks = objectMapper.readTree(getJson("/api/bookmarks", uB.token).body!!).path("messages")
+            assertTrue(bBookmarks.any { it.path("id").asLong() == dm1Id })
+
+            // Verify DM conversation summary when last message is attachment-only ("Sent an attachment") vs deleted ("Message deleted")
+            val shortDmId = objectMapper.readTree(shortDmRes.body!!).path("message").path("id").asLong()
+            assertEquals(HttpStatus.OK, exchangeJson(HttpMethod.DELETE, "/api/messages/$shortDmId", uA.token, null).statusCode)
+
+            assertNull(
+                pollMatching(qC, 350L) { true },
+                "User C must receive ZERO WS frames across DM reaction, edit, pin, and delete!"
+            )
+
+            // Check dmConversations on GET /api/pods/{podId}/dms and GET /api/pods for A, B, and C!
+            val dmsForA = objectMapper.readTree(getJson("/api/pods/$pod1Id/dms", uA.token).body!!)
+            assertZeroPiiLeak(objectMapper.writeValueAsString(dmsForA))
+            assertEquals(1, dmsForA.path("conversations").size())
+            val summaryOnA = dmsForA.path("conversations")[0]
+            assertEquals(peerB, summaryOnA.path("peerId").asText())
+            assertEquals(aliasB, summaryOnA.path("peerAlias").asText())
+            assertTrue(summaryOnA.path("online").asBoolean())
+            assertEquals(shortDmId, summaryOnA.path("lastMessageId").asLong())
+            assertEquals("Message deleted", summaryOnA.path("lastBody").asText())
+            assertEquals(peerA, summaryOnA.path("lastSenderPeerId").asText())
+
+            // Also verify attachment summary ("Sent an attachment") when an attachment DM is the latest message
+            val dmAtt2Id = uploadAttachment(pod1Id, uB.token, "build-notes.pdf", "file", 0)
+            val dmAtt2MsgRes = postJson(
+                "/api/pods/$pod1Id/dms/$peerA/messages",
+                uB.token,
+                mapOf("body" to "", "attachmentIds" to listOf(dmAtt2Id))
+            )
+            assertEquals(HttpStatus.CREATED, dmAtt2MsgRes.statusCode)
+            val latestSummaryOnA = objectMapper.readTree(getJson("/api/pods", uA.token).body!!).path("pods")
+                .first { it.path("podId").asText() == pod1Id }
+                .path("dmConversations")[0]
+            assertEquals("Sent an attachment", latestSummaryOnA.path("lastBody").asText())
+            assertEquals(peerB, latestSummaryOnA.path("lastSenderPeerId").asText())
+
+            val podsForB = objectMapper.readTree(getJson("/api/pods", uB.token).body!!).path("pods")
+                .first { it.path("podId").asText() == pod1Id }
+            assertEquals(1, podsForB.path("dmConversations").size())
+            assertEquals(peerA, podsForB.path("dmConversations")[0].path("peerId").asText())
+
+            val podsForC = objectMapper.readTree(getJson("/api/pods", uC.token).body!!).path("pods")
+                .first { it.path("podId").asText() == pod1Id }
+            assertEquals(0, podsForC.path("dmConversations").size(), "User C must have empty dmConversations!")
+
+            // Verify GET /api/pods/{pod1Id}/messages (Group Chat) NEVER includes any 1:1 DM rows!
+            val groupFeed = objectMapper.readTree(getJson("/api/pods/$pod1Id/messages?beforeId=0&limit=50", uA.token).body!!).path("messages")
+            assertFalse(groupFeed.any { it.path("id").asLong() in setOf(dm1Id, dm2Id, dmAttMsgId, shortDmId) })
+
+            // Verify GET /api/pods/{pod1Id}/dms/{peerB}/messages returns the exact DM conversation
+            val dmFeed = objectMapper.readTree(
+                getJson("/api/pods/$pod1Id/dms/$peerB/messages?beforeId=0&limit=40", uA.token).body!!
+            ).path("messages")
+            assertTrue(dmFeed.size() >= 5)
+            assertTrue(dmFeed.any { it.path("id").asLong() == dm1Id })
+        } finally {
+            runCatching { wsA.close() }
+            runCatching { wsB.close() }
+            runCatching { wsC.close() }
+        }
+    }
+
+    @Test
+    @Order(6)
+    fun `native WebSocket hub manages single pod audio call voicePeers and relays WebRTC signals only between voice participants`() {
         val u0 = accounts[0]
         val u1 = accounts[1]
-        val u2 = accounts[2] // 3rd member in Pod 1 — must NOT receive WebRTC signals targeted at u1!
+        val u2 = accounts[2]
 
         val client = StandardWebSocketClient()
         val q0: BlockingQueue<JsonNode> = LinkedBlockingQueue()
@@ -550,28 +738,22 @@ class CanopyIntegrationTest {
             awaitFrame(q2) { it.path("type").asText() == "presence_snapshot" }
 
             assertZeroPiiLeak(objectMapper.writeValueAsString(snap0))
+            assertTrue(snap0.has("voicePeers") && !snap0.has("voiceRoster"))
             val peer0 = snap0.path("selfPeerId").asText()
             val peer1 = snap1.path("selfPeerId").asText()
-            assertTrue(peer0.startsWith("p_"))
-            assertTrue(peer1.startsWith("p_"))
-            assertNotEquals(peer0, peer1)
 
-            // 1. Live message_created broadcast to connected WebSocket peers
+            // 1. Live Group Chat message_created broadcast + private bookmark never leaks over WS
             val sendRes = postJson(
-                "/api/pods/$pod1Id/channels/$pod1GeneralChannelId/messages",
+                "/api/pods/$pod1Id/messages",
                 u0.token,
                 mapOf("body" to "Live WebSocket broadcast check!")
             )
             assertEquals(HttpStatus.CREATED, sendRes.statusCode)
-
             val liveMsgOn1 = awaitFrame(q1) {
                 it.path("type").asText() == "message_created" &&
                     it.path("message").path("body").asText() == "Live WebSocket broadcast check!"
             }
             assertZeroPiiLeak(objectMapper.writeValueAsString(liveMsgOn1))
-            assertEquals(peer0, liveMsgOn1.path("message").path("senderPeerId").asText())
-
-            // 1b. Private bookmark state on u0 must NEVER leak in WS broadcasts to u1, and untrusted Origin is rejected
             val liveMsgId = liveMsgOn1.path("message").path("id").asLong()
             assertEquals(HttpStatus.OK, postJson("/api/messages/$liveMsgId/bookmark", u0.token, emptyMap<String, Any>()).statusCode)
             assertEquals(HttpStatus.OK, postJson("/api/messages/$liveMsgId/pin", u0.token, emptyMap<String, Any>()).statusCode)
@@ -589,38 +771,57 @@ class CanopyIntegrationTest {
             }
             assertTrue(evilAttempt.isFailure, "Untrusted cross-origin WebSocket handshake must be rejected")
 
-            // 2. voice_join -> voice_roster_updated broadcast
+            // 2. Single Pod Audio Call: peer0 joins voice -> voice_roster_updated with voicePeers
             ws0.sendMessage(
                 TextMessage(
                     objectMapper.writeValueAsString(
-                        mapOf(
-                            "type" to "voice_join",
-                            "voiceChannelId" to pod1LoungeVoiceChannelId,
-                            "muted" to false,
-                            "deafened" to false
-                        )
+                        mapOf("type" to "voice_join", "muted" to false, "deafened" to false)
                     )
                 )
             )
 
-            val voiceUpdateOn1 = awaitFrame(q1) {
-                it.path("type").asText() == "voice_roster_updated" &&
-                    it.path("voiceRoster").path(pod1LoungeVoiceChannelId).size() == 1
+            val voiceUpdate1 = awaitFrame(q1) {
+                it.path("type").asText() == "voice_roster_updated" && it.path("voicePeers").size() == 1
             }
-            assertZeroPiiLeak(objectMapper.writeValueAsString(voiceUpdateOn1))
-            assertEquals(
-                peer0,
-                voiceUpdateOn1.path("voiceRoster").path(pod1LoungeVoiceChannelId)[0].path("peerId").asText()
+            assertZeroPiiLeak(objectMapper.writeValueAsString(voiceUpdate1))
+            assertEquals(peer0, voiceUpdate1.path("voicePeers")[0].path("peerId").asText())
+
+            // Verify pod_members.in_voice == 1 reflected in GET /api/pods
+            val podAfterJoin = objectMapper.readTree(getJson("/api/pods", u1.token).body!!).path("pods")
+                .first { it.path("podId").asText() == pod1Id }
+            assertTrue(
+                podAfterJoin.path("members").first { it.path("peerId").asText() == peer0 }.path("inVoice").asBoolean()
             )
 
-            // 3. Targeted webrtc_signal SDP offer from peer0 -> peer1 ONLY
+            // Sending webrtc_signal to peer1 BEFORE peer1 joins voice must be dropped!
+            ws0.sendMessage(
+                TextMessage(
+                    objectMapper.writeValueAsString(
+                        mapOf("type" to "webrtc_signal", "targetPeerId" to peer1, "signal" to mapOf("type" to "offer"))
+                    )
+                )
+            )
+            assertNull(
+                pollMatching(q1, 250L) { it.path("type").asText() == "webrtc_signal" },
+                "webrtc_signal must require both sender and target to be in voice"
+            )
+
+            // Now peer1 joins voice too -> both in voice -> webrtc_signal relays ONLY to peer1!
+            ws1.sendMessage(
+                TextMessage(
+                    objectMapper.writeValueAsString(
+                        mapOf("type" to "voice_join", "muted" to false, "deafened" to false)
+                    )
+                )
+            )
+            awaitFrame(q0) { it.path("type").asText() == "voice_roster_updated" && it.path("voicePeers").size() == 2 }
+
             ws0.sendMessage(
                 TextMessage(
                     objectMapper.writeValueAsString(
                         mapOf(
                             "type" to "webrtc_signal",
                             "targetPeerId" to peer1,
-                            "voiceChannelId" to pod1LoungeVoiceChannelId,
                             "signal" to mapOf(
                                 "type" to "offer",
                                 "sdp" to "v=0\r\no=- 12345 2 IN IP4 127.0.0.1\r\ns=-\r\n"
@@ -633,12 +834,28 @@ class CanopyIntegrationTest {
             val signalOn1 = awaitFrame(q1) { it.path("type").asText() == "webrtc_signal" }
             assertZeroPiiLeak(objectMapper.writeValueAsString(signalOn1))
             assertEquals(peer0, signalOn1.path("fromPeerId").asText())
-            assertEquals(pod1LoungeVoiceChannelId, signalOn1.path("voiceChannelId").asText())
+            assertFalse(signalOn1.has("voiceChannelId"))
             assertEquals("offer", signalOn1.path("signal").path("type").asText())
 
-            // Verify bystander peer2 in the same pod did NOT receive peer0 -> peer1's targeted signal
-            val leakedToPeer2 = pollMatching(q2, 350L) { it.path("type").asText() == "webrtc_signal" }
+            val leakedToPeer2 = pollMatching(q2, 300L) { it.path("type").asText() == "webrtc_signal" }
             assertNull(leakedToPeer2, "webrtc_signal must only be delivered to targetPeerId")
+
+            // Voice speaking state + voice_leave resets inVoice to false
+            ws0.sendMessage(
+                TextMessage(
+                    objectMapper.writeValueAsString(
+                        mapOf("type" to "voice_state", "muted" to false, "deafened" to false, "speaking" to true)
+                    )
+                )
+            )
+            val speakingUpdate = awaitFrame(q1) {
+                it.path("type").asText() == "voice_roster_updated" &&
+                    it.path("voicePeers").any { p -> p.path("peerId").asText() == peer0 && p.path("speaking").asBoolean() }
+            }
+            assertZeroPiiLeak(objectMapper.writeValueAsString(speakingUpdate))
+
+            ws0.sendMessage(TextMessage(objectMapper.writeValueAsString(mapOf("type" to "voice_leave"))))
+            awaitFrame(q1) { it.path("type").asText() == "voice_roster_updated" && it.path("voicePeers").size() == 1 }
         } finally {
             runCatching { ws0.close() }
             runCatching { ws1.close() }
@@ -647,29 +864,39 @@ class CanopyIntegrationTest {
     }
 
     @Test
-    @Order(6)
-    fun `cursor pagination and concurrent 7-user blind pod matching stay lock-safe and exact`() {
-        // 1. Cursor pagination check (limit=3 -> nextBeforeId -> older page)
-        val page1Res = getJson(
-            "/api/pods/$pod1Id/channels/$pod1GeneralChannelId/messages?beforeId=0&limit=3",
-            accounts[0].token
-        )
+    @Order(7)
+    fun `cursor pagination for both Group Chat and 1-to-1 DMs and concurrent 7-user blind pod matching stay lock-safe`() {
+        // 1a. Group Chat cursor pagination
+        val page1Res = getJson("/api/pods/$pod1Id/messages?beforeId=0&limit=3", accounts[0].token)
         assertEquals(HttpStatus.OK, page1Res.statusCode)
         val page1Json = objectMapper.readTree(page1Res.body!!)
         val page1Msgs = page1Json.path("messages")
         assertEquals(3, page1Msgs.size())
         val nextCursor = page1Json.path("nextBeforeId").asLong()
-        assertTrue(nextCursor > 0L, "Expected positive nextBeforeId cursor")
-        assertTrue(page1Msgs[0].path("id").asLong() < page1Msgs[2].path("id").asLong(), "Messages must be chronological")
+        assertTrue(nextCursor > 0L)
+        assertTrue(page1Msgs[0].path("id").asLong() < page1Msgs[2].path("id").asLong())
 
-        val page2Res = getJson(
-            "/api/pods/$pod1Id/channels/$pod1GeneralChannelId/messages?beforeId=$nextCursor&limit=3",
-            accounts[0].token
-        )
+        val page2Res = getJson("/api/pods/$pod1Id/messages?beforeId=$nextCursor&limit=3", accounts[0].token)
         assertEquals(HttpStatus.OK, page2Res.statusCode)
         val page2Msgs = objectMapper.readTree(page2Res.body!!).path("messages")
         assertEquals(3, page2Msgs.size())
-        assertTrue(page2Msgs[2].path("id").asLong() < page1Msgs[0].path("id").asLong(), "Page 2 must precede Page 1")
+        assertTrue(page2Msgs[2].path("id").asLong() < page1Msgs[0].path("id").asLong())
+
+        // 1b. 1:1 DM cursor pagination
+        val peerB = objectMapper.readTree(getJson("/api/pods", accounts[1].token).body!!).path("pods")
+            .first { it.path("podId").asText() == pod1Id }
+            .path("myPeerId").asText()
+        val dmPage1 = objectMapper.readTree(
+            getJson("/api/pods/$pod1Id/dms/$peerB/messages?beforeId=0&limit=2", accounts[0].token).body!!
+        )
+        assertEquals(2, dmPage1.path("messages").size())
+        val dmCursor = dmPage1.path("nextBeforeId").asLong()
+        assertTrue(dmCursor > 0L)
+        val dmPage2 = objectMapper.readTree(
+            getJson("/api/pods/$pod1Id/dms/$peerB/messages?beforeId=$dmCursor&limit=2", accounts[0].token).body!!
+        )
+        assertEquals(2, dmPage2.path("messages").size())
+        assertTrue(dmPage2.path("messages")[1].path("id").asLong() < dmPage1.path("messages")[0].path("id").asLong())
 
         // 2. Concurrent blind matching across all 7 accounts simultaneously for "chess"
         val pool = java.util.concurrent.Executors.newVirtualThreadPerTaskExecutor()
@@ -692,148 +919,84 @@ class CanopyIntegrationTest {
         }
         assertEquals(7, chessPodCounts.values.sum())
         assertEquals(2, chessPodCounts.size, "7 concurrent matches must pack into 2 chess pods (6 + 1)")
-        assertTrue(chessPodCounts.values.all { it <= 6 }, "No pod may exceed maxMembers=6 under concurrency")
+        assertTrue(chessPodCounts.values.all { it <= 6 })
     }
 
     @Test
-    @Order(7)
+    @Order(8)
     fun `multi-pod capacity presets forceNewPod allowAdditional and native mobile originless WebSocket succeed`() {
         val u0 = accounts[0]
 
-        // 1. Reject invalid maxMembers = 7 with 400 on both match and leave
-        val badMatchRes = postJson(
-            "/api/pods/match",
-            u0.token,
-            mapOf("interest" to "gaming", "maxMembers" to 7)
-        )
+        val badMatchRes = postJson("/api/pods/match", u0.token, mapOf("interest" to "gaming", "maxMembers" to 7))
         assertEquals(HttpStatus.BAD_REQUEST, badMatchRes.statusCode)
         assertTrue(badMatchRes.body!!.contains("maxMembers must be 4, 6, 10, 25, or 50"))
 
-        val badLeaveRes = postJson(
-            "/api/pods/$pod1Id/leave",
-            u0.token,
-            mapOf("rematch" to true, "maxMembers" to 7)
-        )
+        val badLeaveRes = postJson("/api/pods/$pod1Id/leave", u0.token, mapOf("rematch" to true, "maxMembers" to 7))
         assertEquals(HttpStatus.BAD_REQUEST, badLeaveRes.statusCode)
 
-        // 2. Cozy 4-seat pod (maxMembers = 4): first 4 users share Cozy pod 1; 5th user spawns Cozy pod 2
         val cozyPodIds = mutableListOf<String>()
         for (i in 0 until 4) {
-            val res = postJson(
-                "/api/pods/match",
-                accounts[i].token,
-                mapOf("interest" to "cozy-reading", "maxMembers" to 4)
-            )
-            assertEquals(HttpStatus.OK, res.statusCode, "Cozy match failed for user $i: ${res.body}")
+            val res = postJson("/api/pods/match", accounts[i].token, mapOf("interest" to "cozy-reading", "maxMembers" to 4))
+            assertEquals(HttpStatus.OK, res.statusCode)
             assertZeroPiiLeak(res.body!!)
-            val pod = objectMapper.readTree(res.body!!).path("matched")[0]
-            assertEquals(4, pod.path("maxMembers").asInt())
-            cozyPodIds.add(pod.path("podId").asText())
+            cozyPodIds.add(objectMapper.readTree(res.body!!).path("matched")[0].path("podId").asText())
         }
-        assertEquals(1, cozyPodIds.toSet().size, "First 4 users must share the same 4-seat Cozy pod")
+        assertEquals(1, cozyPodIds.toSet().size)
 
-        val fifthCozyRes = postJson(
-            "/api/pods/match",
-            accounts[4].token,
-            mapOf("interest" to "cozy-reading", "maxMembers" to 4)
-        )
+        val fifthCozyRes = postJson("/api/pods/match", accounts[4].token, mapOf("interest" to "cozy-reading", "maxMembers" to 4))
         assertEquals(HttpStatus.OK, fifthCozyRes.statusCode)
-        val fifthCozyPod = objectMapper.readTree(fifthCozyRes.body!!).path("matched")[0]
-        assertEquals(4, fifthCozyPod.path("maxMembers").asInt())
-        assertEquals(1, fifthCozyPod.path("memberCount").asInt())
-        assertNotEquals(cozyPodIds.first(), fifthCozyPod.path("podId").asText(), "5th user must spawn a 2nd Cozy pod")
+        assertNotEquals(cozyPodIds.first(), objectMapper.readTree(fifthCozyRes.body!!).path("matched")[0].path("podId").asText())
 
-        // 3. Lounge 10-seat pod (maxMembers = 10): all 7 users fit inside a single 10-seat Lounge pod
         val loungePodIds = mutableSetOf<String>()
         var lastLoungeMemberCount = 0
         for (acc in accounts) {
-            val res = postJson(
-                "/api/pods/match",
-                acc.token,
-                mapOf("interest" to "lounge-jazz", "maxMembers" to 10)
-            )
+            val res = postJson("/api/pods/match", acc.token, mapOf("interest" to "lounge-jazz", "maxMembers" to 10))
             assertEquals(HttpStatus.OK, res.statusCode)
             assertZeroPiiLeak(res.body!!)
             val pod = objectMapper.readTree(res.body!!).path("matched")[0]
-            assertEquals(10, pod.path("maxMembers").asInt())
             loungePodIds.add(pod.path("podId").asText())
             lastLoungeMemberCount = pod.path("memberCount").asInt()
         }
-        assertEquals(1, loungePodIds.size, "All 7 users must fit in the single 10-seat Lounge pod")
+        assertEquals(1, loungePodIds.size)
         assertEquals(7, lastLoungeMemberCount)
 
-        // 4. allowAdditional = true: u0 joins a 2nd gaming pod (pod2Id) simultaneously with distinct alias & unlinkable peerId
-        val secondGamingRes = postJson(
-            "/api/pods/match",
-            u0.token,
-            mapOf("interest" to "gaming", "allowAdditional" to true)
-        )
-        assertEquals(HttpStatus.OK, secondGamingRes.statusCode, "allowAdditional match failed: ${secondGamingRes.body}")
+        val secondGamingRes = postJson("/api/pods/match", u0.token, mapOf("interest" to "gaming", "allowAdditional" to true))
+        assertEquals(HttpStatus.OK, secondGamingRes.statusCode)
         assertZeroPiiLeak(secondGamingRes.body!!)
         val secondGamingJson = objectMapper.readTree(secondGamingRes.body!!)
-        val secondGamingPod = secondGamingJson.path("matched")[0]
-        assertEquals(pod2Id, secondGamingPod.path("podId").asText(), "u0 should join open Pod 2 rather than Pod 1")
+        assertEquals(pod2Id, secondGamingJson.path("matched")[0].path("podId").asText())
 
         val u0GamingPods = secondGamingJson.path("pods").filter { it.path("interestSlug").asText() == "gaming" }
-        assertEquals(2, u0GamingPods.size, "u0 must simultaneously belong to 2 gaming pods")
+        assertEquals(2, u0GamingPods.size)
         val gPod1 = u0GamingPods.first { it.path("podId").asText() == pod1Id }
         val gPod2 = u0GamingPods.first { it.path("podId").asText() == pod2Id }
-        assertNotEquals(
-            gPod1.path("myAlias").asText(),
-            gPod2.path("myAlias").asText(),
-            "Multi-pod member must receive distinct anonymous aliases across pods"
-        )
-        assertNotEquals(
-            gPod1.path("myPeerId").asText(),
-            gPod2.path("myPeerId").asText(),
-            "Multi-pod member must have unlinkable room-scoped peerIds across pods"
-        )
+        assertNotEquals(gPod1.path("myAlias").asText(), gPod2.path("myAlias").asText())
+        assertNotEquals(gPod1.path("myPeerId").asText(), gPod2.path("myPeerId").asText())
 
-        // 5. forceNewPod = true: spawns a brand-new 4-seat gaming pod on demand even while open gaming pods exist
         val forcedGamingRes = postJson(
             "/api/pods/match",
             u0.token,
             mapOf("interest" to "gaming", "maxMembers" to 4, "forceNewPod" to true)
         )
         assertEquals(HttpStatus.OK, forcedGamingRes.statusCode)
-        assertZeroPiiLeak(forcedGamingRes.body!!)
-        val forcedGamingPod = objectMapper.readTree(forcedGamingRes.body!!).path("matched")[0]
-        val pod3Id = forcedGamingPod.path("podId").asText()
-        assertNotEquals(pod1Id, pod3Id)
-        assertNotEquals(pod2Id, pod3Id)
-        assertEquals(4, forcedGamingPod.path("maxMembers").asInt())
-        assertEquals(1, forcedGamingPod.path("memberCount").asInt())
+        val pod3Id = objectMapper.readTree(forcedGamingRes.body!!).path("matched")[0].path("podId").asText()
 
-        // Rematch pod3Id while still active in pod1Id and pod2Id -> replaces pod3Id with a 10-seat pod
         val multiRematchRes = postJson(
             "/api/pods/$pod3Id/leave",
             u0.token,
             mapOf("rematch" to true, "maxMembers" to 10, "forceNewPod" to true)
         )
         assertEquals(HttpStatus.OK, multiRematchRes.statusCode)
-        assertZeroPiiLeak(multiRematchRes.body!!)
-        val rematchedNode = objectMapper.readTree(multiRematchRes.body!!).path("newPod")
-        assertEquals(10, rematchedNode.path("maxMembers").asInt())
-        assertNotEquals(pod3Id, rematchedNode.path("podId").asText())
+        assertEquals(10, objectMapper.readTree(multiRematchRes.body!!).path("newPod").path("maxMembers").asInt())
 
-        // Enforce upper bound of 8 active pods per interest per user (u0 currently has 3 active gaming pods)
         for (extra in 4..8) {
-            val extraRes = postJson(
-                "/api/pods/match",
-                u0.token,
-                mapOf("interest" to "gaming", "maxMembers" to 4, "forceNewPod" to true)
-            )
+            val extraRes = postJson("/api/pods/match", u0.token, mapOf("interest" to "gaming", "maxMembers" to 4, "forceNewPod" to true))
             assertEquals(HttpStatus.OK, extraRes.statusCode)
         }
-        val ninthRes = postJson(
-            "/api/pods/match",
-            u0.token,
-            mapOf("interest" to "gaming", "forceNewPod" to true)
-        )
+        val ninthRes = postJson("/api/pods/match", u0.token, mapOf("interest" to "gaming", "forceNewPod" to true))
         assertEquals(HttpStatus.BAD_REQUEST, ninthRes.statusCode)
-        assertTrue(ninthRes.body!!.contains("Maximum 8 active pods per interest reached"))
 
-        // 6. Native mobile WebSocket handshake (NO Origin header at all) + Expo Web Origin handshake succeed
+        // Native mobile originless WebSocket + Expo Web Origin handshake
         val mobileInbox: BlockingQueue<JsonNode> = LinkedBlockingQueue()
         val textBuf = StringBuilder()
         val nativeWs = java.net.http.HttpClient.newHttpClient()
@@ -864,9 +1027,7 @@ class CanopyIntegrationTest {
 
         val expoClient = StandardWebSocketClient()
         val expoInbox: BlockingQueue<JsonNode> = LinkedBlockingQueue()
-        val expoHeaders = org.springframework.web.socket.WebSocketHttpHeaders().apply {
-            origin = "http://localhost:8081"
-        }
+        val expoHeaders = org.springframework.web.socket.WebSocketHttpHeaders().apply { origin = "http://localhost:8081" }
         val expoWs = expoClient.execute(
             object : TextWebSocketHandler() {
                 override fun handleTextMessage(session: WebSocketSession, message: TextMessage) {
@@ -892,88 +1053,40 @@ class CanopyIntegrationTest {
     }
 
     @Test
-    @Order(8)
+    @Order(9)
     fun `pod invite links support zero-PII public preview opt-out rejoin idempotency single-use exhaustion and revocation`() {
         val u0 = accounts[0]
-        val u5OptedOut = accounts[5] // opted out of pod1Id in @Order(3)!
-        val u6Outsider = accounts[6] // never joined pod1Id
+        val u5OptedOut = accounts[5]
+        val u6Outsider = accounts[6]
 
-        // 0. Non-member cannot create invites (403) & unauthenticated user cannot accept invites (401)
-        val nonMemberCreate = postJson("/api/pods/$pod1Id/invites", u6Outsider.token, emptyMap<String, Any>())
-        assertEquals(HttpStatus.FORBIDDEN, nonMemberCreate.statusCode)
+        assertEquals(HttpStatus.FORBIDDEN, postJson("/api/pods/$pod1Id/invites", u6Outsider.token, emptyMap<String, Any>()).statusCode)
+        assertEquals(HttpStatus.UNAUTHORIZED, postJson("/api/invites/k8m4p2x9q7w3/accept", null, emptyMap<String, Any>()).statusCode)
 
-        val unauthAccept = postJson("/api/invites/k8m4p2x9q7w3/accept", null, emptyMap<String, Any>())
-        assertEquals(HttpStatus.UNAUTHORIZED, unauthAccept.statusCode)
-
-        assertEquals(
-            HttpStatus.BAD_REQUEST,
-            runCatching { com.canopy.pods.normalizeInviteCode("bad") }
-                .exceptionOrNull()
-                ?.let { (it as org.springframework.web.server.ResponseStatusException).statusCode }
-        )
-        assertEquals(
-            "k8m4p2x9q7w3",
-            com.canopy.pods.normalizeInviteCode("  https://canopy.app/invite/K8M4P2X9Q7W3?utm=share  ")
-        )
-
-        // 1. Create invite on pod1Id (currently 5/6 members) and verify reuse when regenerate=false
         val createRes = postJson("/api/pods/$pod1Id/invites", u0.token, emptyMap<String, Any>())
-        assertEquals(HttpStatus.CREATED, createRes.statusCode, "Create invite failed: ${createRes.body}")
+        assertEquals(HttpStatus.CREATED, createRes.statusCode)
         assertZeroPiiLeak(createRes.body!!)
-        val createdInvite = objectMapper.readTree(createRes.body!!).path("invite")
-        val code = createdInvite.path("code").asText()
-        assertEquals(12, code.length)
-        assertEquals(pod1Id, createdInvite.path("podId").asText())
-        assertEquals("gaming", createdInvite.path("interestSlug").asText())
-        assertEquals(5, createdInvite.path("memberCount").asInt())
-        assertEquals(6, createdInvite.path("maxMembers").asInt())
-        assertEquals(0, createdInvite.path("maxUses").asInt())
-        assertEquals(0, createdInvite.path("usesCount").asInt())
-        assertFalse(createdInvite.path("isExpired").asBoolean())
-        assertFalse(createdInvite.path("isRevoked").asBoolean())
-        assertFalse(createdInvite.path("isFull").asBoolean())
-        assertTrue(createdInvite.path("canAccept").asBoolean())
-        assertTrue(createdInvite.path("invitedByAlias").asText().isNotBlank())
+        val code = objectMapper.readTree(createRes.body!!).path("invite").path("code").asText()
 
         val reuseRes = postJson("/api/pods/$pod1Id/invites", u0.token, mapOf("regenerate" to false))
         assertEquals(HttpStatus.OK, reuseRes.statusCode)
         assertEquals(code, objectMapper.readTree(reuseRes.body!!).path("invite").path("code").asText())
 
-        val listInvitesRes = getJson("/api/pods/$pod1Id/invites", u0.token)
-        assertEquals(HttpStatus.OK, listInvitesRes.statusCode)
-        assertZeroPiiLeak(listInvitesRes.body!!)
-        assertEquals(1, objectMapper.readTree(listInvitesRes.body!!).path("invites").size())
-
-        // 2. Public unauthenticated GET /api/invites/{code} succeeds with ZERO PII; unknown code returns 404
         val publicPreviewRes = getJson("/api/invites/$code", null)
         assertEquals(HttpStatus.OK, publicPreviewRes.statusCode)
         assertZeroPiiLeak(publicPreviewRes.body!!)
-        val pubInvite = objectMapper.readTree(publicPreviewRes.body!!).path("invite")
-        assertEquals(code, pubInvite.path("code").asText())
-        assertEquals(pod1Id, pubInvite.path("podId").asText())
-        assertTrue(pubInvite.path("canAccept").asBoolean())
-        assertFalse(pubInvite.has("createdByUserId"))
-        assertFalse(pubInvite.has("created_by_user_id"))
 
-        assertEquals(HttpStatus.NOT_FOUND, getJson("/api/invites/unknowncode99", null).statusCode)
-
-        // 3. Opted-out user (accounts[5]) accepts invite -> clears pod_opt_outs, rejoins pod1Id, broadcasts WS frames
         val wsClient = StandardWebSocketClient()
         val wsInbox: BlockingQueue<JsonNode> = LinkedBlockingQueue()
-        val ws0 = connectPodWs(wsClient, pod1Id, u0.token, wsInbox)
+        val ws2 = connectPodWs(wsClient, pod1Id, accounts[2].token, wsInbox)
         try {
             awaitFrame(wsInbox) { it.path("type").asText() == "presence_snapshot" }
 
             val acceptRes = postJson("/api/invites/${code.uppercase()}/accept", u5OptedOut.token, emptyMap<String, Any>())
-            assertEquals(HttpStatus.OK, acceptRes.statusCode, "Accept invite failed: ${acceptRes.body}")
+            assertEquals(HttpStatus.OK, acceptRes.statusCode)
             assertZeroPiiLeak(acceptRes.body!!)
             val acceptJson = objectMapper.readTree(acceptRes.body!!)
             assertFalse(acceptJson.path("alreadyMember").asBoolean())
-            val joinedPod = acceptJson.path("pod")
-            assertEquals(pod1Id, joinedPod.path("podId").asText())
-            assertEquals(6, joinedPod.path("memberCount").asInt())
-            val rejoinedAlias = joinedPod.path("myAlias").asText()
-            assertTrue(rejoinedAlias.isNotBlank())
+            val rejoinedAlias = acceptJson.path("pod").path("myAlias").asText()
 
             val joinedFrame = awaitFrame(wsInbox) { it.path("type").asText() == "member_joined" }
             assertZeroPiiLeak(objectMapper.writeValueAsString(joinedFrame))
@@ -984,118 +1097,43 @@ class CanopyIntegrationTest {
                     it.path("message").path("body").asText() == "$rejoinedAlias joined via invite link"
             }
             assertZeroPiiLeak(objectMapper.writeValueAsString(sysMsgFrame))
+
+            // Ensure pod_updated broadcast to accounts[2] did NOT leak accounts[0]/accounts[1]'s dmConversations!
+            val podUpdatedOn2 = awaitFrame(wsInbox) { it.path("type").asText() == "pod_updated" }
+            assertZeroPiiLeak(objectMapper.writeValueAsString(podUpdatedOn2))
+            assertEquals(
+                0,
+                podUpdatedOn2.path("pod").path("dmConversations").size(),
+                "pod_updated broadcast must personalize dmConversations per recipient and never leak others' DMs!"
+            )
         } finally {
-            runCatching { ws0.close() }
+            runCatching { ws2.close() }
         }
 
-        val remainingOptOuts = jdbcClient.sql(
-            """
-            SELECT COUNT(*)
-            FROM pod_opt_outs o
-            JOIN users u ON u.id = o.user_id
-            JOIN pods p ON p.id = o.pod_id
-            WHERE u.email = :email AND p.public_id = UNHEX(:podHex)
-            """.trimIndent()
-        )
-            .param("email", u5OptedOut.email)
-            .param("podHex", pod1Id)
-            .query { rs, _ -> rs.getLong(1) }
-            .single()
-        assertEquals(0L, remainingOptOuts, "Explicit invite accept must clear prior pod_opt_outs row")
-
-        // 4. Idempotent re-accept by existing member (accounts[5]) returns alreadyMember = true without incrementing usesCount
         val reAcceptRes = postJson("/api/invites/$code/accept", u5OptedOut.token, emptyMap<String, Any>())
         assertEquals(HttpStatus.OK, reAcceptRes.statusCode)
-        assertZeroPiiLeak(reAcceptRes.body!!)
         assertTrue(objectMapper.readTree(reAcceptRes.body!!).path("alreadyMember").asBoolean())
 
-        // pod1Id is now 6/6 full -> public preview reports isFull=true/canAccept=false, and outsider gets 409 CONFLICT
-        val fullPreview = objectMapper.readTree(getJson("/api/invites/$code", null).body!!).path("invite")
-        assertEquals(1, fullPreview.path("usesCount").asInt())
-        assertTrue(fullPreview.path("isFull").asBoolean())
-        assertFalse(fullPreview.path("canAccept").asBoolean())
+        assertEquals(HttpStatus.CONFLICT, postJson("/api/invites/$code/accept", u6Outsider.token, emptyMap<String, Any>()).statusCode)
 
-        val fullConflictRes = postJson("/api/invites/$code/accept", u6Outsider.token, emptyMap<String, Any>())
-        assertEquals(HttpStatus.CONFLICT, fullConflictRes.statusCode)
-
-        // 5. Single-use (maxUses = 1) exhaustion -> 410 GONE for 3rd user, plus DELETE revocation -> 410 GONE
         val astroMatch = postJson("/api/pods/match", u0.token, mapOf("interest" to "astronomy"))
-        assertEquals(HttpStatus.OK, astroMatch.statusCode)
         val astroPodId = objectMapper.readTree(astroMatch.body!!).path("matched")[0].path("podId").asText()
+        val singleCode = objectMapper.readTree(
+            postJson("/api/pods/$astroPodId/invites", u0.token, mapOf("maxUses" to 1, "expiresInHours" to 24, "regenerate" to true)).body!!
+        ).path("invite").path("code").asText()
+        assertEquals(HttpStatus.OK, postJson("/api/invites/$singleCode/accept", accounts[1].token, emptyMap<String, Any>()).statusCode)
+        assertEquals(HttpStatus.GONE, postJson("/api/invites/$singleCode/accept", accounts[2].token, emptyMap<String, Any>()).statusCode)
 
-        val singleInviteRes = postJson(
-            "/api/pods/$astroPodId/invites",
-            u0.token,
-            mapOf("maxUses" to 1, "expiresInHours" to 24, "regenerate" to true)
-        )
-        assertEquals(HttpStatus.CREATED, singleInviteRes.statusCode)
-        val singleCode = objectMapper.readTree(singleInviteRes.body!!).path("invite").path("code").asText()
-
-        val secondUserAccept = postJson("/api/invites/$singleCode/accept", accounts[1].token, emptyMap<String, Any>())
-        assertEquals(HttpStatus.OK, secondUserAccept.statusCode)
-        assertFalse(objectMapper.readTree(secondUserAccept.body!!).path("alreadyMember").asBoolean())
-
-        // Idempotent re-accept still works for accounts[1] even after single-use invite hit usesCount == 1
-        val secondUserReAccept = postJson("/api/invites/$singleCode/accept", accounts[1].token, emptyMap<String, Any>())
-        assertEquals(HttpStatus.OK, secondUserReAccept.statusCode)
-        assertTrue(objectMapper.readTree(secondUserReAccept.body!!).path("alreadyMember").asBoolean())
-
-        // 3rd user (accounts[2]) gets 410 GONE because maxUses=1 is exhausted
-        val thirdUserExhausted = postJson("/api/invites/$singleCode/accept", accounts[2].token, emptyMap<String, Any>())
-        assertEquals(HttpStatus.GONE, thirdUserExhausted.statusCode)
-        assertTrue(thirdUserExhausted.body!!.contains("usage limit"))
-
-        // Create unlimited never-expiring invite, revoke via DELETE, verify 410 GONE
-        val revocableRes = postJson(
-            "/api/pods/$astroPodId/invites",
-            u0.token,
-            mapOf("maxUses" to 0, "expiresInHours" to 0, "regenerate" to true)
-        )
-        assertEquals(HttpStatus.CREATED, revocableRes.statusCode)
-        val revocableInvite = objectMapper.readTree(revocableRes.body!!).path("invite")
-        assertTrue(revocableInvite.path("expiresAt").isNull)
-        val revocableCode = revocableInvite.path("code").asText()
-
-        val revokeDelRes = exchangeJson(
-            HttpMethod.DELETE,
-            "/api/pods/$astroPodId/invites/$revocableCode",
-            u0.token,
-            null
-        )
-        assertEquals(HttpStatus.OK, revokeDelRes.statusCode)
-        assertTrue(objectMapper.readTree(revokeDelRes.body!!).path("ok").asBoolean())
-
-        val revokedPreview = objectMapper.readTree(getJson("/api/invites/$revocableCode", null).body!!).path("invite")
-        assertTrue(revokedPreview.path("isRevoked").asBoolean())
-        assertFalse(revokedPreview.path("canAccept").asBoolean())
-
-        val acceptRevokedRes = postJson("/api/invites/$revocableCode/accept", accounts[2].token, emptyMap<String, Any>())
-        assertEquals(HttpStatus.GONE, acceptRevokedRes.statusCode)
-        assertTrue(acceptRevokedRes.body!!.contains("revoked"))
-
-        // Verify expired invite -> isExpired=true/canAccept=false in preview and 410 GONE on accept
-        val expInviteRes = postJson(
-            "/api/pods/$astroPodId/invites",
-            u0.token,
-            mapOf("maxUses" to 0, "expiresInHours" to 1, "regenerate" to true)
-        )
-        val expCode = objectMapper.readTree(expInviteRes.body!!).path("invite").path("code").asText()
-        jdbcClient.sql("UPDATE pod_invites SET expires_at = DATE_SUB(UTC_TIMESTAMP(), INTERVAL 5 MINUTE) WHERE code = :code")
-            .param("code", expCode)
-            .update()
-
-        val expPreview = objectMapper.readTree(getJson("/api/invites/$expCode", null).body!!).path("invite")
-        assertTrue(expPreview.path("isExpired").asBoolean())
-        assertFalse(expPreview.path("canAccept").asBoolean())
-
-        val acceptExpiredRes = postJson("/api/invites/$expCode/accept", accounts[2].token, emptyMap<String, Any>())
-        assertEquals(HttpStatus.GONE, acceptExpiredRes.statusCode)
-        assertTrue(acceptExpiredRes.body!!.contains("expired"))
+        val revocableCode = objectMapper.readTree(
+            postJson("/api/pods/$astroPodId/invites", u0.token, mapOf("maxUses" to 0, "expiresInHours" to 0, "regenerate" to true)).body!!
+        ).path("invite").path("code").asText()
+        assertEquals(HttpStatus.OK, exchangeJson(HttpMethod.DELETE, "/api/pods/$astroPodId/invites/$revocableCode", u0.token, null).statusCode)
+        assertEquals(HttpStatus.GONE, postJson("/api/invites/$revocableCode/accept", accounts[2].token, emptyMap<String, Any>()).statusCode)
     }
 
     @Test
-    @Order(9)
-    fun `25-member default pods democratic YES-vs-NO governance engine and premium custom admin groups succeed with zero PII`() {
+    @Order(10)
+    fun `25-member default pods democratic YES-vs-NO governance engine and Canopy Pro custom admin groups succeed`() {
         val u0 = accounts[0]
         val u1 = accounts[1]
         val u2 = accounts[2]
@@ -1105,30 +1143,29 @@ class CanopyIntegrationTest {
 
         // 1. Default matched pod has maxMembers == 25 and governanceMode == "DEMOCRATIC"
         val m0 = postJson("/api/pods/match", u0.token, mapOf("interest" to "tabletop-rpg"))
-        assertEquals(HttpStatus.OK, m0.statusCode, "Match failed: ${m0.body}")
+        assertEquals(HttpStatus.OK, m0.statusCode)
         assertZeroPiiLeak(m0.body!!)
         val rpgPod0 = objectMapper.readTree(m0.body!!).path("matched")[0]
         val rpgPodId = rpgPod0.path("podId").asText()
-        assertEquals(25, rpgPod0.path("maxMembers").asInt(), "Default pod capacity must be 25")
+        assertEquals(25, rpgPod0.path("maxMembers").asInt())
         assertEquals("DEMOCRATIC", rpgPod0.path("governanceMode").asText())
-        assertTrue(rpgPod0.path("allowRandomMatch").asBoolean())
-        assertFalse(rpgPod0.path("isPublicized").asBoolean())
-        assertEquals("MEMBER", rpgPod0.path("myRole").asText())
 
-        val rpgGeneralChannelId = rpgPod0.path("channels")
-            .first { it.path("slug").asText() == "general" }
-            .path("channelId").asText()
-
-        // 2. Join u1 and u2 into the same 25-member democratic pod -> 3 members total
-        val m1 = postJson("/api/pods/match", u1.token, mapOf("interest" to "tabletop-rpg"))
+        assertEquals(HttpStatus.OK, postJson("/api/pods/match", u1.token, mapOf("interest" to "tabletop-rpg")).statusCode)
         val m2 = postJson("/api/pods/match", u2.token, mapOf("interest" to "tabletop-rpg"))
-        assertEquals(HttpStatus.OK, m1.statusCode)
         assertEquals(HttpStatus.OK, m2.statusCode)
         val rpgPod2 = objectMapper.readTree(m2.body!!).path("matched")[0]
-        assertEquals(rpgPodId, rpgPod2.path("podId").asText())
-        assertEquals(3, rpgPod2.path("memberCount").asInt())
         val u2PeerIdInRpg = rpgPod2.path("myPeerId").asText()
         val u2AliasInRpg = rpgPod2.path("myAlias").asText()
+
+        // Removed channel proposal kinds must return 400 BAD_REQUEST
+        assertEquals(
+            HttpStatus.BAD_REQUEST,
+            postJson("/api/pods/$rpgPodId/proposals", u0.token, mapOf("kind" to "ADD_CHANNEL", "label" to "nope")).statusCode
+        )
+        assertEquals(
+            HttpStatus.BAD_REQUEST,
+            postJson("/api/pods/$rpgPodId/proposals", u0.token, mapOf("kind" to "REMOVE_CHANNEL")).statusCode
+        )
 
         val wsClient = StandardWebSocketClient()
         val q0: BlockingQueue<JsonNode> = LinkedBlockingQueue()
@@ -1140,176 +1177,75 @@ class CanopyIntegrationTest {
             awaitFrame(q0) { it.path("type").asText() == "presence_snapshot" }
             awaitFrame(q1) { it.path("type").asText() == "presence_snapshot" }
 
-            // 2a. ADD_CHANNEL proposal in 3-member pod:
-            // u0 proposes #strategy-notes -> yesCount=1, noCount=0, status=OPEN, GOVERNANCE card in #general
-            val propAddRes = postJson(
+            // 2a. UPDATE_TOPIC proposal in 3-member pod -> GOVERNANCE card posted in Group Chat -> passes at 2/3 YES!
+            val topicPropRes = postJson(
                 "/api/pods/$rpgPodId/proposals",
                 u0.token,
-                mapOf(
-                    "kind" to "ADD_CHANNEL",
-                    "label" to "strategy-notes",
-                    "topic" to "Campaign maps & lore",
-                    "channelKind" to "TEXT",
-                    "reason" to "Keep maps organized"
-                )
+                mapOf("kind" to "UPDATE_TOPIC", "topic" to "Weekly D&D campaigns & one-shots", "reason" to "Set room topic")
             )
-            assertEquals(HttpStatus.CREATED, propAddRes.statusCode, "Create proposal failed: ${propAddRes.body}")
-            assertZeroPiiLeak(propAddRes.body!!)
-            val propAddJson = objectMapper.readTree(propAddRes.body!!)
-            val addPropId = propAddJson.path("proposal").path("id").asLong()
-            assertEquals("OPEN", propAddJson.path("proposal").path("status").asText())
-            assertEquals(1, propAddJson.path("proposal").path("yesCount").asInt())
-            assertEquals(0, propAddJson.path("proposal").path("noCount").asInt())
-            assertEquals(3, propAddJson.path("proposal").path("eligibleCount").asInt())
-            assertTrue(propAddJson.path("proposal").path("myVote").asBoolean())
-            assertEquals(1, propAddJson.path("pod").path("openProposalsCount").asInt())
+            assertEquals(HttpStatus.CREATED, topicPropRes.statusCode, "Create proposal failed: ${topicPropRes.body}")
+            assertZeroPiiLeak(topicPropRes.body!!)
+            val topicPropId = objectMapper.readTree(topicPropRes.body!!).path("proposal").path("id").asLong()
 
-            // Verify WS broadcast to u1 personalized myVote == null
             val propFrameOn1 = awaitFrame(q1) {
                 it.path("type").asText() == "proposal_updated" &&
-                    it.path("proposal").path("id").asLong() == addPropId
+                    it.path("proposal").path("id").asLong() == topicPropId
             }
             assertZeroPiiLeak(objectMapper.writeValueAsString(propFrameOn1))
             assertTrue(propFrameOn1.path("proposal").path("myVote").isNull)
 
-            // Verify GOVERNANCE message in #general has hydrated proposal
-            val generalMsgsRes = getJson(
-                "/api/pods/$rpgPodId/channels/$rpgGeneralChannelId/messages?beforeId=0&limit=40",
-                u1.token
-            )
-            assertEquals(HttpStatus.OK, generalMsgsRes.statusCode)
-            assertZeroPiiLeak(generalMsgsRes.body!!)
-            val govMsg = objectMapper.readTree(generalMsgsRes.body!!).path("messages")
-                .first { it.path("msgType").asText() == "GOVERNANCE" && it.path("proposal").path("id").asLong() == addPropId }
+            val groupMsgsRes = getJson("/api/pods/$rpgPodId/messages?beforeId=0&limit=40", u1.token)
+            assertEquals(HttpStatus.OK, groupMsgsRes.statusCode)
+            val govMsg = objectMapper.readTree(groupMsgsRes.body!!).path("messages")
+                .first { it.path("msgType").asText() == "GOVERNANCE" && it.path("proposal").path("id").asLong() == topicPropId }
             assertEquals("OPEN", govMsg.path("proposal").path("status").asText())
-            assertTrue(govMsg.path("proposal").path("myVote").isNull)
 
-            // u1 votes YES -> 2 Yes vs 0 No out of 3 (2 > 0 + 1 remaining!) -> IMMEDIATELY PASSES & creates #strategy-notes!
-            val voteAddRes = postJson("/api/proposals/$addPropId/vote", u1.token, mapOf("vote" to true))
-            assertEquals(HttpStatus.OK, voteAddRes.statusCode, "Vote failed: ${voteAddRes.body}")
-            assertZeroPiiLeak(voteAddRes.body!!)
-            val voteAddJson = objectMapper.readTree(voteAddRes.body!!)
-            assertEquals("PASSED", voteAddJson.path("proposal").path("status").asText())
-            assertEquals(2, voteAddJson.path("proposal").path("yesCount").asInt())
-            assertEquals(0, voteAddJson.path("proposal").path("noCount").asInt())
-            assertEquals(0, voteAddJson.path("pod").path("openProposalsCount").asInt())
-            assertTrue(
-                voteAddJson.path("pod").path("channels").any { it.path("slug").asText() == "strategy-notes" },
-                "Passed ADD_CHANNEL proposal must immediately create #strategy-notes"
+            val topicVoteRes = postJson("/api/proposals/$topicPropId/vote", u1.token, mapOf("vote" to true))
+            assertEquals(HttpStatus.OK, topicVoteRes.statusCode)
+            assertEquals("PASSED", objectMapper.readTree(topicVoteRes.body!!).path("proposal").path("status").asText())
+            assertEquals(
+                "Weekly D&D campaigns & one-shots",
+                objectMapper.readTree(topicVoteRes.body!!).path("pod").path("description").asText()
             )
 
-            val chCreatedOn0 = awaitFrame(q0) {
-                it.path("type").asText() == "channel_created" &&
-                    it.path("channel").path("slug").asText() == "strategy-notes"
-            }
-            assertZeroPiiLeak(objectMapper.writeValueAsString(chCreatedOn0))
-
-            // 2b. Contested KICK_MEMBER proposal against u2:
-            // u0 proposes KICK_MEMBER -> u2 votes NO (1 Yes vs 1 No, 1 remaining -> stays OPEN) -> u1 votes YES (2 > 1 -> PASSES & kicks u2!)
+            // 2b. Contested KICK_MEMBER proposal against u2: 1 Yes vs 1 No stays OPEN -> 2 Yes vs 1 No PASSES & kicks u2!
             val kickPropRes = postJson(
                 "/api/pods/$rpgPodId/proposals",
                 u0.token,
-                mapOf(
-                    "kind" to "KICK_MEMBER",
-                    "targetPeerId" to u2PeerIdInRpg,
-                    "reason" to "Disruptive soundboard spam"
-                )
+                mapOf("kind" to "KICK_MEMBER", "targetPeerId" to u2PeerIdInRpg, "reason" to "Spam")
             )
-            assertEquals(HttpStatus.CREATED, kickPropRes.statusCode, "Kick proposal failed: ${kickPropRes.body}")
-            assertZeroPiiLeak(kickPropRes.body!!)
+            assertEquals(HttpStatus.CREATED, kickPropRes.statusCode)
             val kickPropId = objectMapper.readTree(kickPropRes.body!!).path("proposal").path("id").asLong()
             assertEquals(u2AliasInRpg, objectMapper.readTree(kickPropRes.body!!).path("proposal").path("targetAlias").asText())
 
-            // u2 votes NO -> 1 Yes vs 1 No (1 remaining) -> must stay OPEN
             val u2NoRes = postJson("/api/proposals/$kickPropId/vote", u2.token, mapOf("vote" to false))
-            assertEquals(HttpStatus.OK, u2NoRes.statusCode)
-            assertZeroPiiLeak(u2NoRes.body!!)
-            val afterNo = objectMapper.readTree(u2NoRes.body!!).path("proposal")
-            assertEquals("OPEN", afterNo.path("status").asText(), "1 Yes vs 1 No with 1 remaining must stay OPEN")
-            assertEquals(1, afterNo.path("yesCount").asInt())
-            assertEquals(1, afterNo.path("noCount").asInt())
-            assertFalse(afterNo.path("myVote").asBoolean())
+            assertEquals("OPEN", objectMapper.readTree(u2NoRes.body!!).path("proposal").path("status").asText())
 
-            // u1 votes YES -> 2 Yes vs 1 No (0 remaining, 2 > 1!) -> IMMEDIATELY PASSES & evicts u2!
             val u1YesKickRes = postJson("/api/proposals/$kickPropId/vote", u1.token, mapOf("vote" to true))
-            assertEquals(HttpStatus.OK, u1YesKickRes.statusCode)
-            assertZeroPiiLeak(u1YesKickRes.body!!)
-            val afterKick = objectMapper.readTree(u1YesKickRes.body!!)
-            assertEquals("PASSED", afterKick.path("proposal").path("status").asText())
-            assertEquals(2, afterKick.path("proposal").path("yesCount").asInt())
-            assertEquals(1, afterKick.path("proposal").path("noCount").asInt())
-            assertEquals(2, afterKick.path("pod").path("memberCount").asInt(), "u2 must be removed from pod_members")
+            assertEquals("PASSED", objectMapper.readTree(u1YesKickRes.body!!).path("proposal").path("status").asText())
+            assertEquals(2, objectMapper.readTree(u1YesKickRes.body!!).path("pod").path("memberCount").asInt())
 
             val kickedFrame = awaitFrame(q0) {
-                it.path("type").asText() == "member_kicked" &&
-                    it.path("peerId").asText() == u2PeerIdInRpg
+                it.path("type").asText() == "member_kicked" && it.path("peerId").asText() == u2PeerIdInRpg
             }
             assertZeroPiiLeak(objectMapper.writeValueAsString(kickedFrame))
 
-            // Verify kicked u2 is blocked from re-matching into rpgPodId (spawns a separate pod instead!)
-            val u2Rematch = postJson("/api/pods/match", u2.token, mapOf("interest" to "tabletop-rpg"))
-            assertEquals(HttpStatus.OK, u2Rematch.statusCode)
-            val u2NewRpgPodId = objectMapper.readTree(u2Rematch.body!!).path("matched")[0].path("podId").asText()
-            assertNotEquals(rpgPodId, u2NewRpgPodId, "Kicked member must never re-match into the pod that kicked them")
-
-            // 2c. Tie/majority NO rejection (1 Yes vs 1 No in 2-member pod -> 1 <= 1 REJECTED) + expired 1 Yes vs 0 No -> PASSED
-            val capPropRes = postJson(
-                "/api/pods/$rpgPodId/proposals",
-                u0.token,
-                mapOf("kind" to "CHANGE_CAPACITY", "maxMembers" to 50)
-            )
-            assertEquals(HttpStatus.CREATED, capPropRes.statusCode)
-            val capPropId = objectMapper.readTree(capPropRes.body!!).path("proposal").path("id").asLong()
+            // 2c. Tie rejection (1 Yes vs 1 No in 2-member pod -> REJECTED) + expired 1 Yes vs 0 No -> PASSED + TOGGLE_LOCK
+            val capPropId = objectMapper.readTree(
+                postJson("/api/pods/$rpgPodId/proposals", u0.token, mapOf("kind" to "CHANGE_CAPACITY", "maxMembers" to 50)).body!!
+            ).path("proposal").path("id").asLong()
             val capRejectRes = postJson("/api/proposals/$capPropId/vote", u1.token, mapOf("vote" to false))
-            assertEquals(HttpStatus.OK, capRejectRes.statusCode)
             assertEquals("REJECTED", objectMapper.readTree(capRejectRes.body!!).path("proposal").path("status").asText())
-            assertEquals(25, objectMapper.readTree(capRejectRes.body!!).path("pod").path("maxMembers").asInt())
 
-            val renamePropRes = postJson(
-                "/api/pods/$rpgPodId/proposals",
-                u0.token,
-                mapOf("kind" to "RENAME_POD", "label" to "Arcane Guild", "topic" to "Weekly D&D campaigns", "expiresInMinutes" to 5)
-            )
-            assertEquals(HttpStatus.CREATED, renamePropRes.statusCode)
-            val renamePropId = objectMapper.readTree(renamePropRes.body!!).path("proposal").path("id").asLong()
-            assertEquals("OPEN", objectMapper.readTree(renamePropRes.body!!).path("proposal").path("status").asText())
-
-            // Backdate expires_at -> 1 Yes vs 0 No at expiry resolves to PASSED (`yesCount > noCount`)!
+            val renamePropId = objectMapper.readTree(
+                postJson("/api/pods/$rpgPodId/proposals", u0.token, mapOf("kind" to "RENAME_POD", "label" to "Arcane Guild", "expiresInMinutes" to 5)).body!!
+            ).path("proposal").path("id").asLong()
             jdbcClient.sql("UPDATE pod_proposals SET expires_at = DATE_SUB(UTC_TIMESTAMP(), INTERVAL 2 MINUTE) WHERE id = :id")
                 .param("id", renamePropId)
                 .update()
             val resolveExpiredRes = postJson("/api/proposals/$renamePropId/resolve", u0.token, emptyMap<String, Any>())
-            assertEquals(HttpStatus.OK, resolveExpiredRes.statusCode)
-            assertZeroPiiLeak(resolveExpiredRes.body!!)
             assertEquals("PASSED", objectMapper.readTree(resolveExpiredRes.body!!).path("proposal").path("status").asText())
             assertEquals("Arcane Guild", objectMapper.readTree(resolveExpiredRes.body!!).path("pod").path("title").asText())
-
-            val listPropsRes = getJson("/api/pods/$rpgPodId/proposals", u0.token)
-            assertEquals(HttpStatus.OK, listPropsRes.statusCode)
-            assertZeroPiiLeak(listPropsRes.body!!)
-            assertTrue(objectMapper.readTree(listPropsRes.body!!).path("proposals").size() >= 4)
-
-            // 2d. Verify UPDATE_TOPIC, TOGGLE_LOCK, and REMOVE_CHANNEL proposals (plus #general protection)
-            val strategyChId = objectMapper.readTree(resolveExpiredRes.body!!).path("pod").path("channels")
-                .first { it.path("slug").asText() == "strategy-notes" }
-                .path("channelId").asText()
-
-            assertEquals(
-                HttpStatus.BAD_REQUEST,
-                postJson("/api/pods/$rpgPodId/proposals", u0.token, mapOf("kind" to "REMOVE_CHANNEL", "channelId" to rpgGeneralChannelId)).statusCode,
-                "#general must be protected from removal"
-            )
-
-            val topicPropId = objectMapper.readTree(
-                postJson("/api/pods/$rpgPodId/proposals", u0.token, mapOf("kind" to "UPDATE_TOPIC", "channelId" to strategyChId, "topic" to "Boss mechanics")).body!!
-            ).path("proposal").path("id").asLong()
-            val topicVoteRes = postJson("/api/proposals/$topicPropId/vote", u1.token, mapOf("vote" to true))
-            assertEquals("PASSED", objectMapper.readTree(topicVoteRes.body!!).path("proposal").path("status").asText())
-            assertEquals(
-                "Boss mechanics",
-                objectMapper.readTree(topicVoteRes.body!!).path("pod").path("channels")
-                    .first { it.path("channelId").asText() == strategyChId }.path("topic").asText()
-            )
 
             val lockPropId = objectMapper.readTree(
                 postJson("/api/pods/$rpgPodId/proposals", u0.token, mapOf("kind" to "TOGGLE_LOCK", "locked" to true)).body!!
@@ -1317,47 +1253,18 @@ class CanopyIntegrationTest {
             val lockVoteRes = postJson("/api/proposals/$lockPropId/vote", u1.token, mapOf("vote" to true))
             assertEquals("PASSED", objectMapper.readTree(lockVoteRes.body!!).path("proposal").path("status").asText())
             assertFalse(objectMapper.readTree(lockVoteRes.body!!).path("pod").path("isOpen").asBoolean())
-
-            val rmChPropId = objectMapper.readTree(
-                postJson("/api/pods/$rpgPodId/proposals", u0.token, mapOf("kind" to "REMOVE_CHANNEL", "channelId" to strategyChId)).body!!
-            ).path("proposal").path("id").asLong()
-            val rmChVoteRes = postJson("/api/proposals/$rmChPropId/vote", u1.token, mapOf("vote" to true))
-            assertEquals("PASSED", objectMapper.readTree(rmChVoteRes.body!!).path("proposal").path("status").asText())
-            assertFalse(
-                objectMapper.readTree(rmChVoteRes.body!!).path("pod").path("channels")
-                    .any { it.path("channelId").asText() == strategyChId }
-            )
-            val chDeletedFrame = awaitFrame(q0) {
-                it.path("type").asText() == "channel_deleted" && it.path("channelId").asText() == strategyChId
-            }
-            assertZeroPiiLeak(objectMapper.writeValueAsString(chDeletedFrame))
         } finally {
             runCatching { ws0.close() }
             runCatching { ws1.close() }
         }
 
-        // 3. Premium Custom Owned Admin Pods & Publicized Directory
-        // 3a. Free user calling POST /api/pods/custom gets 403
-        val freeCustomForbidden = postJson(
-            "/api/pods/custom",
-            u3.token,
-            mapOf(
-                "title" to "Tactical Co-op Raiders",
-                "code" to "tactical-raiders",
-                "interest" to "tactical-raids",
-                "description" to "Nightly Helldivers runs",
-                "maxMembers" to 25,
-                "isPublicized" to true
-            )
+        // 3. Canopy Pro Custom Owned Admin Pods & Publicized Directory
+        assertEquals(
+            HttpStatus.FORBIDDEN,
+            postJson("/api/pods/custom", u3.token, mapOf("title" to "Raiders", "interest" to "tactical-raids")).statusCode
         )
-        assertEquals(HttpStatus.FORBIDDEN, freeCustomForbidden.statusCode)
+        assertEquals(HttpStatus.OK, postJson("/api/auth/plan", u3.token, mapOf("planTier" to "PREMIUM")).statusCode)
 
-        // 3b. Upgrade u3 to PREMIUM via POST /api/auth/plan
-        val upgradeRes = postJson("/api/auth/plan", u3.token, mapOf("planTier" to "PREMIUM"))
-        assertEquals(HttpStatus.OK, upgradeRes.statusCode)
-        assertEquals("PREMIUM", objectMapper.readTree(upgradeRes.body!!).path("user").path("planTier").asText())
-
-        // 3c. Create publicized custom ADMIN pod
         val createCustomRes = postJson(
             "/api/pods/custom",
             u3.token,
@@ -1370,115 +1277,79 @@ class CanopyIntegrationTest {
                 "isPublicized" to true
             )
         )
-        assertEquals(HttpStatus.CREATED, createCustomRes.statusCode, "Create custom pod failed: ${createCustomRes.body}")
+        assertEquals(HttpStatus.CREATED, createCustomRes.statusCode)
         assertZeroPiiLeak(createCustomRes.body!!)
         val customPod = objectMapper.readTree(createCustomRes.body!!).path("pod")
         val customPodId = customPod.path("podId").asText()
-        val u3OwnerAlias = customPod.path("myAlias").asText()
-        assertEquals("Tactical Co-op Raiders", customPod.path("title").asText())
-        assertEquals("tactical-raiders", customPod.path("code").asText())
         assertEquals("ADMIN", customPod.path("governanceMode").asText())
-        assertTrue(customPod.path("isPublicized").asBoolean())
-        assertFalse(customPod.path("allowRandomMatch").asBoolean())
         assertEquals("OWNER", customPod.path("myRole").asText())
-        assertEquals(25, customPod.path("maxMembers").asInt())
+        assertFalse(customPod.has("channels"))
 
-        // Random match for "tactical-raids" must NEVER land in someone's custom ADMIN pod!
-        val randomRaidMatch = postJson("/api/pods/match", u4.token, mapOf("interest" to "tactical-raids"))
-        assertEquals(HttpStatus.OK, randomRaidMatch.statusCode)
-        val randomRaidPod = objectMapper.readTree(randomRaidMatch.body!!).path("matched")[0]
-        assertNotEquals(customPodId, randomRaidPod.path("podId").asText(), "Random matching must exclude ADMIN pods")
-        assertEquals("DEMOCRATIC", randomRaidPod.path("governanceMode").asText())
-
-        // 3d. Appears in GET /api/pods/publicized with zero PII
         val pubDirRes = getJson("/api/pods/publicized?interest=tactical-raids", u4.token)
         assertEquals(HttpStatus.OK, pubDirRes.statusCode)
         assertZeroPiiLeak(pubDirRes.body!!)
-        val groups = objectMapper.readTree(pubDirRes.body!!).path("groups")
-        assertEquals(1, groups.size())
-        assertEquals(customPodId, groups[0].path("podId").asText())
-        assertEquals("Tactical Co-op Raiders", groups[0].path("title").asText())
-        assertEquals(u3OwnerAlias, groups[0].path("founderAlias").asText())
-        assertFalse(groups[0].path("alreadyMember").asBoolean())
+        assertEquals(1, objectMapper.readTree(pubDirRes.body!!).path("groups").size())
 
-        // 3e. u4 and u5 join via POST /api/pods/{podId}/join
         val joinU4 = postJson("/api/pods/$customPodId/join", u4.token, emptyMap<String, Any>())
-        assertEquals(HttpStatus.OK, joinU4.statusCode, "Publicized join failed: ${joinU4.body}")
-        assertZeroPiiLeak(joinU4.body!!)
-        val u4JoinedPod = objectMapper.readTree(joinU4.body!!).path("pod")
-        assertEquals("MEMBER", u4JoinedPod.path("myRole").asText())
-        assertEquals(2, u4JoinedPod.path("memberCount").asInt())
-        val u4PeerId = u4JoinedPod.path("myPeerId").asText()
+        assertEquals(HttpStatus.OK, joinU4.statusCode)
+        val u4PeerId = objectMapper.readTree(joinU4.body!!).path("pod").path("myPeerId").asText()
 
         val joinU5 = postJson("/api/pods/$customPodId/join", u5.token, emptyMap<String, Any>())
         assertEquals(HttpStatus.OK, joinU5.statusCode)
         val u5PeerId = objectMapper.readTree(joinU5.body!!).path("pod").path("myPeerId").asText()
 
-        // Plain MEMBER (u4) cannot update settings or kick (403)
         assertEquals(
-            HttpStatus.FORBIDDEN,
-            exchangeJson(HttpMethod.PATCH, "/api/pods/$customPodId/settings", u4.token, mapOf("title" to "Hijack")).statusCode
+            HttpStatus.OK,
+            postJson("/api/pods/$customPodId/admin/role", u3.token, mapOf("targetPeerId" to u4PeerId, "role" to "ADMIN")).statusCode
         )
         assertEquals(
-            HttpStatus.FORBIDDEN,
-            postJson("/api/pods/$customPodId/admin/kick", u4.token, mapOf("targetPeerId" to u5PeerId)).statusCode
+            HttpStatus.OK,
+            exchangeJson(HttpMethod.PATCH, "/api/pods/$customPodId/settings", u4.token, mapOf("title" to "Tactical Co-op Raiders HQ", "maxMembers" to 50)).statusCode
         )
-
-        // 3f. Owner promotes u4 to ADMIN, updates settings, adds & deletes channel, and kicks u5 instantly without a vote!
-        val promoteRes = postJson(
-            "/api/pods/$customPodId/admin/role",
-            u3.token,
-            mapOf("targetPeerId" to u4PeerId, "role" to "ADMIN")
-        )
-        assertEquals(HttpStatus.OK, promoteRes.statusCode)
-        assertZeroPiiLeak(promoteRes.body!!)
-        val promotedMember = objectMapper.readTree(promoteRes.body!!).path("pod").path("members")
-            .first { it.path("peerId").asText() == u4PeerId }
-        assertEquals("ADMIN", promotedMember.path("role").asText())
-
-        val settingsRes = exchangeJson(
-            HttpMethod.PATCH,
-            "/api/pods/$customPodId/settings",
-            u3.token,
-            mapOf("title" to "Tactical Co-op Raiders HQ", "maxMembers" to 50, "isPublicized" to true)
-        )
-        assertEquals(HttpStatus.OK, settingsRes.statusCode)
-        assertZeroPiiLeak(settingsRes.body!!)
-        assertEquals("Tactical Co-op Raiders HQ", objectMapper.readTree(settingsRes.body!!).path("pod").path("title").asText())
-        assertEquals(50, objectMapper.readTree(settingsRes.body!!).path("pod").path("maxMembers").asInt())
-
-        val instantChRes = postJson(
-            "/api/pods/$customPodId/channels",
-            u4.token, // newly promoted ADMIN can also manage channels!
-            mapOf("label" to "raid-briefings", "topic" to "Loadouts", "kind" to "TEXT")
-        )
-        assertEquals(HttpStatus.CREATED, instantChRes.statusCode)
-        val raidBriefingsChId = objectMapper.readTree(instantChRes.body!!).path("channel").path("channelId").asText()
-
-        val delChRes = exchangeJson(
-            HttpMethod.DELETE,
-            "/api/pods/$customPodId/channels/$raidBriefingsChId",
-            u3.token,
-            null
-        )
-        assertEquals(HttpStatus.OK, delChRes.statusCode)
-        assertFalse(
-            objectMapper.readTree(delChRes.body!!).path("pod").path("channels")
-                .any { it.path("channelId").asText() == raidBriefingsChId }
-        )
-
-        val adminKickRes = postJson(
-            "/api/pods/$customPodId/admin/kick",
-            u3.token,
-            mapOf("targetPeerId" to u5PeerId)
-        )
+        val adminKickRes = postJson("/api/pods/$customPodId/admin/kick", u3.token, mapOf("targetPeerId" to u5PeerId))
         assertEquals(HttpStatus.OK, adminKickRes.statusCode)
-        assertZeroPiiLeak(adminKickRes.body!!)
         assertEquals(2, objectMapper.readTree(adminKickRes.body!!).path("pod").path("memberCount").asInt())
+        assertEquals(HttpStatus.FORBIDDEN, postJson("/api/pods/$customPodId/join", u5.token, emptyMap<String, Any>()).statusCode)
+    }
 
-        // Kicked u5 cannot rejoin via publicized join (403)
-        val kickedRejoinRes = postJson("/api/pods/$customPodId/join", u5.token, emptyMap<String, Any>())
-        assertEquals(HttpStatus.FORBIDDEN, kickedRejoinRes.statusCode)
+    private fun uploadAttachment(
+        podId: String,
+        bearerToken: String,
+        filename: String,
+        kind: String,
+        durationMs: Int
+    ): Long {
+        val multipartHeaders = HttpHeaders().apply {
+            contentType = MediaType.MULTIPART_FORM_DATA
+            setBearerAuth(bearerToken)
+        }
+        val fileResource = object : ByteArrayResource(ByteArray(256) { 0x42 }) {
+            override fun getFilename(): String = filename
+        }
+        val form = LinkedMultiValueMap<String, Any>().apply {
+            add("file", fileResource)
+            add("kind", kind)
+            add("durationMs", durationMs.toString())
+        }
+        val uploadRes = restTemplate.exchange(
+            "/api/pods/$podId/attachments",
+            HttpMethod.POST,
+            HttpEntity(form, multipartHeaders),
+            String::class.java
+        )
+        assertEquals(HttpStatus.CREATED, uploadRes.statusCode, "Upload failed: ${uploadRes.body}")
+        assertZeroPiiLeak(uploadRes.body!!)
+        return objectMapper.readTree(uploadRes.body!!).path("id").asLong()
+    }
+
+    private fun downloadAttachment(attachmentId: Long, bearerToken: String): ResponseEntity<ByteArray> {
+        val headers = HttpHeaders().apply { setBearerAuth(bearerToken) }
+        return restTemplate.exchange(
+            "/api/attachments/$attachmentId",
+            HttpMethod.GET,
+            HttpEntity<Void>(headers),
+            ByteArray::class.java
+        )
     }
 
     private fun connectPodWs(

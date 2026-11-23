@@ -1,6 +1,6 @@
 .shell {
   display: grid;
-  grid-template-columns: 72px 272px minmax(0, 1fr) auto;
+  grid-template-columns: 72px 292px minmax(0, 1fr) auto;
   height: 100dvh;
   width: 100vw;
   overflow: hidden;
@@ -717,6 +717,8 @@
   align-items: center;
   gap: 10px;
   min-width: 0;
+  flex: 1 1 auto;
+  overflow: hidden;
 }
 
 .mobileMenuBtn {
@@ -743,6 +745,8 @@
   align-items: center;
   gap: 5px;
   min-width: 0;
+  max-width: 240px;
+  flex-shrink: 0;
   white-space: nowrap;
 }
 
@@ -859,8 +863,8 @@
   flex: 1;
   overflow-y: auto;
   position: relative;
-  padding: 12px 0;
-  background: #ffffff;
+  padding: 14px 0 18px;
+  background: #f6f7f6;
 }
 
 .loadOlderWrap {
@@ -906,37 +910,51 @@
   box-shadow: 0 6px 16px rgba(0, 0, 0, 0.14);
 }
 
-/* Message Row & Rich Elements */
+/* Message Row & Chat-Feel Bubbles */
 .msgRow {
   position: relative;
-  padding: 10px 20px;
+  padding: 6px 20px;
   display: flex;
-  gap: 12px;
-  border-left: 3px solid transparent;
+  align-items: flex-start;
+  gap: 10px;
   transition: background 0.12s ease;
 }
 
-.msgRow:hover,
-.msgRow:focus-within {
-  background: #f9faf9;
+.msgRowOwn {
+  justify-content: flex-end;
+}
+
+.msgRowCompact {
+  padding: 8px 10px;
 }
 
 .msgRowHighlighted {
-  background: #ecfdf3;
-  border-left-color: #1f6b3a;
+  background: rgba(161, 255, 203, 0.32);
 }
 
-.msgRowPinned {
-  border-left-color: #a1ffcb;
+.msgAvatarBtn {
+  border: none;
+  background: transparent;
+  padding: 0;
+  margin: 0;
+  cursor: pointer;
+  border-radius: 999px;
+  flex-shrink: 0;
+  display: inline-flex;
+  transition: transform 0.12s ease;
+}
+
+.msgAvatarBtn:hover {
+  transform: scale(1.05);
 }
 
 .msgAvatar {
-  width: 38px;
-  height: 38px;
-  border-radius: 10px;
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
   color: #ffffff;
   font-weight: 700;
-  font-size: 13px;
+  font-size: 12.5px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -944,22 +962,124 @@
   margin-top: 2px;
 }
 
-.msgContent {
+.msgBubble {
+  max-width: min(76%, 640px);
+  min-width: 140px;
+  padding: 9px 13px 10px;
+  border-radius: 16px;
+  box-shadow: 0 1px 2px rgba(35, 35, 35, 0.04);
+}
+
+.msgBubblePeer {
+  background: #ffffff;
+  border: 1px solid rgba(35, 35, 35, 0.1);
+  border-top-left-radius: 4px;
+}
+
+.msgBubbleOwn {
+  background: #ecfdf3;
+  border: 1px solid rgba(31, 107, 58, 0.25);
+  border-top-right-radius: 4px;
+}
+
+.msgBubbleCompact {
+  max-width: 100%;
   flex: 1;
   min-width: 0;
+  background: transparent;
+  border: none;
+  box-shadow: none;
+  padding: 0;
+}
+
+.msgBubblePinned {
+  box-shadow: inset 3px 0 0 #1f6b3a, 0 1px 2px rgba(35, 35, 35, 0.04);
+}
+
+.msgSystemRow {
+  display: flex;
+  justify-content: center;
+  padding: 6px 20px;
+}
+
+.msgSystemPill {
+  display: inline-flex;
+  align-items: center;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 8px;
+  padding: 5px 14px;
+  border-radius: 999px;
+  background: #ffffff;
+  border: 1px solid rgba(35, 35, 35, 0.1);
+  color: #4f524f;
+  font-size: 12.5px;
+  font-weight: 500;
+  max-width: 86%;
+  text-align: center;
+}
+
+.msgSystemTime {
+  font-family: var(--m-font-mono);
+  font-size: 11px;
+  color: #686868;
 }
 
 .msgMeta {
   display: flex;
-  align-items: baseline;
+  align-items: center;
   flex-wrap: wrap;
-  gap: 8px;
+  gap: 7px;
 }
 
 .msgAuthor {
-  font-size: 14.5px;
+  font-size: 13.5px;
+  font-weight: 700;
+  color: #164e2a;
+}
+
+.msgAuthorBtn {
+  border: none;
+  background: transparent;
+  padding: 0;
+  font-family: var(--m-font-sans);
+  font-size: 13.5px;
   font-weight: 700;
   color: #232323;
+  cursor: pointer;
+}
+
+.msgAuthorBtn:hover {
+  color: #1f6b3a;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.quickDmChip {
+  border: 1px solid rgba(31, 107, 58, 0.24);
+  background: #f2fbf6;
+  color: #164e2a;
+  border-radius: 999px;
+  padding: 1px 7px;
+  font-family: var(--m-font-sans);
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  opacity: 0;
+  transition: opacity 0.12s ease, background 0.12s ease;
+}
+
+.msgRow:hover .quickDmChip,
+.msgRow:focus-within .quickDmChip {
+  opacity: 1;
+}
+
+.quickDmChip:hover {
+  background: #a1ffcb;
+  border-color: #1f6b3a;
 }
 
 .msgSelfBadge {
@@ -1593,8 +1713,8 @@
 
 .drawerTabs {
   display: grid;
-  grid-template-columns: repeat(5, minmax(0, 1fr));
-  gap: 3px;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 4px;
   padding: 6px 8px;
   background: #f3f4f3;
   border-bottom: 1px solid rgba(35, 35, 35, 0.08);
@@ -3026,5 +3146,644 @@
 
   .governanceCard {
     max-width: 100%;
+  }
+}
+
+
+/* =========================================================================
+   Messenger / Signal Chat-Feel Conversations, 1:1 DMs & Active Call Bar
+   ========================================================================= */
+
+.convoList {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.convoItem {
+  width: 100%;
+  min-height: 58px;
+  padding: 8px 10px;
+  border-radius: 12px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: #232323;
+  font-family: var(--m-font-sans);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  text-align: left;
+  transition: background 0.12s ease, border-color 0.12s ease;
+}
+
+.convoItem:hover {
+  background: rgba(35, 35, 35, 0.055);
+}
+
+.convoItemGroup {
+  background: #ffffff;
+  border-color: rgba(35, 35, 35, 0.1);
+}
+
+.convoItemActive {
+  background: #eafbef;
+  border-color: rgba(31, 107, 58, 0.36);
+  box-shadow: 0 1px 3px rgba(31, 107, 58, 0.08);
+}
+
+.convoItemActive:hover {
+  background: #dffbe9;
+}
+
+.groupConvoAvatar {
+  width: 40px;
+  height: 40px;
+  border-radius: 12px;
+  background: #191b19;
+  color: #a1ffcb;
+  border: 1px solid rgba(161, 255, 203, 0.45);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.convoAvatarWrap {
+  position: relative;
+  width: 40px;
+  height: 40px;
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.convoAvatar {
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  color: #ffffff;
+  font-size: 13px;
+  font-weight: 700;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.convoPresenceDot {
+  position: absolute;
+  right: -1px;
+  bottom: -1px;
+  width: 12px;
+  height: 12px;
+  border-radius: 999px;
+  border: 2px solid #f5f6f5;
+}
+
+.convoPresenceOnline {
+  background: #22c55e;
+}
+
+.convoPresenceOffline {
+  background: #c7cdc7;
+}
+
+.convoMicBadge {
+  position: absolute;
+  left: -3px;
+  top: -3px;
+  width: 17px;
+  height: 17px;
+  border-radius: 999px;
+  background: #a1ffcb;
+  color: #144223;
+  border: 1.5px solid #1f6b3a;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.convoBody {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.convoTopRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  min-width: 0;
+}
+
+.convoNameWrap {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+}
+
+.convoTitle {
+  font-size: 14px;
+  font-weight: 700;
+  color: #232323;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.convoTime {
+  font-family: var(--m-font-mono);
+  font-size: 10.5px;
+  color: #686868;
+  flex-shrink: 0;
+}
+
+.convoCallPill {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 7px;
+  border-radius: 999px;
+  background: #a1ffcb;
+  color: #144223;
+  border: 1px solid rgba(31, 107, 58, 0.3);
+  font-family: var(--m-font-mono);
+  font-size: 10px;
+  font-weight: 700;
+  flex-shrink: 0;
+}
+
+.convoBottomRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  min-width: 0;
+}
+
+.convoSnippet {
+  font-size: 12.5px;
+  color: #545754;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 1;
+  min-width: 0;
+}
+
+.convoSnippetUnread {
+  color: #164e2a;
+  font-weight: 700;
+}
+
+.convoSnippetMuted {
+  color: #686868;
+}
+
+.memberSearchBox {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin: 4px 2px 8px;
+  padding: 0 10px;
+  height: 38px;
+  border-radius: 9px;
+  background: #ffffff;
+  border: 1px solid rgba(35, 35, 35, 0.14);
+}
+
+.memberSearchBox:focus-within {
+  border-color: #1f6b3a;
+}
+
+.memberSearchInput {
+  flex: 1;
+  min-width: 0;
+  border: none;
+  outline: none;
+  background: transparent;
+  font-family: var(--m-font-sans);
+  font-size: 13px;
+  color: #232323;
+}
+
+.memberSearchClear {
+  width: 24px;
+  height: 24px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: #686868;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.emptyDmHint {
+  padding: 10px 8px;
+  font-size: 12.5px;
+  color: #686868;
+  line-height: 1.45;
+}
+
+/* 1:1 DM Header Elements */
+.backToGroupBtn {
+  min-height: 44px;
+  padding: 0 11px;
+  border-radius: 9px;
+  border: 1px solid rgba(35, 35, 35, 0.14);
+  background: #f5f6f5;
+  color: #232323;
+  font-family: var(--m-font-sans);
+  font-size: 13px;
+  font-weight: 700;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  flex-shrink: 0;
+}
+
+.backToGroupBtn:hover {
+  background: #eafbef;
+  border-color: #1f6b3a;
+  color: #144223;
+}
+
+.dmHeaderIdentity {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  min-width: 0;
+  flex-shrink: 0;
+}
+
+.dmHeaderAvatarWrap {
+  position: relative;
+  width: 34px;
+  height: 34px;
+  flex-shrink: 0;
+  display: inline-flex;
+}
+
+.dmHeaderAvatar {
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+  color: #ffffff;
+  font-size: 12px;
+  font-weight: 700;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.dmHeaderTextCol {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.dmStatusSubline {
+  font-size: 11.5px;
+  color: #5c5f5c;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dmPrivacyPill {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 10px;
+  border-radius: 999px;
+  background: #eafbef;
+  border: 1px solid rgba(31, 107, 58, 0.28);
+  color: #154726;
+  font-family: var(--m-font-mono);
+  font-size: 11px;
+  font-weight: 600;
+  white-space: nowrap;
+  min-width: 0;
+  flex-shrink: 1;
+  overflow: hidden;
+}
+
+.dmPrivacyPill > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Header Call Button & Sleek Compact Active-Call Bar */
+.headerCallBtn {
+  min-height: 44px;
+  min-width: 44px;
+  padding: 0 12px;
+  border-radius: 9px;
+  border: 1px solid #1f6b3a;
+  background: #eafbef;
+  color: #144223;
+  font-family: var(--m-font-sans);
+  font-size: 13px;
+  font-weight: 700;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+}
+
+.headerCallBtn:hover {
+  background: #a1ffcb;
+}
+
+.headerCallBtnLive {
+  background: #a1ffcb;
+  color: #144223;
+}
+
+.headerCallBtnConnected {
+  background: #191b19;
+  color: #a1ffcb;
+  border-color: #191b19;
+}
+
+.headerCallBtnConnected:hover {
+  background: #272b27;
+}
+
+.activeCallBar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+  padding: 7px 16px;
+  background: #191b19;
+  color: #f3f5f3;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.activeCallLeft {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  min-width: 0;
+  flex: 1;
+}
+
+.activeCallBadge {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-family: var(--m-font-mono);
+  font-size: 11.5px;
+  font-weight: 700;
+  color: #a1ffcb;
+  white-space: nowrap;
+}
+
+.activeCallPeersRow {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.activeCallPeerWrap {
+  position: relative;
+}
+
+.activeCallPeerChip {
+  min-height: 32px;
+  padding: 3px 9px 3px 5px;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  background: #252925;
+  color: #f3f5f3;
+  font-family: var(--m-font-sans);
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.activeCallPeerChipSpeaking {
+  border-color: #a1ffcb;
+  background: #1f3327;
+}
+
+.callVolumePopover {
+  position: absolute;
+  left: 0;
+  top: calc(100% + 6px);
+  width: 190px;
+  padding: 9px 11px;
+  border-radius: 10px;
+  background: #ffffff;
+  border: 1px solid rgba(35, 35, 35, 0.18);
+  box-shadow: 0 10px 24px rgba(0, 0, 0, 0.18);
+  font-size: 12px;
+  z-index: 35;
+}
+
+.activeCallSynthTag {
+  font-family: var(--m-font-mono);
+  font-size: 11px;
+  color: #c8f7dc;
+}
+
+.activeCallControls {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.callBarBtn {
+  min-height: 44px;
+  min-width: 44px;
+  padding: 0 11px;
+  border-radius: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  background: #272b27;
+  color: #f3f5f3;
+  font-family: var(--m-font-sans);
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+}
+
+.callBarBtn:hover {
+  background: #333833;
+}
+
+.callBarBtnActive {
+  background: #a1ffcb;
+  color: #191b19;
+  border-color: #a1ffcb;
+}
+
+.callBarBtnHangup {
+  background: #b42318;
+  color: #ffffff;
+  border-color: #b42318;
+}
+
+.callBarBtnHangup:hover {
+  background: #912018;
+}
+
+.callBarBtnLabel {
+  display: inline;
+}
+
+.joinableCallBanner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 7px 16px;
+  background: #eafbef;
+  border-bottom: 1px solid rgba(31, 107, 58, 0.25);
+  font-size: 12.5px;
+  color: #144223;
+}
+
+.joinableCallInfo {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  min-width: 0;
+}
+
+/* Hover Toolbar for Right-Aligned Own Bubbles */
+.hoverToolbarOwn {
+  right: 20px;
+}
+
+/* Composer Formatting Toggle & Quick Chips */
+.fmtToggleBtn {
+  font-family: var(--m-font-sans);
+  font-size: 13.5px;
+  font-weight: 700;
+}
+
+.composerQuickChips {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  flex-shrink: 0;
+}
+
+.composerChipBtn {
+  min-height: 44px;
+  padding: 0 10px;
+  border-radius: 9px;
+  border: 1px solid rgba(31, 107, 58, 0.28);
+  background: #f2fbf6;
+  color: #154726;
+  font-family: var(--m-font-mono);
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.composerChipBtn:hover,
+.composerChipBtnActive {
+  background: #a1ffcb;
+  border-color: #1f6b3a;
+  color: #144223;
+}
+
+/* Roster 1-Click Message Button */
+.rosterPrimaryDmBtn {
+  min-height: 32px;
+  padding: 0 9px;
+  border-radius: 7px;
+  border: 1px solid #1f6b3a;
+  background: #eafbef;
+  color: #144223;
+  font-family: var(--m-font-sans);
+  font-size: 11.5px;
+  font-weight: 700;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.rosterPrimaryDmBtn:hover {
+  background: #a1ffcb;
+}
+
+@media (max-width: 1120px) {
+  .dmPrivacyPill {
+    display: none;
+  }
+}
+
+@media (max-width: 900px) {
+  .channelSidebar {
+    width: 280px;
+  }
+
+  .headerCallBtn {
+    width: 40px;
+    height: 40px;
+    min-width: 40px;
+    min-height: 40px;
+    padding: 0;
+  }
+
+  .backToGroupBtn {
+    min-height: 40px;
+    padding: 0 8px;
+    font-size: 12px;
+  }
+
+  .activeCallBar {
+    padding: 6px 10px;
+  }
+
+  .callBarBtn {
+    padding: 0 9px;
+  }
+
+  .callBarBtnLabel {
+    display: none;
+  }
+}
+
+@media (max-width: 640px) {
+  .msgBubble {
+    max-width: 85%;
+  }
+
+  .composerQuickChips {
+    display: none;
+  }
+
+  .quickDmChip {
+    opacity: 1;
   }
 }

@@ -1,8 +1,8 @@
 // Canopy white-mint-tiles design tokens (Zero Violet)
 export const PALETTE = {
   charcoal: '#191b19',
-  surface: '#f5f6f5',
-  surfaceMuted: '#ecefec',
+  surface: '#f3f3f3',
+  surfaceMuted: '#e8ebe8',
   card: '#ffffff',
   ink: '#232323',
   muted: '#686868',

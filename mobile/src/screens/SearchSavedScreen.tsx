@@ -24,12 +24,15 @@ import {
   voteProposal,
 } from '../api/client';
 import {
-  activeChannelByPodAtom,
+  activeDmPeerByPodAtom,
   activePodIdAtom,
   activeTabAtom,
-  activeThreadParentAtom,
 } from '../state/atoms';
-import type { PodDetail, RichMessage } from '../types/canopy';
+import {
+  resolveDmPartnerPeerId,
+  type PodDetailDto,
+  type RichMessageDto,
+} from '../types/canopy';
 import { PALETTE, TOUCH_MIN } from '../theme/palette';
 import { MessageCard } from '../components/MessageCard';
 
@@ -44,9 +47,8 @@ const MONO_FONT = Platform.select({
 export function SearchSavedScreen() {
   const queryClient = useQueryClient();
   const [activePodId, setActivePodId] = useAtom(activePodIdAtom);
-  const setActiveChannelMap = useSetAtom(activeChannelByPodAtom);
+  const setActiveDmPeerMap = useSetAtom(activeDmPeerByPodAtom);
   const setActiveTab = useSetAtom(activeTabAtom);
-  const setThreadParent = useSetAtom(activeThreadParentAtom);
 
   const [mode, setMode] = useState<SubMode>('search');
   const [searchInput, setSearchInput] = useState('');
@@ -58,7 +60,7 @@ export function SearchSavedScreen() {
   });
 
   const pods = podsQuery.data?.pods ?? [];
-  const activePod: PodDetail | null = useMemo(() => {
+  const activePod: PodDetailDto | null = useMemo(() => {
     if (pods.length === 0) return null;
     return pods.find((p) => p.podId === activePodId) ?? pods[0];
   }, [pods, activePodId]);
@@ -131,7 +133,7 @@ export function SearchSavedScreen() {
   });
 
   const quickToggleItemMutation = useMutation({
-    mutationFn: async (msg: RichMessage) => {
+    mutationFn: async (msg: RichMessageDto) => {
       if (mode === 'pins') {
         await togglePin(msg.id);
       } else {
@@ -144,19 +146,37 @@ export function SearchSavedScreen() {
     },
   });
 
-  const handleOpenInChat = (msg: RichMessage) => {
+  const getMessageConvoMeta = (msg: RichMessageDto) => {
+    const msgPod = pods.find((p) => p.podId === msg.podId);
+    const partnerPeerId = resolveDmPartnerPeerId(
+      msgPod?.myPeerId,
+      msg.senderPeerId,
+      msg.recipientPeerId
+    );
+    const partnerAlias = partnerPeerId
+      ? msgPod && msg.senderPeerId === msgPod.myPeerId
+        ? msg.recipientAlias || 'Peer'
+        : msg.senderAlias
+      : null;
+    return {
+      msgPod,
+      partnerPeerId,
+      partnerAlias,
+      isPrivateDm: !!msg.recipientPeerId,
+    };
+  };
+
+  const handleOpenInChat = (msg: RichMessageDto) => {
+    const { partnerPeerId } = getMessageConvoMeta(msg);
     setActivePodId(msg.podId);
-    setActiveChannelMap((prev) => ({
+    setActiveDmPeerMap((prev) => ({
       ...prev,
-      [msg.podId]: msg.channelId,
+      [msg.podId]: partnerPeerId,
     }));
-    if (msg.parentMessageId === 0 && msg.replyCount > 0) {
-      setThreadParent(msg);
-    }
     setActiveTab('chat');
   };
 
-  const activeItems: RichMessage[] =
+  const activeItems: RichMessageDto[] =
     mode === 'search'
       ? searchQuery.data?.messages ?? []
       : mode === 'pins'
@@ -177,7 +197,7 @@ export function SearchSavedScreen() {
             {mode === 'saved'
               ? 'Account-wide Private Bookmarks'
               : activePod
-              ? `Scoped to #${activePod.code}`
+              ? `Scoped to #${activePod.code} (Group + Your DMs)`
               : 'Join a pod to search or view pins'}
           </Text>
           {activePod && pods.length > 1 && mode !== 'saved' ? (
@@ -230,7 +250,7 @@ export function SearchSavedScreen() {
               onSubmitEditing={() => setSubmittedQuery(searchInput.trim())}
               placeholder={
                 activePod
-                  ? `MySQL FULLTEXT search in #${activePod.code}...`
+                  ? `Search Group Chat & your DMs in #${activePod.code}...`
                   : 'Join a pod first...'
               }
               placeholderTextColor={PALETTE.muted}
@@ -263,32 +283,66 @@ export function SearchSavedScreen() {
           data={activeItems}
           keyExtractor={(item) => `${mode}-${item.id}`}
           contentContainerStyle={styles.listContent}
-          renderItem={({ item }) => (
-            <View style={styles.resultWrap}>
-              <MessageCard
-                message={item}
-                myPeerId={activePod?.myPeerId}
-                onOpenThread={() => handleOpenInChat(item)}
-                onOpenActions={(msg) => quickToggleItemMutation.mutate(msg)}
-                onToggleReaction={(messageId, emoji) =>
-                  reactMutation.mutate({ messageId, emoji })
-                }
-                onVotePoll={(pollId, optionIndex) =>
-                  voteMutation.mutate({ pollId, optionIndex })
-                }
-                onVoteProposal={(proposalId, vote) =>
-                  voteProposalMutation.mutate({ proposalId, vote })
-                }
-              />
-              <Pressable
-                accessibilityRole="button"
-                onPress={() => handleOpenInChat(item)}
-                style={styles.jumpBtn}
-              >
-                <Text style={styles.jumpBtnText}>Jump to Channel {'->'}</Text>
-              </Pressable>
-            </View>
-          )}
+          renderItem={({ item }) => {
+            const meta = getMessageConvoMeta(item);
+            return (
+              <View style={styles.resultWrap}>
+                <View style={styles.contextBar}>
+                  <View
+                    style={[
+                      styles.convoScopeBadge,
+                      meta.isPrivateDm
+                        ? styles.convoScopeDm
+                        : styles.convoScopeGroup,
+                    ]}
+                  >
+                    <Ionicons
+                      name={meta.isPrivateDm ? 'lock-closed' : 'people'}
+                      size={12}
+                      color={PALETTE.forest}
+                    />
+                    <Text style={styles.convoScopeText}>
+                      {meta.isPrivateDm
+                        ? `Private DM${
+                            meta.partnerAlias ? ` · ${meta.partnerAlias}` : ''
+                          }`
+                        : 'Group Chat'}
+                    </Text>
+                  </View>
+
+                  {meta.msgPod ? (
+                    <Text style={styles.podCodeTag}>#{meta.msgPod.code}</Text>
+                  ) : null}
+                </View>
+
+                <MessageCard
+                  message={item}
+                  myPeerId={meta.msgPod?.myPeerId ?? activePod?.myPeerId}
+                  onOpenActions={(msg) => quickToggleItemMutation.mutate(msg)}
+                  onToggleReaction={(messageId, emoji) =>
+                    reactMutation.mutate({ messageId, emoji })
+                  }
+                  onVotePoll={(pollId, optionIndex) =>
+                    voteMutation.mutate({ pollId, optionIndex })
+                  }
+                  onVoteProposal={(proposalId, vote) =>
+                    voteProposalMutation.mutate({ proposalId, vote })
+                  }
+                />
+                <Pressable
+                  accessibilityRole="button"
+                  onPress={() => handleOpenInChat(item)}
+                  style={styles.jumpBtn}
+                >
+                  <Text style={styles.jumpBtnText}>
+                    {meta.isPrivateDm
+                      ? 'Open Private DM ->'
+                      : 'Open Group Chat ->'}
+                  </Text>
+                </Pressable>
+              </View>
+            );
+          }}
           ListEmptyComponent={
             <View style={styles.emptyState}>
               <Ionicons
@@ -306,9 +360,9 @@ export function SearchSavedScreen() {
                 {mode === 'search'
                   ? submittedQuery
                     ? `No messages matched "${submittedQuery}".`
-                    : 'Enter keywords above to run MySQL FULLTEXT search across this pod.'
+                    : 'Enter keywords above to run MySQL FULLTEXT search across Group Chat and your 1:1 DMs.'
                   : mode === 'pins'
-                  ? 'No pinned messages in this pod yet.'
+                  ? 'No pinned Group Chat messages in this pod yet.'
                   : 'No saved bookmarks yet. Long-press any chat message to bookmark it.'}
               </Text>
             </View>
@@ -337,8 +391,10 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
+    gap: 8,
   },
   scopeLabel: {
+    flex: 1,
     fontSize: 12,
     fontWeight: '700',
     color: PALETTE.forest,
@@ -420,10 +476,45 @@ const styles = StyleSheet.create({
   },
   listContent: {
     padding: 14,
-    gap: 12,
+    gap: 14,
   },
   resultWrap: {
     gap: 6,
+  },
+  contextBar: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: 2,
+  },
+  convoScopeBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+    paddingHorizontal: 9,
+    paddingVertical: 4,
+    borderRadius: 999,
+    borderWidth: 1,
+  },
+  convoScopeDm: {
+    backgroundColor: PALETTE.mintSoft,
+    borderColor: PALETTE.mintBorder,
+  },
+  convoScopeGroup: {
+    backgroundColor: PALETTE.card,
+    borderColor: PALETTE.borderStrong,
+  },
+  convoScopeText: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: PALETTE.forest,
+    fontFamily: MONO_FONT,
+  },
+  podCodeTag: {
+    fontSize: 11,
+    fontWeight: '600',
+    color: PALETTE.muted,
+    fontFamily: MONO_FONT,
   },
   jumpBtn: {
     alignSelf: 'flex-end',

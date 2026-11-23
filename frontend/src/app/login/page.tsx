@@ -139,7 +139,7 @@ function LoginFormContent() {
         </span>
         <h1 className={styles.title}>Sign in to Canopy</h1>
         <p className={styles.lead}>
-          Return to your 25-member democratic rooms, live Yes-or-No pod votes, Canopy Pro custom groups, and drop-in voice channels.
+          Return to your 25-member democratic rooms, private 1-on-1 member chats, live Yes-or-No pod votes, Canopy Pro groups, and Pod Audio Calls.
         </p>
 
         <div className={styles.guaranteeBox} role="note" aria-label="Blind Pod Guarantee">

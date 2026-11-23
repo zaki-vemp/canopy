@@ -34,15 +34,6 @@
       },
       "owner": "pods"
     },
-    "pod_channels_public_id_lookup": {
-      "type": "consistent_lookup_unique",
-      "params": {
-        "table": "canopy_lookup.pod_channels_public_id_lookup",
-        "from": "public_id",
-        "to": "keyspace_id"
-      },
-      "owner": "pod_channels"
-    },
     "pod_members_user_lookup": {
       "type": "consistent_lookup",
       "params": {
@@ -161,22 +152,6 @@
       "auto_increment": {
         "column": "id",
         "sequence": "canopy_lookup.pods_seq"
-      }
-    },
-    "pod_channels": {
-      "column_vindexes": [
-        {
-          "column": "pod_id",
-          "name": "pod_id_xxhash"
-        },
-        {
-          "column": "public_id",
-          "name": "pod_channels_public_id_lookup"
-        }
-      ],
-      "auto_increment": {
-        "column": "id",
-        "sequence": "canopy_lookup.pod_channels_seq"
       }
     },
     "pod_members": {

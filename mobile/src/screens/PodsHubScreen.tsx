@@ -28,10 +28,11 @@ import {
   updatePodStatus,
 } from '../api/client';
 import {
+  activeDmPeerByPodAtom,
   activePodIdAtom,
   activeTabAtom,
   authUserAtom,
-  voiceRosterByPodAtom,
+  voicePeersByPodAtom,
 } from '../state/atoms';
 import {
   extractInviteCode,
@@ -101,9 +102,10 @@ function formatInviteAcceptError(err: unknown): string {
 export function PodsHubScreen() {
   const queryClient = useQueryClient();
   const [activePodId, setActivePodId] = useAtom(activePodIdAtom);
+  const setActiveDmPeerMap = useSetAtom(activeDmPeerByPodAtom);
   const setActiveTab = useSetAtom(activeTabAtom);
   const [authUser, setAuthUser] = useAtom(authUserAtom);
-  const voiceRosters = useAtomValue(voiceRosterByPodAtom);
+  const voicePeersByPod = useAtomValue(voicePeersByPodAtom);
 
   const isPro = authUser?.planTier === 'PREMIUM';
 
@@ -405,18 +407,19 @@ export function PodsHubScreen() {
 
   const openChatForPod = (pod: PodDetail) => {
     setActivePodId(pod.podId);
+    setActiveDmPeerMap((prev) => ({
+      ...prev,
+      [pod.podId]: prev[pod.podId] ?? null,
+    }));
     setActiveTab('chat');
   };
 
   const getPodVoiceCount = (pod: PodDetail): number => {
-    const liveRoster = voiceRosters[pod.podId];
-    if (liveRoster) {
-      return Object.values(liveRoster).reduce(
-        (sum, peers) => sum + peers.length,
-        0
-      );
+    const livePeers = voicePeersByPod[pod.podId];
+    if (livePeers) {
+      return livePeers.length;
     }
-    return pod.members.filter((m) => !!m.voiceChannelId).length;
+    return pod.members.filter((m) => m.inVoice).length;
   };
 
   const pods = podsQuery.data?.pods ?? [];
@@ -1204,7 +1207,7 @@ export function PodsHubScreen() {
                   </View>
                 </View>
                 <Text style={styles.matcherSub}>
-                  You become Group Owner with instant Co-Admin, channel, and
+                  You become Group Owner with instant Co-Admin, roster, and
                   visibility controls. Every peer stays anonymous.
                 </Text>
               </View>

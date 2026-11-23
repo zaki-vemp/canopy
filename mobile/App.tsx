@@ -27,6 +27,7 @@ import {
   apiBaseUrlAtom,
   authTokenAtom,
   authUserAtom,
+  unreadDmByPodPeerAtom,
 } from './src/state/atoms';
 import type { MobileTabKey } from './src/types/canopy';
 import { PALETTE, TOUCH_MIN } from './src/theme/palette';
@@ -94,6 +95,8 @@ function AuthenticatedWorkspace() {
   const [activeTab, setActiveTab] = useAtom(activeTabAtom);
   const [activePodId, setActivePodId] = useAtom(activePodIdAtom);
   const voiceSession = useAtomValue(activeVoiceSessionAtom);
+  const unreadDmMap = useAtomValue(unreadDmByPodPeerAtom);
+  const hasUnreadDm = Object.values(unreadDmMap).some((c) => c > 0);
 
   const podsQuery = useQuery({
     queryKey: ['pods'],
@@ -126,12 +129,12 @@ function AuthenticatedWorkspace() {
         {voiceSession ? (
           <Pressable
             accessibilityRole="button"
-            accessibilityLabel="Return to active voice lounge"
+            accessibilityLabel="Return to active pod audio call"
             onPress={() => setActiveTab('voice')}
             style={styles.liveVoiceChip}
           >
             <Ionicons name="volume-high" size={13} color={PALETTE.charcoal} />
-            <Text style={styles.liveVoiceChipText}>Voice Live</Text>
+            <Text style={styles.liveVoiceChipText}>In Call</Text>
           </Pressable>
         ) : null}
       </View>
@@ -159,7 +162,9 @@ function AuthenticatedWorkspace() {
       <View style={styles.tabBar}>
         {TABS.map((tab) => {
           const selected = activeTab === tab.key;
-          const showVoiceDot = tab.key === 'voice' && !!voiceSession;
+          const showLiveDot =
+            (tab.key === 'voice' && !!voiceSession) ||
+            (tab.key === 'chat' && hasUnreadDm);
 
           return (
             <Pressable
@@ -181,7 +186,7 @@ function AuthenticatedWorkspace() {
                   size={20}
                   color={selected ? PALETTE.charcoal : PALETTE.muted}
                 />
-                {showVoiceDot ? <View style={styles.tabLiveDot} /> : null}
+                {showLiveDot ? <View style={styles.tabLiveDot} /> : null}
               </View>
               <Text
                 style={[

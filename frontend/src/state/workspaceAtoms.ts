@@ -19,28 +19,12 @@ export interface PodPresenceSnapshot {
 
 export const activePodIdAtom = atom<string | null>(null);
 
-export const activeChannelIdMapAtom = atomWithStorage<Record<string, string>>(
-  'canopy_active_channels',
-  {}
-);
+// null = Pod Group Chat, "p_..." = 1:1 Private Chat with that member
+export const activeDmPeerByPodAtom = atomWithStorage<
+  Record<string, string | null>
+>('canopy_active_dm_peer', {});
 
-export const rightPanelAtom = atom<RightPanelMode>('members');
-
-const baseThreadMessageIdAtom = atom<number | null>(null);
-
-export const activeThreadMessageIdAtom = atom(
-  (get) => get(baseThreadMessageIdAtom),
-  (get, set, messageId: number | null) => {
-    set(baseThreadMessageIdAtom, messageId);
-    if (messageId !== null) {
-      set(rightPanelAtom, 'thread');
-    } else if (get(rightPanelAtom) === 'thread') {
-      const isMobile =
-        typeof window !== 'undefined' && window.innerWidth <= 900;
-      set(rightPanelAtom, isMobile ? null : 'members');
-    }
-  }
-);
+export const rightPanelAtom = atom<RightPanelMode>(null);
 
 export type InterestModalTab = 'pods' | 'match' | 'publicized' | 'custom';
 
@@ -56,23 +40,21 @@ export const proposeSheetOpenAtom = atom<boolean>(false);
 export const kickedNoticeAtom = atom<string | null>(null);
 export const highlightedMessageIdAtom = atom<number | null>(null);
 
-export const draftByChannelAtom = atomFamily((_channelId: string) =>
+export const draftByConvoAtom = atomFamily((_convoKey: string) =>
   atom<string>('')
 );
 
-export const quoteTargetByChannelAtom = atomFamily((_channelId: string) =>
+export const quoteTargetByConvoAtom = atomFamily((_convoKey: string) =>
   atom<RichMessage | null>(null)
 );
 
 export const presenceByPodAtom = atom<Record<string, PodPresenceSnapshot>>({});
 
-export const voiceRosterByPodAtom = atom<
-  Record<string, Record<string, VoicePeer[]>>
->({});
+export const voicePeersByPodAtom = atom<Record<string, VoicePeer[]>>({});
 
-export const typingByChannelAtom = atom<Record<string, string[]>>({});
+export const typingByConvoAtom = atom<Record<string, string[]>>({});
 
-export const unreadByChannelAtom = atom<Record<string, number>>({});
+export const unreadByConvoAtom = atom<Record<string, number>>({});
 
 export const wsConnectedAtom = atom<boolean>(false);
 

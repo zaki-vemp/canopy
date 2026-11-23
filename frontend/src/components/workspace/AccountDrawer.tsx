@@ -13,9 +13,9 @@ import {
   interestModalOpenAtom,
   interestModalTabAtom,
   presenceByPodAtom,
-  typingByChannelAtom,
-  unreadByChannelAtom,
-  voiceRosterByPodAtom,
+  typingByConvoAtom,
+  unreadByConvoAtom,
+  voicePeersByPodAtom,
 } from '@/state/workspaceAtoms';
 import { useVoiceActions } from '@/state/voiceEngine';
 import type { PlanTier, SelfUser } from '@/types/canopy';
@@ -31,9 +31,9 @@ export function AccountDrawer({ user }: { user: SelfUser }) {
   const setInterestOpen = useSetAtom(interestModalOpenAtom);
   const setInterestTab = useSetAtom(interestModalTabAtom);
   const setPresenceByPod = useSetAtom(presenceByPodAtom);
-  const setVoiceRosterByPod = useSetAtom(voiceRosterByPodAtom);
-  const setTypingByChannel = useSetAtom(typingByChannelAtom);
-  const setUnreadByChannel = useSetAtom(unreadByChannelAtom);
+  const setVoicePeersByPod = useSetAtom(voicePeersByPodAtom);
+  const setTypingByConvo = useSetAtom(typingByConvoAtom);
+  const setUnreadByConvo = useSetAtom(unreadByConvoAtom);
   const { leaveVoice } = useVoiceActions();
 
   const [fullName, setFullName] = useState(user.fullName);
@@ -92,9 +92,9 @@ export function AccountDrawer({ user }: { user: SelfUser }) {
     queryClient.clear();
     setActivePodId(null);
     setPresenceByPod({});
-    setVoiceRosterByPod({});
-    setTypingByChannel({});
-    setUnreadByChannel({});
+    setVoicePeersByPod({});
+    setTypingByConvo({});
+    setUnreadByConvo({});
     setOpen(false);
     router.replace('/login');
   };

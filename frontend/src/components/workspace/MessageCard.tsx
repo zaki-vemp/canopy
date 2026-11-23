@@ -2,14 +2,14 @@
 
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
-import { useSetAtom } from 'jotai';
+import { useAtom, useSetAtom } from 'jotai';
 import {
   Bookmark,
   Check,
   Clock,
   CornerUpLeft,
   Download,
-  MessageSquare,
+  MessageCircle,
   Pause,
   Pencil,
   Pin,
@@ -22,10 +22,12 @@ import {
 } from 'lucide-react';
 import { ApiError, apiFetch, buildAttachmentUrl } from '@/lib/api';
 import {
-  activeThreadMessageIdAtom,
+  activeDmPeerByPodAtom,
+  activePodIdAtom,
   highlightedMessageIdAtom,
-  quoteTargetByChannelAtom,
+  quoteTargetByConvoAtom,
   rightPanelAtom,
+  unreadByConvoAtom,
 } from '@/state/workspaceAtoms';
 import {
   markMessageDeletedInCaches,
@@ -37,12 +39,14 @@ import {
   aliasInitials,
   safeAvatarColor,
 } from '@/components/workspace/markdown';
-import type {
-  AttachmentItem,
-  PodDetail,
-  PodProposalDto,
-  PollData,
-  RichMessage,
+import {
+  conversationKey,
+  resolveMessagePeerId,
+  type AttachmentItem,
+  type PodDetail,
+  type PodProposalDto,
+  type PollData,
+  type RichMessage,
 } from '@/types/canopy';
 import styles from '@/app/app/workspace.module.css';
 
@@ -429,7 +433,11 @@ function InteractivePoll({
   });
 
   return (
-    <div className={styles.pollCard} role="group" aria-label={`Poll: ${poll.question}`}>
+    <div
+      className={styles.pollCard}
+      role="group"
+      aria-label={`Poll: ${poll.question}`}
+    >
       <p className={styles.pollQuestion}>{poll.question}</p>
       <div className={styles.pollOptions}>
         {poll.options.map((opt) => {
@@ -490,7 +498,6 @@ interface MessageCardProps {
   knownAliases: string[];
   highlighted?: boolean;
   compact?: boolean;
-  allowThreadOpen?: boolean;
 }
 
 export function MessageCard({
@@ -499,19 +506,52 @@ export function MessageCard({
   knownAliases,
   highlighted = false,
   compact = false,
-  allowThreadOpen = true,
 }: MessageCardProps) {
   const queryClient = useQueryClient();
-  const setActiveThreadId = useSetAtom(activeThreadMessageIdAtom);
+  const setActivePodId = useSetAtom(activePodIdAtom);
+  const [dmPeerMap, setDmPeerMap] = useAtom(activeDmPeerByPodAtom);
+  const setUnreadMap = useSetAtom(unreadByConvoAtom);
   const setHighlightedId = useSetAtom(highlightedMessageIdAtom);
   const setRightPanel = useSetAtom(rightPanelAtom);
-  const setQuoteTarget = useSetAtom(quoteTargetByChannelAtom(message.channelId));
+
+  const otherPeerId = resolveMessagePeerId(
+    message.senderPeerId,
+    message.recipientPeerId,
+    myPeerId
+  );
+  const isDmMessage = Boolean(message.recipientPeerId);
+  const convoKey = conversationKey(message.podId, otherPeerId);
+  const setQuoteTarget = useSetAtom(quoteTargetByConvoAtom(convoKey));
 
   const [editing, setEditing] = useState(false);
   const [editDraft, setEditDraft] = useState(message.body);
   const [moreEmojiOpen, setMoreEmojiOpen] = useState(false);
 
-  const isOwn = message.senderPeerId === myPeerId;
+  const isOwn = Boolean(myPeerId && message.senderPeerId === myPeerId);
+  const canMessageSenderPrivately =
+    !isOwn &&
+    !isDmMessage &&
+    Boolean(message.senderPeerId) &&
+    message.msgType !== 'SYSTEM';
+
+  const openPrivateChatWithSender = () => {
+    if (!message.senderPeerId || isOwn) return;
+    setActivePodId(message.podId);
+    setDmPeerMap({
+      ...dmPeerMap,
+      [message.podId]: message.senderPeerId,
+    });
+    const targetKey = conversationKey(message.podId, message.senderPeerId);
+    setUnreadMap((prev) => {
+      if (!(targetKey in prev)) return prev;
+      const copy = { ...prev };
+      delete copy[targetKey];
+      return copy;
+    });
+    if (typeof window !== 'undefined' && window.innerWidth <= 900) {
+      setRightPanel(null);
+    }
+  };
 
   const reactionMutation = useMutation({
     mutationFn: (emoji: string) =>
@@ -524,7 +564,13 @@ export function MessageCard({
       ),
     onSuccess: (res) => {
       if (res?.message) {
-        patchMessageAcrossCaches(queryClient, message.podId, res.message, true);
+        patchMessageAcrossCaches(
+          queryClient,
+          message.podId,
+          res.message,
+          true,
+          myPeerId
+        );
       }
     },
   });
@@ -542,19 +588,24 @@ export function MessageCard({
       }),
     });
     syncProposalIntoCaches(queryClient, message.podId, res.proposal, res.pod);
-    queryClient.invalidateQueries({ queryKey: ['messages', message.podId] });
+    queryClient.invalidateQueries({
+      queryKey: ['messages', message.podId, 'group'],
+    });
     queryClient.invalidateQueries({ queryKey: ['pins', message.podId] });
     setRightPanel('votes');
   };
 
   const pinMutation = useMutation({
     mutationFn: async () => {
-      const pod = queryClient
-        .getQueryData<{ pods: PodDetail[] }>(['pods'])
-        ?.pods.find((p) => p.podId === message.podId);
-      if (pod && pod.governanceMode !== 'ADMIN' && pod.memberCount > 1) {
-        await submitPinProposal();
-        return null;
+      // Never create a pod-wide democratic proposal for a private 1:1 DM!
+      if (!isDmMessage) {
+        const pod = queryClient
+          .getQueryData<{ pods: PodDetail[] }>(['pods'])
+          ?.pods.find((p) => p.podId === message.podId);
+        if (pod && pod.governanceMode !== 'ADMIN' && pod.memberCount > 1) {
+          await submitPinProposal();
+          return null;
+        }
       }
       try {
         return await apiFetch<{ message: RichMessage }>(
@@ -562,7 +613,11 @@ export function MessageCard({
           { method: 'POST' }
         );
       } catch (err) {
-        if (err instanceof ApiError && (err.status === 403 || err.status === 409)) {
+        if (
+          !isDmMessage &&
+          err instanceof ApiError &&
+          (err.status === 403 || err.status === 409)
+        ) {
           await submitPinProposal();
           return null;
         }
@@ -571,7 +626,13 @@ export function MessageCard({
     },
     onSuccess: (res) => {
       if (res?.message) {
-        patchMessageAcrossCaches(queryClient, message.podId, res.message, true);
+        patchMessageAcrossCaches(
+          queryClient,
+          message.podId,
+          res.message,
+          true,
+          myPeerId
+        );
       }
     },
   });
@@ -588,7 +649,8 @@ export function MessageCard({
           queryClient,
           message.podId,
           res.message,
-          false
+          false,
+          myPeerId
         );
       }
     },
@@ -603,7 +665,13 @@ export function MessageCard({
     onSuccess: (res) => {
       setEditing(false);
       if (res?.message) {
-        patchMessageAcrossCaches(queryClient, message.podId, res.message, true);
+        patchMessageAcrossCaches(
+          queryClient,
+          message.podId,
+          res.message,
+          true,
+          myPeerId
+        );
       }
     },
   });
@@ -617,12 +685,32 @@ export function MessageCard({
       markMessageDeletedInCaches(
         queryClient,
         message.podId,
-        message.channelId,
         message.id,
-        message.parentMessageId
+        message.senderPeerId,
+        message.recipientPeerId,
+        myPeerId
       );
     },
   });
+
+  // Centered compact pill for SYSTEM messages in main chat stream
+  if (message.msgType === 'SYSTEM' && !compact) {
+    return (
+      <div
+        className={`${styles.msgSystemRow} ${
+          highlighted ? styles.msgRowHighlighted : ''
+        }`}
+        aria-label={`System notice: ${message.body}`}
+      >
+        <div className={styles.msgSystemPill}>
+          <span>{message.body}</span>
+          <time className={styles.msgSystemTime} dateTime={message.createdAt}>
+            {formatClock(message.createdAt)}
+          </time>
+        </div>
+      </div>
+    );
+  }
 
   const voiceAttachments = message.attachments.filter(
     (a) => a.kind === 'voice_note' || a.mimeType.startsWith('audio/')
@@ -640,24 +728,59 @@ export function MessageCard({
       !a.mimeType.startsWith('image/')
   );
 
+  const alignOwnRight = isOwn && !compact && message.msgType !== 'GOVERNANCE';
+
   return (
     <article
-      className={`${styles.msgRow} ${
-        highlighted ? styles.msgRowHighlighted : ''
-      } ${message.isPinned ? styles.msgRowPinned : ''}`}
-      style={compact ? { padding: '8px 10px' } : undefined}
+      className={`${styles.msgRow} ${alignOwnRight ? styles.msgRowOwn : ''} ${
+        compact ? styles.msgRowCompact : ''
+      } ${highlighted ? styles.msgRowHighlighted : ''}`}
       aria-label={`Message from ${message.senderAlias}`}
     >
-      <div
-        className={styles.msgAvatar}
-        style={{
-          background: safeAvatarColor(message.senderColor, message.senderAlias),
-        }}
-      >
-        {aliasInitials(message.senderAlias)}
-      </div>
+      {!alignOwnRight &&
+        (canMessageSenderPrivately && !compact ? (
+          <button
+            type="button"
+            className={styles.msgAvatarBtn}
+            onClick={openPrivateChatWithSender}
+            title={`Message ${message.senderAlias} privately`}
+            aria-label={`Message ${message.senderAlias} privately`}
+          >
+            <span
+              className={styles.msgAvatar}
+              style={{
+                background: safeAvatarColor(
+                  message.senderColor,
+                  message.senderAlias
+                ),
+              }}
+            >
+              {aliasInitials(message.senderAlias)}
+            </span>
+          </button>
+        ) : (
+          <div
+            className={styles.msgAvatar}
+            style={{
+              background: safeAvatarColor(
+                message.senderColor,
+                message.senderAlias
+              ),
+            }}
+          >
+            {aliasInitials(message.senderAlias)}
+          </div>
+        ))}
 
-      <div className={styles.msgContent}>
+      <div
+        className={`${styles.msgBubble} ${
+          compact
+            ? styles.msgBubbleCompact
+            : alignOwnRight
+              ? styles.msgBubbleOwn
+              : styles.msgBubblePeer
+        } ${message.isPinned ? styles.msgBubblePinned : ''}`}
+      >
         {message.quoteMessage && (
           <div
             className={styles.quotePreview}
@@ -685,14 +808,31 @@ export function MessageCard({
         )}
 
         <div className={styles.msgMeta}>
-          <span className={styles.msgAuthor}>{message.senderAlias}</span>
-          {isOwn && <span className={styles.msgSelfBadge}>you</span>}
+          {canMessageSenderPrivately && !compact ? (
+            <button
+              type="button"
+              className={styles.msgAuthorBtn}
+              onClick={openPrivateChatWithSender}
+              title={`Message ${message.senderAlias} privately`}
+            >
+              {message.senderAlias}
+            </button>
+          ) : (
+            <span className={styles.msgAuthor}>
+              {isOwn && !compact ? 'You' : message.senderAlias}
+            </span>
+          )}
+
+          {isOwn && compact && <span className={styles.msgSelfBadge}>you</span>}
+
           <time className={styles.msgTime} dateTime={message.createdAt}>
             {formatClock(message.createdAt)}
           </time>
+
           {message.editedAt && !message.isDeleted && (
             <span className={styles.msgTime}>(edited)</span>
           )}
+
           {message.isPinned && (
             <span
               className={styles.msgSelfBadge}
@@ -700,6 +840,19 @@ export function MessageCard({
             >
               pinned
             </span>
+          )}
+
+          {canMessageSenderPrivately && !compact && (
+            <button
+              type="button"
+              className={styles.quickDmChip}
+              onClick={openPrivateChatWithSender}
+              title={`Start a private 1:1 chat with ${message.senderAlias}`}
+              aria-label={`Message ${message.senderAlias} privately`}
+            >
+              <MessageCircle size={11} />
+              <span>Message privately</span>
+            </button>
           )}
         </div>
 
@@ -719,6 +872,7 @@ export function MessageCard({
               rows={2}
               style={{
                 width: '100%',
+                minWidth: 220,
                 padding: 8,
                 borderRadius: 8,
                 border: '1px solid #1f6b3a',
@@ -831,27 +985,13 @@ export function MessageCard({
             ))}
           </div>
         )}
-
-        {allowThreadOpen &&
-          message.parentMessageId === 0 &&
-          message.replyCount > 0 && (
-            <button
-              type="button"
-              className={styles.threadSummaryBtn}
-              onClick={() => setActiveThreadId(message.id)}
-            >
-              <MessageSquare size={14} />
-              <span>
-                {message.replyCount}{' '}
-                {message.replyCount === 1 ? 'reply' : 'replies'} · View thread →
-              </span>
-            </button>
-          )}
       </div>
 
       {!message.isDeleted && (
         <div
-          className={styles.hoverToolbar}
+          className={`${styles.hoverToolbar} ${
+            alignOwnRight ? styles.hoverToolbarOwn : ''
+          }`}
           role="toolbar"
           aria-label="Message actions"
         >
@@ -894,34 +1034,40 @@ export function MessageCard({
               </button>
             ))}
 
-          {allowThreadOpen && message.parentMessageId === 0 && (
+          <button
+            type="button"
+            className={styles.toolbarBtn}
+            onClick={() => setQuoteTarget(message)}
+            aria-label="Quote Reply"
+            title="Reply with quote"
+          >
+            <CornerUpLeft size={15} />
+          </button>
+
+          {canMessageSenderPrivately && (
             <button
               type="button"
               className={styles.toolbarBtn}
-              onClick={() => setActiveThreadId(message.id)}
-              aria-label="Reply in Thread"
-              title="Reply in Thread"
+              onClick={openPrivateChatWithSender}
+              aria-label={`Message ${message.senderAlias} privately`}
+              title={`Message ${message.senderAlias} privately`}
             >
-              <MessageSquare size={15} />
+              <MessageCircle size={15} />
             </button>
           )}
 
           <button
             type="button"
             className={styles.toolbarBtn}
-            onClick={() => setQuoteTarget(message)}
-            aria-label="Quote Reply"
-            title="Quote Reply"
-          >
-            <CornerUpLeft size={15} />
-          </button>
-
-          <button
-            type="button"
-            className={styles.toolbarBtn}
             onClick={() => pinMutation.mutate()}
             aria-label={message.isPinned ? 'Unpin message' : 'Pin message'}
-            title={message.isPinned ? 'Unpin' : 'Pin / Propose Pin Vote'}
+            title={
+              message.isPinned
+                ? 'Unpin'
+                : isDmMessage
+                  ? 'Pin in chat'
+                  : 'Pin / Propose Pin Vote'
+            }
           >
             <Pin size={15} />
           </button>
@@ -933,7 +1079,7 @@ export function MessageCard({
             aria-label={
               message.isBookmarked ? 'Remove bookmark' : 'Bookmark message'
             }
-            title={message.isBookmarked ? 'Remove Bookmark' : 'Bookmark'}
+            title={message.isBookmarked ? 'Remove Bookmark' : 'Save message'}
           >
             <Bookmark size={15} />
           </button>

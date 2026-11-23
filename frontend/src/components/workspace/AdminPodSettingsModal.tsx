@@ -3,29 +3,15 @@
 import React, { useEffect, useState } from 'react';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { useAtom } from 'jotai';
-import {
-  Crown,
-  Globe,
-  Hash,
-  Lock,
-  Trash2,
-  Volume2,
-  X,
-} from 'lucide-react';
+import { Crown, Globe, Lock, X } from 'lucide-react';
 import { apiFetch } from '@/lib/api';
-import {
-  activeChannelIdMapAtom,
-  adminSettingsPodIdAtom,
-} from '@/state/workspaceAtoms';
-import { useVoiceActions } from '@/state/voiceEngine';
+import { adminSettingsPodIdAtom } from '@/state/workspaceAtoms';
 import type { PodDetail, UpdatePodSettingsRequest } from '@/types/canopy';
 import styles from '@/app/app/workspace.module.css';
 
 export function AdminPodSettingsModal({ pods }: { pods: PodDetail[] }) {
   const queryClient = useQueryClient();
   const [podId, setPodId] = useAtom(adminSettingsPodIdAtom);
-  const [channelMap, setChannelMap] = useAtom(activeChannelIdMapAtom);
-  const { session: voiceSession, leaveVoice } = useVoiceActions();
 
   const pod = pods.find((p) => p.podId === podId) ?? null;
 
@@ -70,7 +56,16 @@ export function AdminPodSettingsModal({ pods }: { pods: PodDetail[] }) {
         old
           ? {
               pods: old.pods.map((p) =>
-                p.podId === res.pod.podId ? res.pod : p
+                p.podId === res.pod.podId
+                  ? {
+                      ...p,
+                      ...res.pod,
+                      dmConversations:
+                        res.pod.dmConversations && res.pod.dmConversations.length > 0
+                          ? res.pod.dmConversations
+                          : p.dmConversations,
+                    }
+                  : p
               ),
             }
           : { pods: [res.pod] }
@@ -79,46 +74,6 @@ export function AdminPodSettingsModal({ pods }: { pods: PodDetail[] }) {
     },
     onError: (err: Error) => {
       setErrorMsg(err.message || 'Could not update group settings');
-    },
-  });
-
-  const deleteChannelMutation = useMutation({
-    mutationFn: (channelId: string) => {
-      if (!pod) throw new Error('No group selected');
-      if (
-        voiceSession.podId === pod.podId &&
-        voiceSession.voiceChannelId === channelId
-      ) {
-        leaveVoice();
-      }
-      return apiFetch<{ pod: PodDetail }>(
-        `/api/pods/${pod.podId}/channels/${channelId}`,
-        { method: 'DELETE' }
-      );
-    },
-    onSuccess: (res, deletedChannelId) => {
-      setErrorMsg(null);
-      queryClient.setQueryData<{ pods: PodDetail[] }>(['pods'], (old) =>
-        old
-          ? {
-              pods: old.pods.map((p) =>
-                p.podId === res.pod.podId ? res.pod : p
-              ),
-            }
-          : { pods: [res.pod] }
-      );
-      if (pod && channelMap[pod.podId] === deletedChannelId) {
-        const general =
-          res.pod.channels.find(
-            (c) => c.kind === 'TEXT' && c.slug === 'general'
-          ) || res.pod.channels.find((c) => c.kind === 'TEXT');
-        if (general) {
-          setChannelMap({ ...channelMap, [pod.podId]: general.channelId });
-        }
-      }
-    },
-    onError: (err: Error) => {
-      setErrorMsg(err.message || 'Could not delete channel');
     },
   });
 
@@ -147,8 +102,8 @@ export function AdminPodSettingsModal({ pods }: { pods: PodDetail[] }) {
               </h2>
             </div>
             <p style={{ margin: '3px 0 0', fontSize: 12.5, color: '#686868' }}>
-              Instant Owner/Admin settings — toggle directory publicity, seat
-              cap, or remove channels.
+              Instant Owner/Admin settings — update group title, directory
+              publicity, seat cap, or member joins.
             </p>
           </div>
           <button
@@ -344,70 +299,6 @@ export function AdminPodSettingsModal({ pods }: { pods: PodDetail[] }) {
               ? 'Saving Settings...'
               : 'Save Group Settings'}
           </button>
-
-          {/* Instant Channel Management */}
-          <div
-            style={{
-              marginTop: 6,
-              paddingTop: 12,
-              borderTop: '1px solid rgba(35,35,35,0.1)',
-            }}
-          >
-            <div className={styles.podOptionLabel} style={{ marginBottom: 8 }}>
-              Channels ({pod.channels.length}) — #general is protected
-            </div>
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-              {pod.channels.map((ch) => {
-                const isProtected = ch.slug === 'general';
-                return (
-                  <div key={ch.channelId} className={styles.adminChannelRow}>
-                    <div
-                      style={{
-                        display: 'flex',
-                        alignItems: 'center',
-                        gap: 8,
-                        minWidth: 0,
-                      }}
-                    >
-                      {ch.kind === 'VOICE' ? (
-                        <Volume2 size={15} color="#1f6b3a" />
-                      ) : (
-                        <Hash size={15} />
-                      )}
-                      <strong style={{ fontSize: 13.5 }}>{ch.label}</strong>
-                      <span
-                        style={{
-                          fontFamily: 'var(--m-font-mono)',
-                          fontSize: 11,
-                          color: '#686868',
-                        }}
-                      >
-                        {ch.kind}
-                      </span>
-                    </div>
-
-                    {isProtected ? (
-                      <span className={styles.tierBadge}>Protected</span>
-                    ) : (
-                      <button
-                        type="button"
-                        disabled={deleteChannelMutation.isPending}
-                        onClick={() =>
-                          deleteChannelMutation.mutate(ch.channelId)
-                        }
-                        className={styles.podCardDangerBtn}
-                        style={{ minHeight: 38, padding: '0 10px' }}
-                        aria-label={`Delete channel ${ch.label}`}
-                      >
-                        <Trash2 size={13} />
-                        <span>Delete</span>
-                      </button>
-                    )}
-                  </div>
-                );
-              })}
-            </div>
-          </div>
         </form>
       </div>
     </div>

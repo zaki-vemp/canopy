@@ -1,4 +1,4 @@
--- Idempotent seed of the 12 default Canopy interest channels.
+-- Idempotent seed of the 12 default Canopy interests.
 
 INSERT INTO interests (slug, label, category)
 VALUES

@@ -5,18 +5,22 @@ import { useRouter } from 'next/navigation';
 import { useQueryClient } from '@tanstack/react-query';
 import { useAtom, useAtomValue, useSetAtom } from 'jotai';
 import {
+  ArrowLeft,
   AudioLines,
   Bookmark,
   Compass,
   Crown,
-  Hash,
   HeadphoneOff,
   Headphones,
+  Info,
   Layers,
+  Lock,
   Menu,
   MessageSquare,
+  MessagesSquare,
   Mic,
   MicOff,
+  PhoneCall,
   PhoneOff,
   Pin,
   Radio,
@@ -25,8 +29,8 @@ import {
   Settings,
   Share2,
   ShieldCheck,
+  Sliders,
   Users,
-  Volume2,
   X,
 } from 'lucide-react';
 import { apiFetch, enableTabIsolatedMode, getAuthToken } from '@/lib/api';
@@ -36,9 +40,8 @@ import {
 } from '@/state/authAtoms';
 import {
   accountDrawerOpenAtom,
-  activeChannelIdMapAtom,
+  activeDmPeerByPodAtom,
   activePodIdAtom,
-  activeThreadMessageIdAtom,
   adminSettingsPodIdAtom,
   commandModalOpenAtom,
   interestModalOpenAtom,
@@ -50,12 +53,13 @@ import {
   podsQueryAtom,
   presenceByPodAtom,
   rightPanelAtom,
-  unreadByChannelAtom,
-  voiceRosterByPodAtom,
+  unreadByConvoAtom,
+  voicePeersByPodAtom,
   wsConnectedAtom,
 } from '@/state/workspaceAtoms';
 import { usePodWebSocket } from '@/state/wsPodClient';
 import {
+  remoteSpeakingMapAtom,
   useVoiceActions,
   useVoiceEngineController,
 } from '@/state/voiceEngine';
@@ -71,9 +75,11 @@ import { CommandSearchModal } from '@/components/workspace/CommandSearchModal';
 import { AccountDrawer } from '@/components/workspace/AccountDrawer';
 import { aliasInitials, safeAvatarColor } from '@/components/workspace/markdown';
 import {
+  conversationKey,
   extractInviteCode,
   type AcceptInviteResponse,
   type PodDetail,
+  type VoicePeer,
 } from '@/types/canopy';
 import styles from './workspace.module.css';
 
@@ -85,9 +91,8 @@ function WorkspaceAppInner() {
   const podsQuery = useAtomValue(podsQueryAtom);
 
   const [activePodId, setActivePodId] = useAtom(activePodIdAtom);
-  const [channelMap, setChannelMap] = useAtom(activeChannelIdMapAtom);
+  const [dmPeerMap, setDmPeerMap] = useAtom(activeDmPeerByPodAtom);
   const [rightPanel, setRightPanel] = useAtom(rightPanelAtom);
-  const setActiveThreadId = useSetAtom(activeThreadMessageIdAtom);
   const [mobileNavOpen, setMobileNavOpen] = useAtom(mobileNavOpenAtom);
   const [mobileVoiceOpen, setMobileVoiceOpen] = useAtom(
     mobileVoiceSheetOpenAtom
@@ -101,21 +106,24 @@ function WorkspaceAppInner() {
   const [kickedNotice, setKickedNotice] = useAtom(kickedNoticeAtom);
   const setCommandOpen = useSetAtom(commandModalOpenAtom);
   const [accountOpen, setAccountOpen] = useAtom(accountDrawerOpenAtom);
-  const unreadMap = useAtomValue(unreadByChannelAtom);
-  const voiceRosterByPod = useAtomValue(voiceRosterByPodAtom);
+  const [unreadMap, setUnreadMap] = useAtom(unreadByConvoAtom);
+  const voicePeersByPod = useAtomValue(voicePeersByPodAtom);
+  const remoteSpeakingMap = useAtomValue(remoteSpeakingMapAtom);
+
   const [pendingInviteAccept, setPendingInviteAccept] = useState(false);
+  const [openVolPeerId, setOpenVolPeerId] = useState<string | null>(null);
   const handledUrlInviteRef = useRef<string | null>(null);
 
   const {
     session: voiceSession,
+    peerVolumes,
     joinVoice,
     leaveVoice,
     toggleMute,
     toggleDeafen,
     toggleTestTone,
+    setPeerVolume,
   } = useVoiceActions();
-
-  const prevPodIdRef = useRef<string | null>(null);
 
   // Close right drawer by default on mobile (<= 900px) so chat is never covered on load
   useEffect(() => {
@@ -133,18 +141,8 @@ function WorkspaceAppInner() {
   }, [setRightPanel]);
 
   useEffect(() => {
-    if (prevPodIdRef.current && prevPodIdRef.current !== activePodId) {
-      setActiveThreadId(null);
-      setRightPanel((curr) =>
-        curr === 'thread'
-          ? window.innerWidth <= 900
-            ? null
-            : 'members'
-          : curr
-      );
-    }
-    prevPodIdRef.current = activePodId;
-  }, [activePodId, setActiveThreadId, setRightPanel]);
+    setOpenVolPeerId(null);
+  }, [activePodId]);
 
   const presenceByPod = useAtomValue(presenceByPodAtom);
   const wsConnected = useAtomValue(wsConnectedAtom);
@@ -283,34 +281,30 @@ function WorkspaceAppInner() {
     [activePodId, pods]
   );
 
-  const activeChannel = useMemo(() => {
-    if (!activePod) return null;
-    const textChannels = activePod.channels.filter((c) => c.kind === 'TEXT');
-    const savedId = channelMap[activePod.podId];
-    return (
-      textChannels.find((c) => c.channelId === savedId) ??
-      textChannels[0] ??
-      null
-    );
-  }, [activePod, channelMap]);
-
-  useEffect(() => {
-    if (
-      activePod &&
-      activeChannel &&
-      channelMap[activePod.podId] !== activeChannel.channelId
-    ) {
-      setChannelMap({
-        ...channelMap,
-        [activePod.podId]: activeChannel.channelId,
-      });
-    }
-  }, [activeChannel, activePod, channelMap, setChannelMap]);
-
   const liveMembers = useMemo(() => {
     if (!activePod) return [];
     return presenceByPod[activePod.podId]?.members ?? activePod.members;
   }, [activePod, presenceByPod]);
+
+  const activePeer = useMemo(() => {
+    if (!activePod) return null;
+    const savedPeerId = dmPeerMap[activePod.podId] ?? null;
+    if (!savedPeerId || savedPeerId === activePod.myPeerId) return null;
+    return liveMembers.find((m) => m.peerId === savedPeerId) ?? null;
+  }, [activePod, dmPeerMap, liveMembers]);
+
+  const activePeerId = activePeer?.peerId ?? null;
+
+  // Clear unread counter when viewing the active conversation
+  useEffect(() => {
+    if (!activePod) return;
+    const key = conversationKey(activePod.podId, activePeerId);
+    if (unreadMap[key]) {
+      const copy = { ...unreadMap };
+      delete copy[key];
+      setUnreadMap(copy);
+    }
+  }, [activePeerId, activePod, setUnreadMap, unreadMap]);
 
   const knownAliases = useMemo(
     () => liveMembers.map((m) => m.alias),
@@ -319,10 +313,19 @@ function WorkspaceAppInner() {
 
   const totalUnreadInPod = useMemo(() => {
     if (!activePod) return 0;
-    return activePod.channels.reduce(
-      (sum, ch) => sum + (unreadMap[ch.channelId] || 0),
-      0
-    );
+    const prefix = `${activePod.podId}:`;
+    let sum = 0;
+    for (const [k, count] of Object.entries(unreadMap)) {
+      if (k.startsWith(prefix)) {
+        sum += count || 0;
+      }
+    }
+    return sum;
+  }, [activePod, unreadMap]);
+
+  const groupUnreadCount = useMemo(() => {
+    if (!activePod) return 0;
+    return unreadMap[conversationKey(activePod.podId, null)] || 0;
   }, [activePod, unreadMap]);
 
   const selfUser = authQuery.data?.user ?? null;
@@ -347,6 +350,29 @@ function WorkspaceAppInner() {
   }
 
   const voiceActive = voiceSession.status !== 'idle';
+  const connectedToThisPodCall =
+    Boolean(activePod) &&
+    voiceActive &&
+    voiceSession.podId === activePod?.podId;
+
+  const rawVoicePeers = activePod ? voicePeersByPod[activePod.podId] || [] : [];
+  const voicePeers: VoicePeer[] = [...rawVoicePeers];
+  if (
+    activePod &&
+    connectedToThisPodCall &&
+    voiceSession.status === 'connected' &&
+    !voicePeers.some((p) => p.peerId === activePod.myPeerId)
+  ) {
+    voicePeers.unshift({
+      peerId: activePod.myPeerId,
+      alias: activePod.myAlias,
+      color: activePod.myColor,
+      muted: voiceSession.muted,
+      deafened: voiceSession.deafened,
+      speaking: voiceSession.selfSpeaking,
+    });
+  }
+
   const chatTabFocused =
     !mobileNavOpen &&
     rightPanel === null &&
@@ -356,13 +382,6 @@ function WorkspaceAppInner() {
     !inviteModalPodId &&
     !adminSettingsPodId;
 
-  const activePodVoiceChannels = activePod
-    ? activePod.channels.filter((c) => c.kind === 'VOICE')
-    : [];
-  const podVoiceRoster = activePod
-    ? voiceRosterByPod[activePod.podId] || {}
-    : {};
-
   const isAdminPod = activePod?.governanceMode === 'ADMIN';
   const canManageAdminPod =
     isAdminPod &&
@@ -370,6 +389,22 @@ function WorkspaceAppInner() {
   const podDisplayTitle = activePod
     ? activePod.title || `#${activePod.code}`
     : '';
+
+  const selectConversation = (podId: string, peerId: string | null) => {
+    setDmPeerMap({ ...dmPeerMap, [podId]: peerId });
+    const key = conversationKey(podId, peerId);
+    if (unreadMap[key]) {
+      const copy = { ...unreadMap };
+      delete copy[key];
+      setUnreadMap(copy);
+    }
+  };
+
+  const activePeerInCall = Boolean(
+    activePeer &&
+      (activePeer.inVoice ||
+        voicePeers.some((vp) => vp.peerId === activePeer.peerId))
+  );
 
   return (
     <div className={styles.shell}>
@@ -398,7 +433,8 @@ function WorkspaceAppInner() {
         <PodChannelSidebar
           pod={activePod}
           allPods={pods}
-          activeChannelId={activeChannel?.channelId ?? null}
+          activePeerId={activePeerId}
+          members={liveMembers}
         />
       </div>
 
@@ -412,56 +448,138 @@ function WorkspaceAppInner() {
                 setRightPanel(null);
                 setMobileNavOpen((v) => !v);
               }}
-              aria-label="Toggle channels drawer"
+              aria-label="Toggle conversations drawer"
             >
               <Menu size={19} />
             </button>
 
-            {activePod && activeChannel ? (
-              <>
-                <h1 className={styles.chatChannelTitle}>
-                  <Hash size={17} style={{ flexShrink: 0 }} />
-                  <span className={styles.chatChannelTitleText}>
-                    {activeChannel.label}
-                  </span>
-                </h1>
+            {activePod ? (
+              activePeer ? (
+                /* 1:1 PRIVATE CHAT HEADER */
+                <>
+                  <button
+                    type="button"
+                    className={styles.backToGroupBtn}
+                    onClick={() => selectConversation(activePod.podId, null)}
+                    aria-label="Back to Pod Group Chat"
+                    title="Return to Pod Group Chat"
+                  >
+                    <ArrowLeft size={15} />
+                    <span>Group</span>
+                    {groupUnreadCount > 0 && (
+                      <span className={styles.unreadBadge}>
+                        {groupUnreadCount}
+                      </span>
+                    )}
+                  </button>
 
-                <button
-                  type="button"
-                  className={styles.headerPodChip}
-                  onClick={() => {
-                    setInterestTab(pods.length > 0 ? 'pods' : 'match');
-                    setInterestOpen(true);
-                  }}
-                  title={`Switch pods · ${podDisplayTitle} (${liveMembers.length}/${activePod.maxMembers})`}
-                  aria-label={`Active pod ${podDisplayTitle}, ${liveMembers.length} of ${activePod.maxMembers} seats. Tap to switch pods.`}
-                >
-                  <span>
-                    {podDisplayTitle} · {liveMembers.length}/
-                    {activePod.maxMembers}
-                  </span>
-                </button>
+                  <div className={styles.dmHeaderIdentity}>
+                    <span className={styles.dmHeaderAvatarWrap}>
+                      <span
+                        className={styles.dmHeaderAvatar}
+                        style={{
+                          background: safeAvatarColor(
+                            activePeer.color,
+                            activePeer.alias
+                          ),
+                        }}
+                      >
+                        {aliasInitials(activePeer.alias)}
+                      </span>
+                      <span
+                        className={`${styles.convoPresenceDot} ${
+                          activePeer.online
+                            ? styles.convoPresenceOnline
+                            : styles.convoPresenceOffline
+                        }`}
+                        aria-hidden="true"
+                      />
+                    </span>
 
-                {isAdminPod ? (
-                  <span className={styles.headerGovPill}>
-                    <Crown size={11} />
+                    <div className={styles.dmHeaderTextCol}>
+                      <h1 className={styles.chatChannelTitle}>
+                        <span className={styles.chatChannelTitleText}>
+                          {activePeer.alias}
+                        </span>
+                        {activePeer.role === 'OWNER' && (
+                          <span className={styles.rolePillOwner}>OWNER</span>
+                        )}
+                        {activePeer.role === 'ADMIN' && (
+                          <span className={styles.rolePillAdmin}>ADMIN</span>
+                        )}
+                      </h1>
+                      <span className={styles.dmStatusSubline}>
+                        {activePeerInCall
+                          ? 'In Pod Audio Call'
+                          : activePeer.online
+                            ? 'Online'
+                            : 'Offline'}
+                        {activePeer.customStatus
+                          ? ` · ${activePeer.customStatus}`
+                          : ''}
+                      </span>
+                    </div>
+                  </div>
+
+                  <span className={styles.dmPrivacyPill}>
+                    <Lock size={11} />
                     <span>
-                      👑 {activePod.isPublicized ? 'Publicized' : 'Private'}
+                      Private 1:1 · Only you &amp; {activePeer.alias} can see
+                      this
                     </span>
                   </span>
-                ) : (
-                  <span className={styles.headerGovPill}>
-                    <Scale size={11} />
-                    <span>⚖️ Democratic</span>
-                  </span>
-                )}
+                </>
+              ) : (
+                /* POD GROUP CHAT HEADER */
+                <>
+                  <h1 className={styles.chatChannelTitle}>
+                    <Users
+                      size={17}
+                      color="#1f6b3a"
+                      style={{ flexShrink: 0 }}
+                    />
+                    <span className={styles.chatChannelTitleText}>
+                      {podDisplayTitle}
+                    </span>
+                  </h1>
 
-                {activeChannel.topic && (
-                  <span className={styles.chatTopic}>
-                    {activeChannel.topic}
-                  </span>
-                )}
-              </>
+                  <button
+                    type="button"
+                    className={styles.headerPodChip}
+                    onClick={() => {
+                      setInterestTab(pods.length > 0 ? 'pods' : 'match');
+                      setInterestOpen(true);
+                    }}
+                    title={`Group Chat · ${liveMembers.length}/${activePod.maxMembers} seats (tap to switch pods)`}
+                    aria-label={`Group Chat, ${liveMembers.length} of ${activePod.maxMembers} seats. Tap to switch pods.`}
+                  >
+                    <span>
+                      Group Chat · {liveMembers.length}/{activePod.maxMembers}
+                    </span>
+                  </button>
+
+                  {isAdminPod ? (
+                    <span className={styles.headerGovPill}>
+                      <Crown size={11} />
+                      <span>
+                        Canopy Pro ·{' '}
+                        {activePod.isPublicized ? 'Publicized' : 'Private'}
+                      </span>
+                    </span>
+                  ) : (
+                    <span className={styles.headerGovPill}>
+                      <Scale size={11} />
+                      <span>Democratic</span>
+                    </span>
+                  )}
+
+                  {activePod.description && (
+                    <span className={styles.chatTopic}>
+                      {activePod.description}
+                    </span>
+                  )}
+                </>
+              )
             ) : (
               <h1 className={styles.chatChannelTitle}>
                 <span className={styles.chatChannelTitleText}>
@@ -494,7 +612,49 @@ function WorkspaceAppInner() {
               </span>
             )}
 
-            {activePod && !isAdminPod && (
+            {/* Join Call / In Call Button */}
+            {activePod && (!activePeer || connectedToThisPodCall || voicePeers.length > 0) && (
+              <button
+                type="button"
+                className={`${styles.headerCallBtn} ${
+                  connectedToThisPodCall
+                    ? styles.headerCallBtnConnected
+                    : voicePeers.length > 0
+                      ? styles.headerCallBtnLive
+                      : ''
+                }`}
+                onClick={() => {
+                  if (connectedToThisPodCall) {
+                    if (window.innerWidth <= 900) {
+                      setMobileVoiceOpen(true);
+                    }
+                  } else {
+                    joinVoice(activePod.podId, podDisplayTitle);
+                  }
+                }}
+                aria-label={
+                  connectedToThisPodCall
+                    ? `In Call (${voicePeers.length})`
+                    : voicePeers.length > 0
+                      ? `Join Pod Audio Call (${voicePeers.length} in call)`
+                      : 'Join Pod Audio Call'
+                }
+                title={
+                  connectedToThisPodCall
+                    ? 'Active Pod Audio Call'
+                    : 'Start or join Pod Audio Call (WebRTC P2P Opus)'
+                }
+              >
+                <PhoneCall size={15} />
+                <span className={styles.headerBtnLabel}>
+                  {connectedToThisPodCall || voicePeers.length > 0
+                    ? `In Call (${voicePeers.length})`
+                    : 'Join Call'}
+                </span>
+              </button>
+            )}
+
+            {activePod && !activePeer && !isAdminPod && (
               <button
                 type="button"
                 className={`${styles.headerBtn} ${
@@ -513,7 +673,7 @@ function WorkspaceAppInner() {
               </button>
             )}
 
-            {activePod && canManageAdminPod && (
+            {activePod && !activePeer && canManageAdminPod && (
               <button
                 type="button"
                 className={`${styles.headerBtn} ${
@@ -526,11 +686,11 @@ function WorkspaceAppInner() {
                 title="Manage Group Settings"
               >
                 <Settings size={16} />
-                <span className={styles.headerBtnLabel}>Manage Group</span>
+                <span className={styles.headerBtnLabel}>Manage</span>
               </button>
             )}
 
-            {activePod && (
+            {activePod && !activePeer && (
               <button
                 type="button"
                 className={`${styles.headerBtn} ${
@@ -551,26 +711,28 @@ function WorkspaceAppInner() {
               type="button"
               className={styles.headerBtn}
               onClick={() => setCommandOpen(true)}
-              aria-label="Search pods, channels, and messages (Cmd+K)"
+              aria-label="Search chats and messages (Cmd+K)"
             >
               <Search size={16} />
               <span className={styles.headerBtnLabel}>Search</span>
               <kbd className={styles.kbdHint}>⌘K</kbd>
             </button>
 
-            <button
-              type="button"
-              className={`${styles.headerBtn} ${
-                rightPanel === 'pins' ? styles.headerBtnActive : ''
-              }`}
-              onClick={() =>
-                setRightPanel(rightPanel === 'pins' ? null : 'pins')
-              }
-              aria-label="Pinned messages"
-              title="Pinned messages"
-            >
-              <Pin size={16} />
-            </button>
+            {activePod && !activePeer && (
+              <button
+                type="button"
+                className={`${styles.headerBtn} ${styles.headerBookmarkBtn} ${
+                  rightPanel === 'pins' ? styles.headerBtnActive : ''
+                }`}
+                onClick={() =>
+                  setRightPanel(rightPanel === 'pins' ? null : 'pins')
+                }
+                aria-label="Pinned messages"
+                title="Pinned messages"
+              >
+                <Pin size={16} />
+              </button>
+            )}
 
             <button
               type="button"
@@ -580,8 +742,8 @@ function WorkspaceAppInner() {
               onClick={() =>
                 setRightPanel(rightPanel === 'bookmarks' ? null : 'bookmarks')
               }
-              aria-label="Saved bookmarks"
-              title="Saved bookmarks"
+              aria-label="Saved messages"
+              title="Saved messages"
             >
               <Bookmark size={16} />
             </button>
@@ -594,16 +756,221 @@ function WorkspaceAppInner() {
               onClick={() =>
                 setRightPanel(rightPanel === 'members' ? null : 'members')
               }
-              aria-label="Toggle anonymous member roster"
-              title="Pod Roster"
+              aria-label="Toggle pod info and members"
+              title={activePeer ? 'Pod Info & Members' : 'Info / Members'}
             >
-              <Users size={16} />
+              {activePeer ? <Info size={16} /> : <Users size={16} />}
               <span className={styles.headerBtnLabel}>
-                {liveMembers.length}
+                {activePeer ? 'Info' : liveMembers.length}
               </span>
             </button>
           </div>
         </header>
+
+        {/* Sleek Compact Active-Call Bar Directly Under Header */}
+        {activePod && connectedToThisPodCall && (
+          <div
+            className={styles.activeCallBar}
+            role="region"
+            aria-label="Active Pod Audio Call controls"
+          >
+            <div className={styles.activeCallLeft}>
+              <span className={styles.activeCallBadge}>
+                <Radio size={13} />
+                <span>
+                  {voiceSession.status === 'connecting'
+                    ? 'Connecting Call...'
+                    : `Pod Call (${voicePeers.length})`}
+                </span>
+              </span>
+
+              <div className={styles.activeCallPeersRow}>
+                {voicePeers.map((peer) => {
+                  const isSelf = peer.peerId === activePod.myPeerId;
+                  const speaking = isSelf
+                    ? voiceSession.selfSpeaking || peer.speaking
+                    : Boolean(peer.speaking || remoteSpeakingMap[peer.peerId]);
+                  const volPct = Math.round(
+                    (peerVolumes[peer.peerId] ?? 1) * 100
+                  );
+
+                  return (
+                    <div key={peer.peerId} className={styles.activeCallPeerWrap}>
+                      <button
+                        type="button"
+                        className={`${styles.activeCallPeerChip} ${
+                          speaking ? styles.activeCallPeerChipSpeaking : ''
+                        }`}
+                        onClick={() => {
+                          if (!isSelf) {
+                            setOpenVolPeerId((cur) =>
+                              cur === peer.peerId ? null : peer.peerId
+                            );
+                          }
+                        }}
+                        title={
+                          isSelf
+                            ? `${peer.alias} (you)`
+                            : `Adjust volume for ${peer.alias} (${volPct}%)`
+                        }
+                      >
+                        <span
+                          className={`${styles.voiceAvatar} ${
+                            speaking ? styles.voiceAvatarSpeaking : ''
+                          }`}
+                          style={{
+                            width: 22,
+                            height: 22,
+                            fontSize: 9.5,
+                            background: safeAvatarColor(peer.color, peer.alias),
+                          }}
+                        >
+                          {aliasInitials(peer.alias)}
+                        </span>
+                        <span>
+                          {peer.alias}
+                          {isSelf ? ' (you)' : ''}
+                        </span>
+                        {peer.muted && <MicOff size={12} color="#fca5a5" />}
+                        {peer.deafened && (
+                          <HeadphoneOff size={12} color="#fca5a5" />
+                        )}
+                        {!isSelf && <Sliders size={11} />}
+                      </button>
+
+                      {!isSelf && openVolPeerId === peer.peerId && (
+                        <div className={styles.callVolumePopover}>
+                          <div
+                            style={{
+                              display: 'flex',
+                              justifyContent: 'space-between',
+                              marginBottom: 4,
+                              color: '#232323',
+                            }}
+                          >
+                            <span>{peer.alias}</span>
+                            <strong>{volPct}%</strong>
+                          </div>
+                          <input
+                            type="range"
+                            min={0}
+                            max={150}
+                            step={5}
+                            value={volPct}
+                            onChange={(e) =>
+                              setPeerVolume(
+                                peer.peerId,
+                                Number(e.target.value) / 100
+                              )
+                            }
+                            className={styles.volumeSlider}
+                            aria-label={`${peer.alias} volume percentage`}
+                          />
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+
+              {voiceSession.fallbackBanner && (
+                <span className={styles.activeCallSynthTag}>
+                  {voiceSession.fallbackBanner}
+                </span>
+              )}
+            </div>
+
+            <div className={styles.activeCallControls}>
+              <button
+                type="button"
+                className={`${styles.callBarBtn} ${
+                  voiceSession.muted ? styles.callBarBtnActive : ''
+                }`}
+                onClick={toggleMute}
+                aria-pressed={voiceSession.muted}
+                aria-label={
+                  voiceSession.muted ? 'Unmute microphone' : 'Mute microphone'
+                }
+              >
+                {voiceSession.muted ? <MicOff size={15} /> : <Mic size={15} />}
+                <span className={styles.callBarBtnLabel}>
+                  {voiceSession.muted ? 'Unmute' : 'Mute'}
+                </span>
+              </button>
+
+              <button
+                type="button"
+                className={`${styles.callBarBtn} ${
+                  voiceSession.deafened ? styles.callBarBtnActive : ''
+                }`}
+                onClick={toggleDeafen}
+                aria-pressed={voiceSession.deafened}
+                aria-label={
+                  voiceSession.deafened ? 'Undeafen audio' : 'Deafen audio'
+                }
+              >
+                {voiceSession.deafened ? (
+                  <HeadphoneOff size={15} />
+                ) : (
+                  <Headphones size={15} />
+                )}
+                <span className={styles.callBarBtnLabel}>
+                  {voiceSession.deafened ? 'Deaf' : 'Deafen'}
+                </span>
+              </button>
+
+              <button
+                type="button"
+                className={`${styles.callBarBtn} ${
+                  voiceSession.testToneActive ? styles.callBarBtnActive : ''
+                }`}
+                onClick={toggleTestTone}
+                aria-pressed={voiceSession.testToneActive}
+                aria-label="Toggle synth test tone"
+                title="Toggle 240Hz/360Hz synth test tone"
+              >
+                <AudioLines size={15} />
+                <span className={styles.callBarBtnLabel}>Test Tone</span>
+              </button>
+
+              <button
+                type="button"
+                className={`${styles.callBarBtn} ${styles.callBarBtnHangup}`}
+                onClick={leaveVoice}
+                aria-label="Hang up Pod Audio Call"
+              >
+                <PhoneOff size={15} />
+                <span className={styles.callBarBtnLabel}>Hang Up</span>
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* Joinable Live Call Banner when others are in call and you haven't joined yet */}
+        {activePod &&
+          !connectedToThisPodCall &&
+          voicePeers.length > 0 &&
+          !activePeer && (
+            <div className={styles.joinableCallBanner}>
+              <div className={styles.joinableCallInfo}>
+                <Radio size={14} color="#1f6b3a" />
+                <strong>
+                  Pod Audio Call active · {voicePeers.length}{' '}
+                  {voicePeers.length === 1 ? 'member' : 'members'} in call:
+                </strong>
+                <span>{voicePeers.map((p) => p.alias).join(', ')}</span>
+              </div>
+              <button
+                type="button"
+                className={styles.podCardPrimaryBtn}
+                style={{ minHeight: 40 }}
+                onClick={() => joinVoice(activePod.podId, podDisplayTitle)}
+              >
+                <PhoneCall size={14} />
+                <span>Join Call</span>
+              </button>
+            </div>
+          )}
 
         {kickedNotice && (
           <div className={styles.kickedBanner} role="alert">
@@ -619,17 +986,17 @@ function WorkspaceAppInner() {
           </div>
         )}
 
-        {activePod && activeChannel ? (
+        {activePod ? (
           <>
             <MessageStream
               pod={activePod}
-              channel={activeChannel}
+              activePeer={activePeer}
               knownAliases={knownAliases}
             />
             <RichComposer
               pod={activePod}
               allPods={pods}
-              channel={activeChannel}
+              activePeer={activePeer}
               members={liveMembers}
             />
           </>
@@ -663,9 +1030,9 @@ function WorkspaceAppInner() {
               }}
             >
               Pick shared interests to match into 25-member democratic pods
-              (Compact 10, Standard 25, or Club 50 seats) with YES/NO member
-              voting, Slack threads, voice notes, and WebRTC voice channels —
-              blind to real names, genders, and nationalities.
+              (Compact 10, Standard 25, or Club 50 seats) with Pod Group Chat,
+              private 1:1 member DMs, YES/NO voting, voice notes, and Pod Audio
+              Calls — blind to real names, genders, and nationalities.
             </p>
             <button
               type="button"
@@ -681,20 +1048,15 @@ function WorkspaceAppInner() {
         )}
       </main>
 
-      <RightDrawer
-        pod={activePod}
-        allPods={pods}
-        channel={activeChannel}
-        members={liveMembers}
-      />
+      <RightDrawer pod={activePod} allPods={pods} members={liveMembers} />
 
-      {/* Mobile Quick Voice Channels & Controls Sheet */}
+      {/* Mobile Pod Audio Call Sheet */}
       {mobileVoiceOpen && (
         <div
           className={styles.modalOverlay}
           role="dialog"
           aria-modal="true"
-          aria-label="Voice channels and controls"
+          aria-label="Pod Audio Call controls"
           onClick={(e) => {
             if (e.target === e.currentTarget) setMobileVoiceOpen(false);
           }}
@@ -703,7 +1065,7 @@ function WorkspaceAppInner() {
             <div className={styles.modalHeader}>
               <div>
                 <h2 style={{ margin: 0, fontSize: 17 }}>
-                  Voice Channels
+                  Pod Audio Call
                   {activePod ? ` · #${activePod.code}` : ''}
                 </h2>
                 <p
@@ -720,7 +1082,7 @@ function WorkspaceAppInner() {
                 type="button"
                 className={styles.composerIconBtn}
                 onClick={() => setMobileVoiceOpen(false)}
-                aria-label="Close voice sheet"
+                aria-label="Close audio call sheet"
               >
                 <X size={18} />
               </button>
@@ -730,19 +1092,31 @@ function WorkspaceAppInner() {
               className={styles.modalBody}
               style={{ display: 'flex', flexDirection: 'column', gap: 12 }}
             >
-              {voiceActive && (
+              {!activePod ? (
+                <button
+                  type="button"
+                  className={styles.primaryActionBtn}
+                  onClick={() => {
+                    setMobileVoiceOpen(false);
+                    setInterestTab('match');
+                    setInterestOpen(true);
+                  }}
+                >
+                  + Match into a 25-Member Pod First
+                </button>
+              ) : connectedToThisPodCall ? (
                 <div
                   className={styles.voiceDock}
                   style={{ borderRadius: 12 }}
                   role="region"
-                  aria-label="Active voice session controls"
+                  aria-label="Active audio call controls"
                 >
                   <div className={styles.voiceDockStatus}>
                     <Radio size={14} />
                     <span>
                       {voiceSession.status === 'connecting'
-                        ? 'Connecting Voice...'
-                        : `Connected · ${voiceSession.voiceChannelLabel}`}
+                        ? 'Connecting Call...'
+                        : `Connected · ${voiceSession.podLabel}`}
                     </span>
                   </div>
                   {voiceSession.fallbackBanner && (
@@ -803,137 +1177,86 @@ function WorkspaceAppInner() {
                       onClick={leaveVoice}
                     >
                       <PhoneOff size={16} />
-                      <span>Leave</span>
+                      <span>Hang Up</span>
                     </button>
                   </div>
                 </div>
-              )}
-
-              {!activePod ? (
+              ) : (
                 <button
                   type="button"
                   className={styles.primaryActionBtn}
-                  onClick={() => {
-                    setMobileVoiceOpen(false);
-                    setInterestTab('match');
-                    setInterestOpen(true);
+                  onClick={() => joinVoice(activePod.podId, podDisplayTitle)}
+                >
+                  <PhoneCall size={16} />
+                  <span>
+                    {voicePeers.length > 0
+                      ? `Join Pod Audio Call (${voicePeers.length} in call)`
+                      : 'Start Pod Audio Call'}
+                  </span>
+                </button>
+              )}
+
+              {activePod && voicePeers.length > 0 && (
+                <div
+                  style={{
+                    padding: 12,
+                    borderRadius: 12,
+                    border: '1px solid rgba(35,35,35,0.13)',
+                    background: '#f8f9f8',
+                    display: 'flex',
+                    flexDirection: 'column',
+                    gap: 8,
                   }}
                 >
-                  + Match into a 25-Member Pod First
-                </button>
-              ) : (
-                activePodVoiceChannels.map((vch) => {
-                  const connectedHere =
-                    voiceActive &&
-                    voiceSession.podId === activePod.podId &&
-                    voiceSession.voiceChannelId === vch.channelId;
-                  const peers = podVoiceRoster[vch.channelId] || [];
-
-                  return (
-                    <div
-                      key={vch.channelId}
-                      style={{
-                        padding: 12,
-                        borderRadius: 12,
-                        border: connectedHere
-                          ? '1px solid #1f6b3a'
-                          : '1px solid rgba(35,35,35,0.13)',
-                        background: connectedHere ? '#edfcf3' : '#f8f9f8',
-                      }}
-                    >
-                      <div
-                        style={{
-                          display: 'flex',
-                          alignItems: 'center',
-                          justifyContent: 'space-between',
-                          gap: 8,
-                        }}
-                      >
+                  <div className={styles.sectionHeader}>
+                    <span>In Call — {voicePeers.length}</span>
+                  </div>
+                  {voicePeers.map((p) => {
+                    const isSelf = p.peerId === activePod.myPeerId;
+                    const speaking = isSelf
+                      ? voiceSession.selfSpeaking || p.speaking
+                      : Boolean(p.speaking || remoteSpeakingMap[p.peerId]);
+                    return (
+                      <div key={p.peerId} className={styles.voicePeerRow}>
+                        <div className={styles.voicePeerIdentity}>
+                          <span
+                            className={`${styles.voiceAvatar} ${
+                              speaking ? styles.voiceAvatarSpeaking : ''
+                            }`}
+                            style={{
+                              background: safeAvatarColor(p.color, p.alias),
+                            }}
+                          >
+                            {aliasInitials(p.alias)}
+                          </span>
+                          <span style={{ fontWeight: isSelf ? 700 : 600 }}>
+                            {p.alias}
+                            {isSelf ? ' (you)' : ''}
+                          </span>
+                        </div>
                         <div
                           style={{
                             display: 'flex',
                             alignItems: 'center',
-                            gap: 8,
-                            fontWeight: 700,
-                            fontSize: 14.5,
-                          }}
-                        >
-                          <Volume2 size={17} color="#1f6b3a" />
-                          <span>{vch.label}</span>
-                        </div>
-                        <button
-                          type="button"
-                          className={
-                            connectedHere
-                              ? styles.leaveBtn
-                              : styles.podCardPrimaryBtn
-                          }
-                          onClick={() => {
-                            if (connectedHere) {
-                              leaveVoice();
-                            } else {
-                              joinVoice(
-                                activePod.podId,
-                                vch.channelId,
-                                vch.label
-                              );
-                            }
-                          }}
-                        >
-                          {connectedHere ? 'Disconnect' : 'Join Voice'}
-                        </button>
-                      </div>
-
-                      {peers.length > 0 && (
-                        <div
-                          style={{
-                            display: 'flex',
-                            flexWrap: 'wrap',
                             gap: 6,
-                            marginTop: 10,
                           }}
                         >
-                          {peers.map((p) => (
-                            <span
-                              key={p.peerId}
-                              style={{
-                                display: 'inline-flex',
-                                alignItems: 'center',
-                                gap: 6,
-                                padding: '4px 8px',
-                                borderRadius: 999,
-                                background: '#ffffff',
-                                border: '1px solid rgba(35,35,35,0.12)',
-                                fontSize: 12,
-                                fontWeight: 600,
-                              }}
-                            >
-                              <span
-                                className={styles.voiceAvatar}
-                                style={{
-                                  width: 20,
-                                  height: 20,
-                                  fontSize: 9.5,
-                                  background: safeAvatarColor(p.color, p.alias),
-                                }}
-                              >
-                                {aliasInitials(p.alias)}
-                              </span>
-                              <span>{p.alias}</span>
-                            </span>
-                          ))}
+                          {p.muted && <MicOff size={14} color="#b42318" />}
+                          {p.deafened && (
+                            <HeadphoneOff size={14} color="#b42318" />
+                          )}
                         </div>
-                      )}
-                    </div>
-                  );
-                })
+                      </div>
+                    );
+                  })}
+                </div>
               )}
             </div>
           </div>
         </div>
       )}
 
-      {/* Docked Mobile Bottom Navigation Bar (<= 900px) */}
+      {/* Docked Mobile Bottom Navigation Bar (<= 900px): Pods, Chats, Chat, Call, Account */}
       <nav
         className={styles.mobileTabBar}
         aria-label="Mobile workspace navigation"
@@ -978,15 +1301,15 @@ function WorkspaceAppInner() {
             setAdminSettingsPodId(null);
             setMobileNavOpen((v) => !v);
           }}
-          aria-label="Channels"
+          aria-label="Chats (Group and Member DMs)"
         >
           <span className={styles.mobileTabIconWrap}>
-            <Hash size={19} />
+            <MessagesSquare size={19} />
             {totalUnreadInPod > 0 && (
               <span className={styles.mobileTabBadge}>{totalUnreadInPod}</span>
             )}
           </span>
-          <span>Channels</span>
+          <span>Chats</span>
         </button>
 
         <button
@@ -1025,15 +1348,15 @@ function WorkspaceAppInner() {
             setAdminSettingsPodId(null);
             setMobileVoiceOpen((v) => !v);
           }}
-          aria-label={voiceActive ? 'Voice (Connected)' : 'Voice'}
+          aria-label={voiceActive ? 'Call (Connected)' : 'Call'}
         >
           <span className={styles.mobileTabIconWrap}>
-            <Headphones size={19} />
-            {voiceActive && (
+            <PhoneCall size={19} />
+            {(voiceActive || voicePeers.length > 0) && (
               <span className={styles.mobileVoicePulse} aria-hidden="true" />
             )}
           </span>
-          <span>Voice</span>
+          <span>Call</span>
         </button>
 
         <button

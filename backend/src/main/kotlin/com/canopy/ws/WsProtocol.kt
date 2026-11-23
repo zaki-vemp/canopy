@@ -5,7 +5,6 @@ import com.fasterxml.jackson.annotation.JsonProperty
 import com.fasterxml.jackson.annotation.JsonSubTypes
 import com.fasterxml.jackson.annotation.JsonTypeInfo
 import com.canopy.chat.RichMessageDto
-import com.canopy.pods.ChannelDto
 import com.canopy.pods.MemberDto
 import com.canopy.pods.PodDetailDto
 import com.canopy.pods.PodProposalDto
@@ -38,7 +37,7 @@ sealed interface WsClientFrame {
 
     @JsonIgnoreProperties(ignoreUnknown = true)
     data class TypingIn(
-        val channelId: String = "",
+        val targetPeerId: String? = null,
         @field:JsonProperty("isTyping")
         @get:JsonProperty("isTyping")
         @param:JsonProperty("isTyping")
@@ -47,7 +46,6 @@ sealed interface WsClientFrame {
 
     @JsonIgnoreProperties(ignoreUnknown = true)
     data class VoiceJoinIn(
-        val voiceChannelId: String = "",
         val muted: Boolean = false,
         val deafened: Boolean = false
     ) : WsClientFrame
@@ -65,7 +63,6 @@ sealed interface WsClientFrame {
     @JsonIgnoreProperties(ignoreUnknown = true)
     data class WebRtcSignalIn(
         val targetPeerId: String = "",
-        val voiceChannelId: String = "",
         val signal: Any? = null
     ) : WsClientFrame
 
@@ -85,68 +82,46 @@ sealed interface WsServerFrame {
         val selfPeerId: String,
         val onlinePeerIds: List<String>,
         val members: List<MemberDto>,
-        val voiceRoster: Map<String, List<VoicePeerDto>>
+        val voicePeers: List<VoicePeerDto>
     ) : WsServerFrame
 
     data class TypingUpdateOut(
         override val type: String = "typing_update",
-        val channelId: String,
+        val targetPeerId: String?,
+        val fromPeerId: String?,
         val typingAliases: List<String>
     ) : WsServerFrame
 
     data class MessageCreatedOut(
         override val type: String = "message_created",
-        val channelId: String,
         val message: RichMessageDto
-    ) : WsServerFrame
-
-    data class ThreadReplyCreatedOut(
-        override val type: String = "thread_reply_created",
-        val channelId: String,
-        val parentMessageId: Long,
-        val reply: RichMessageDto,
-        val parentReplyCount: Int
     ) : WsServerFrame
 
     data class MessageUpdatedOut(
         override val type: String = "message_updated",
-        val channelId: String,
         val message: RichMessageDto
     ) : WsServerFrame
 
     data class MessageDeletedOut(
         override val type: String = "message_deleted",
-        val channelId: String,
         val messageId: Long,
-        val parentMessageId: Long
+        val senderPeerId: String,
+        val recipientPeerId: String?
     ) : WsServerFrame
 
     data class ReactionUpdatedOut(
         override val type: String = "reaction_updated",
-        val channelId: String,
         val message: RichMessageDto
     ) : WsServerFrame
 
     data class PinUpdatedOut(
         override val type: String = "pin_updated",
-        val channelId: String,
         val message: RichMessageDto
     ) : WsServerFrame
 
     data class PollUpdatedOut(
         override val type: String = "poll_updated",
-        val channelId: String,
         val message: RichMessageDto
-    ) : WsServerFrame
-
-    data class ChannelCreatedOut(
-        override val type: String = "channel_created",
-        val channel: ChannelDto
-    ) : WsServerFrame
-
-    data class ChannelDeletedOut(
-        override val type: String = "channel_deleted",
-        val channelId: String
     ) : WsServerFrame
 
     data class MemberJoinedOut(
@@ -178,12 +153,11 @@ sealed interface WsServerFrame {
 
     data class VoiceRosterUpdatedOut(
         override val type: String = "voice_roster_updated",
-        val voiceRoster: Map<String, List<VoicePeerDto>>
+        val voicePeers: List<VoicePeerDto>
     ) : WsServerFrame
 
     data class WebRtcSignalOut(
         override val type: String = "webrtc_signal",
-        val voiceChannelId: String,
         val fromPeerId: String,
         val fromAlias: String,
         val signal: Any?

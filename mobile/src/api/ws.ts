@@ -3,35 +3,40 @@ import { useQueryClient, type InfiniteData } from '@tanstack/react-query';
 import { useAtomValue, useSetAtom } from 'jotai';
 import { getWsBaseUrl } from './client';
 import {
-  activeChannelByPodAtom,
+  activeDmPeerByPodAtom,
   activePodIdAtom,
+  activeTabAtom,
   activeVoiceSessionAtom,
   apiBaseUrlAtom,
   authTokenAtom,
+  dmConvoKey,
   lastWebRtcSignalAtom,
   podPresenceByPodAtom,
-  typingByChannelAtom,
-  voiceRosterByPodAtom,
+  typingByConvoAtom,
+  unreadDmByPodPeerAtom,
+  voicePeersByPodAtom,
   wsConnectedAtom,
 } from '../state/atoms';
-import type {
-  MessagesPage,
-  PodDetail,
-  PodProposalDto,
-  RichMessage,
-  ThreadPayload,
-  WsInboundFrame,
-  WsOutboundFrame,
+import {
+  resolveDmPartnerPeerId,
+  type DmSummaryDto,
+  type MessagesPage,
+  type PodDetailDto,
+  type PodProposalDto,
+  type RichMessageDto,
+  type WsInboundFrame,
+  type WsOutboundFrame,
 } from '../types/canopy';
 
 type MessageInfiniteCache = InfiniteData<MessagesPage, number>;
-type PodsListCache = { pods: PodDetail[] };
-type PinsListCache = { messages: RichMessage[] };
+type PodsListCache = { pods: PodDetailDto[] };
+type DmsListCache = { conversations: DmSummaryDto[] };
+type PinsListCache = { messages: RichMessageDto[] };
 type ProposalsListCache = { proposals: PodProposalDto[] };
 
 function upsertMessageInPages(
   oldData: MessageInfiniteCache | undefined,
-  incoming: RichMessage,
+  incoming: RichMessageDto,
   appendIfMissing: boolean
 ): MessageInfiniteCache | undefined {
   if (!oldData) return oldData;
@@ -57,13 +62,47 @@ function upsertMessageInPages(
   return { ...oldData, pages };
 }
 
+function upsertDmSummaryList(
+  existingList: DmSummaryDto[],
+  partnerPeerId: string,
+  msg: RichMessageDto,
+  pod: PodDetailDto | undefined
+): DmSummaryDto[] {
+  const prev = existingList.find((c) => c.peerId === partnerPeerId);
+  const member = pod?.members.find((m) => m.peerId === partnerPeerId);
+  const isFromPartner = msg.senderPeerId === partnerPeerId;
+
+  const summary: DmSummaryDto = {
+    peerId: partnerPeerId,
+    peerAlias: isFromPartner
+      ? msg.senderAlias
+      : msg.recipientAlias || prev?.peerAlias || member?.alias || 'Peer',
+    peerColor: isFromPartner
+      ? msg.senderColor
+      : prev?.peerColor || member?.color || '#1f6b3a',
+    online: member?.online ?? prev?.online ?? true,
+    lastMessageId: msg.id,
+    lastBody:
+      msg.body ||
+      (msg.attachments && msg.attachments.length > 0 ? 'Voice note' : ''),
+    lastSenderPeerId: msg.senderPeerId,
+    lastSenderAlias: msg.senderAlias,
+    lastCreatedAt: msg.createdAt,
+  };
+
+  return [
+    summary,
+    ...existingList.filter((c) => c.peerId !== partnerPeerId),
+  ];
+}
+
 export interface PodSocketController {
   sendFrame: (frame: WsOutboundFrame) => boolean;
 }
 
 /**
  * Connects to ws://<host>/ws/pods/{podId}?token=<jwt> for the active pod,
- * patching TanStack Query caches and Jotai presence/typing/voice atoms in real time.
+ * patching Group Chat & 1:1 DM TanStack Query caches and Jotai presence/typing/voice atoms.
  * ponytail: reconnects with bounded exponential backoff (1s -> 8s) for the single active pod;
  * upgrade to multiplexed multi-pod socket if background pod push badges are needed.
  */
@@ -71,20 +110,31 @@ export function usePodSocket(podId: string | null): PodSocketController {
   const queryClient = useQueryClient();
   const token = useAtomValue(authTokenAtom);
   const apiBaseUrl = useAtomValue(apiBaseUrlAtom);
+  const activeTab = useAtomValue(activeTabAtom);
+  const activeDmPeerByPod = useAtomValue(activeDmPeerByPodAtom);
 
   const setConnected = useSetAtom(wsConnectedAtom);
   const setPresenceByPod = useSetAtom(podPresenceByPodAtom);
-  const setTypingByChannel = useSetAtom(typingByChannelAtom);
-  const setVoiceRosterByPod = useSetAtom(voiceRosterByPodAtom);
+  const setTypingByConvo = useSetAtom(typingByConvoAtom);
+  const setVoicePeersByPod = useSetAtom(voicePeersByPodAtom);
   const setLastSignal = useSetAtom(lastWebRtcSignalAtom);
-  const setActiveChannelMap = useSetAtom(activeChannelByPodAtom);
+  const setActiveDmPeerMap = useSetAtom(activeDmPeerByPodAtom);
+  const setUnreadDmMap = useSetAtom(unreadDmByPodPeerAtom);
   const setActivePodId = useSetAtom(activePodIdAtom);
   const setVoiceSession = useSetAtom(activeVoiceSessionAtom);
 
   const wsRef = useRef<WebSocket | null>(null);
-  const signalListenersRef = useRef<Set<(frame: WsInboundFrame) => void>>(
-    new Set()
-  );
+  const selfPeerIdRef = useRef<string | null>(null);
+  const activeTabRef = useRef(activeTab);
+  const activeDmPeerMapRef = useRef(activeDmPeerByPod);
+
+  useEffect(() => {
+    activeTabRef.current = activeTab;
+  }, [activeTab]);
+
+  useEffect(() => {
+    activeDmPeerMapRef.current = activeDmPeerByPod;
+  }, [activeDmPeerByPod]);
 
   const sendFrame = useCallback((frame: WsOutboundFrame): boolean => {
     const sock = wsRef.current;
@@ -108,10 +158,30 @@ export function usePodSocket(podId: string | null): PodSocketController {
     let cancelled = false;
     let retryAttempt = 0;
     let retryTimer: ReturnType<typeof setTimeout> | null = null;
+    let pingTimer: ReturnType<typeof setInterval> | null = null;
+
+    const getSelfPeerId = (): string | null => {
+      if (selfPeerIdRef.current) return selfPeerIdRef.current;
+      const cachedPods = queryClient.getQueryData<PodsListCache>(['pods']);
+      const found = cachedPods?.pods.find((p) => p.podId === podId);
+      if (found?.myPeerId) {
+        selfPeerIdRef.current = found.myPeerId;
+        return found.myPeerId;
+      }
+      return null;
+    };
+
+    const getConvoQueryKey = (partnerPeerId: string | null) =>
+      partnerPeerId
+        ? (['messages', podId, 'dm', partnerPeerId] as const)
+        : (['messages', podId, 'group'] as const);
 
     const handleInbound = (frame: WsInboundFrame) => {
       switch (frame.type) {
         case 'presence_snapshot': {
+          selfPeerIdRef.current = frame.selfPeerId;
+          const onlineSet = new Set(frame.onlinePeerIds ?? []);
+          const voicePeers = frame.voicePeers ?? [];
           setPresenceByPod((prev) => ({
             ...prev,
             [frame.podId]: {
@@ -120,9 +190,9 @@ export function usePodSocket(podId: string | null): PodSocketController {
               members: frame.members,
             },
           }));
-          setVoiceRosterByPod((prev) => ({
+          setVoicePeersByPod((prev) => ({
             ...prev,
-            [frame.podId]: frame.voiceRoster || {},
+            [frame.podId]: voicePeers,
           }));
           queryClient.setQueryData(
             ['pods'],
@@ -135,66 +205,134 @@ export function usePodSocket(podId: string | null): PodSocketController {
                         ...p,
                         members: frame.members,
                         memberCount: frame.members.length,
+                        dmConversations: (p.dmConversations ?? []).map((dm) => ({
+                          ...dm,
+                          online: onlineSet.has(dm.peerId),
+                        })),
                       }
                     : p
                 ),
               };
             }
           );
+          queryClient.setQueryData(
+            ['dms', frame.podId],
+            (oldDms: DmsListCache | undefined) =>
+              oldDms
+                ? {
+                    conversations: oldDms.conversations.map((dm) => ({
+                      ...dm,
+                      online: onlineSet.has(dm.peerId),
+                    })),
+                  }
+                : oldDms
+          );
           break;
         }
 
         case 'typing_update': {
-          setTypingByChannel((prev) => ({
-            ...prev,
-            [frame.channelId]: frame.typingAliases,
-          }));
-          break;
-        }
+          const selfId = getSelfPeerId();
+          if (!frame.targetPeerId) {
+            setTypingByConvo((prev) => ({
+              ...prev,
+              [dmConvoKey(podId, null)]: frame.typingAliases,
+            }));
+          } else {
+            const partner = frame.fromPeerId
+              ? resolveDmPartnerPeerId(
+                  selfId,
+                  frame.fromPeerId,
+                  frame.targetPeerId
+                )
+              : frame.targetPeerId !== selfId
+              ? frame.targetPeerId
+              : null;
 
-        case 'message_created': {
-          if (frame.message.parentMessageId === 0) {
-            queryClient.setQueryData(
-              ['messages', podId, frame.channelId],
-              (old: MessageInfiniteCache | undefined) =>
-                upsertMessageInPages(old, frame.message, true)
-            );
+            if (partner) {
+              setTypingByConvo((prev) => ({
+                ...prev,
+                [dmConvoKey(podId, partner)]: frame.typingAliases,
+              }));
+            } else if (frame.typingAliases.length === 0) {
+              setTypingByConvo((prev) => {
+                const next = { ...prev };
+                const prefix = `${podId}:dm:`;
+                for (const key of Object.keys(next)) {
+                  if (key.startsWith(prefix)) {
+                    next[key] = [];
+                  }
+                }
+                return next;
+              });
+            }
           }
           break;
         }
 
-        case 'thread_reply_created': {
-          queryClient.setQueryData(
-            ['thread', podId, frame.channelId, frame.parentMessageId],
-            (old: ThreadPayload | undefined) => {
-              if (!old) return old;
-              const exists = old.replies.some((r) => r.id === frame.reply.id);
-              return {
-                parent: {
-                  ...old.parent,
-                  replyCount: frame.parentReplyCount,
-                },
-                replies: exists ? old.replies : [...old.replies, frame.reply],
-              };
-            }
+        case 'message_created': {
+          const msg = frame.message;
+          const selfId = getSelfPeerId();
+          const partnerPeerId = resolveDmPartnerPeerId(
+            selfId,
+            msg.senderPeerId,
+            msg.recipientPeerId
           );
+
           queryClient.setQueryData(
-            ['messages', podId, frame.channelId],
-            (old: MessageInfiniteCache | undefined) => {
-              if (!old) return old;
-              return {
-                ...old,
-                pages: old.pages.map((page) => ({
-                  ...page,
-                  messages: page.messages.map((m) =>
-                    m.id === frame.parentMessageId
-                      ? { ...m, replyCount: frame.parentReplyCount }
-                      : m
+            getConvoQueryKey(partnerPeerId),
+            (old: MessageInfiniteCache | undefined) =>
+              upsertMessageInPages(old, msg, true)
+          );
+
+          if (partnerPeerId) {
+            const cachedPods = queryClient.getQueryData<PodsListCache>(['pods']);
+            const currentPod = cachedPods?.pods.find((p) => p.podId === podId);
+
+            queryClient.setQueryData(
+              ['dms', podId],
+              (oldDms: DmsListCache | undefined) => ({
+                conversations: upsertDmSummaryList(
+                  oldDms?.conversations ?? currentPod?.dmConversations ?? [],
+                  partnerPeerId,
+                  msg,
+                  currentPod
+                ),
+              })
+            );
+
+            queryClient.setQueryData(
+              ['pods'],
+              (oldPods: PodsListCache | undefined) => {
+                if (!oldPods) return oldPods;
+                return {
+                  pods: oldPods.pods.map((p) =>
+                    p.podId === podId
+                      ? {
+                          ...p,
+                          dmConversations: upsertDmSummaryList(
+                            p.dmConversations ?? [],
+                            partnerPeerId,
+                            msg,
+                            p
+                          ),
+                        }
+                      : p
                   ),
-                })),
-              };
+                };
+              }
+            );
+
+            const viewingThisDm =
+              activeTabRef.current === 'chat' &&
+              (activeDmPeerMapRef.current[podId] ?? null) === partnerPeerId;
+            if (selfId && msg.senderPeerId !== selfId && !viewingThisDm) {
+              const unreadKey = dmConvoKey(podId, partnerPeerId);
+              setUnreadDmMap((prev) => ({
+                ...prev,
+                [unreadKey]: (prev[unreadKey] ?? 0) + 1,
+              }));
             }
-          );
+          }
           break;
         }
 
@@ -203,42 +341,20 @@ export function usePodSocket(podId: string | null): PodSocketController {
         case 'pin_updated':
         case 'poll_updated': {
           const updated = frame.message;
-          if (updated.parentMessageId === 0) {
-            queryClient.setQueryData(
-              ['messages', podId, frame.channelId],
-              (old: MessageInfiniteCache | undefined) =>
-                upsertMessageInPages(old, updated, false)
-            );
-          } else {
-            queryClient.setQueryData(
-              ['thread', podId, frame.channelId, updated.parentMessageId],
-              (old: ThreadPayload | undefined) =>
-                old
-                  ? {
-                      ...old,
-                      replies: old.replies.map((r) =>
-                        r.id === updated.id
-                          ? { ...updated, isBookmarked: r.isBookmarked }
-                          : r
-                      ),
-                    }
-                  : old
-            );
-          }
-          queryClient.setQueryData(
-            ['thread', podId, frame.channelId, updated.id],
-            (old: ThreadPayload | undefined) =>
-              old
-                ? {
-                    ...old,
-                    parent: {
-                      ...updated,
-                      isBookmarked: old.parent.isBookmarked,
-                    },
-                  }
-                : old
+          const selfId = getSelfPeerId();
+          const partnerPeerId = resolveDmPartnerPeerId(
+            selfId,
+            updated.senderPeerId,
+            updated.recipientPeerId
           );
-          if (frame.type === 'pin_updated') {
+
+          queryClient.setQueryData(
+            getConvoQueryKey(partnerPeerId),
+            (old: MessageInfiniteCache | undefined) =>
+              upsertMessageInPages(old, updated, false)
+          );
+
+          if (frame.type === 'pin_updated' && partnerPeerId === null) {
             queryClient.setQueryData(
               ['pins', podId],
               (oldPins: PinsListCache | undefined) => {
@@ -258,40 +374,31 @@ export function usePodSocket(podId: string | null): PodSocketController {
         }
 
         case 'message_deleted': {
-          if (frame.parentMessageId === 0) {
-            queryClient.setQueryData(
-              ['messages', podId, frame.channelId],
-              (old: MessageInfiniteCache | undefined) => {
-                if (!old) return old;
-                return {
-                  ...old,
-                  pages: old.pages.map((page) => ({
-                    ...page,
-                    messages: page.messages.map((m) =>
-                      m.id === frame.messageId
-                        ? { ...m, isDeleted: true, body: '' }
-                        : m
-                    ),
-                  })),
-                };
-              }
-            );
-          } else {
-            queryClient.setQueryData(
-              ['thread', podId, frame.channelId, frame.parentMessageId],
-              (old: ThreadPayload | undefined) =>
-                old
-                  ? {
-                      ...old,
-                      replies: old.replies.map((r) =>
-                        r.id === frame.messageId
-                          ? { ...r, isDeleted: true, body: '' }
-                          : r
-                      ),
-                    }
-                  : old
-            );
-          }
+          const selfId = getSelfPeerId();
+          const partnerPeerId = resolveDmPartnerPeerId(
+            selfId,
+            frame.senderPeerId,
+            frame.recipientPeerId
+          );
+
+          queryClient.setQueryData(
+            getConvoQueryKey(partnerPeerId),
+            (old: MessageInfiniteCache | undefined) => {
+              if (!old) return old;
+              return {
+                ...old,
+                pages: old.pages.map((page) => ({
+                  ...page,
+                  messages: page.messages.map((m) =>
+                    m.id === frame.messageId
+                      ? { ...m, isDeleted: true, body: '' }
+                      : m
+                  ),
+                })),
+              };
+            }
+          );
+
           queryClient.setQueryData(
             ['pins', podId],
             (oldPins: PinsListCache | undefined) =>
@@ -303,55 +410,6 @@ export function usePodSocket(podId: string | null): PodSocketController {
                   }
                 : oldPins
           );
-          break;
-        }
-
-        case 'channel_created': {
-          queryClient.setQueryData(
-            ['pods'],
-            (old: PodsListCache | undefined) => {
-              if (!old) return old;
-              return {
-                pods: old.pods.map((p) => {
-                  if (p.podId !== podId) return p;
-                  const exists = p.channels.some(
-                    (c) => c.channelId === frame.channel.channelId
-                  );
-                  return exists
-                    ? p
-                    : { ...p, channels: [...p.channels, frame.channel] };
-                }),
-              };
-            }
-          );
-          break;
-        }
-
-        case 'channel_deleted': {
-          queryClient.setQueryData(
-            ['pods'],
-            (old: PodsListCache | undefined) => {
-              if (!old) return old;
-              return {
-                pods: old.pods.map((p) =>
-                  p.podId === podId
-                    ? {
-                        ...p,
-                        channels: p.channels.filter(
-                          (c) => c.channelId !== frame.channelId
-                        ),
-                      }
-                    : p
-                ),
-              };
-            }
-          );
-          setActiveChannelMap((prev) => {
-            if (prev[podId] !== frame.channelId) return prev;
-            const next = { ...prev };
-            delete next[podId];
-            return next;
-          });
           break;
         }
 
@@ -378,7 +436,7 @@ export function usePodSocket(podId: string | null): PodSocketController {
           );
 
           queryClient.setQueriesData<MessageInfiniteCache>(
-            { queryKey: ['messages', targetPodId] },
+            { queryKey: ['messages', targetPodId, 'group'] },
             (old: MessageInfiniteCache | undefined) => {
               if (!old) return old;
               return {
@@ -492,6 +550,9 @@ export function usePodSocket(podId: string | null): PodSocketController {
               };
             }
           );
+          if (activeDmPeerMapRef.current[podId] === frame.peerId) {
+            setActiveDmPeerMap((prev) => ({ ...prev, [podId]: null }));
+          }
           break;
         }
 
@@ -545,26 +606,52 @@ export function usePodSocket(podId: string | null): PodSocketController {
                 },
               };
             });
+            if (activeDmPeerMapRef.current[podId] === frame.peerId) {
+              setActiveDmPeerMap((prev) => ({ ...prev, [podId]: null }));
+            }
           }
           break;
         }
 
         case 'voice_roster_updated': {
-          setVoiceRosterByPod((prev) => ({
+          const voicePeers = frame.voicePeers ?? [];
+          const inVoiceSet = new Set(voicePeers.map((vp) => vp.peerId));
+          setVoicePeersByPod((prev) => ({
             ...prev,
-            [podId]: frame.voiceRoster || {},
+            [podId]: voicePeers,
           }));
+          queryClient.setQueryData(
+            ['pods'],
+            (old: PodsListCache | undefined) =>
+              old
+                ? {
+                    pods: old.pods.map((p) =>
+                      p.podId === podId
+                        ? {
+                            ...p,
+                            members: p.members.map((m) => ({
+                              ...m,
+                              inVoice: inVoiceSet.has(m.peerId),
+                            })),
+                          }
+                        : p
+                    ),
+                  }
+                : old
+          );
           break;
         }
 
         case 'webrtc_signal': {
           setLastSignal({
-            voiceChannelId: frame.voiceChannelId,
             fromPeerId: frame.fromPeerId,
             fromAlias: frame.fromAlias,
             receivedAt: Date.now(),
           });
-          signalListenersRef.current.forEach((fn) => fn(frame));
+          break;
+        }
+
+        case 'pong': {
           break;
         }
       }
@@ -586,6 +673,16 @@ export function usePodSocket(podId: string | null): PodSocketController {
         }
         retryAttempt = 0;
         setConnected(true);
+        if (pingTimer) clearInterval(pingTimer);
+        pingTimer = setInterval(() => {
+          if (sock.readyState === WebSocket.OPEN) {
+            try {
+              sock.send(JSON.stringify({ type: 'ping' }));
+            } catch {
+              // ignore ping failure
+            }
+          }
+        }, 25_000);
       };
 
       sock.onmessage = (event) => {
@@ -603,6 +700,10 @@ export function usePodSocket(podId: string | null): PodSocketController {
       };
 
       sock.onclose = () => {
+        if (pingTimer) {
+          clearInterval(pingTimer);
+          pingTimer = null;
+        }
         if (wsRef.current === sock) {
           wsRef.current = null;
         }
@@ -620,6 +721,7 @@ export function usePodSocket(podId: string | null): PodSocketController {
     return () => {
       cancelled = true;
       if (retryTimer) clearTimeout(retryTimer);
+      if (pingTimer) clearInterval(pingTimer);
       if (wsRef.current) {
         try {
           wsRef.current.close();
@@ -637,10 +739,11 @@ export function usePodSocket(podId: string | null): PodSocketController {
     queryClient,
     setConnected,
     setPresenceByPod,
-    setTypingByChannel,
-    setVoiceRosterByPod,
+    setTypingByConvo,
+    setVoicePeersByPod,
     setLastSignal,
-    setActiveChannelMap,
+    setActiveDmPeerMap,
+    setUnreadDmMap,
     setActivePodId,
     setVoiceSession,
   ]);

@@ -1,7 +1,7 @@
 import React from 'react';
 import { Platform, Pressable, StyleSheet, Text, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
-import type { RichMessage } from '../types/canopy';
+import type { RichMessageDto } from '../types/canopy';
 import {
   PALETTE,
   TOUCH_MIN,
@@ -25,11 +25,12 @@ function formatShortTime(iso: string): string {
 }
 
 export interface MessageCardProps {
-  message: RichMessage;
+  message: RichMessageDto;
   myPeerId?: string;
-  compactThreadView?: boolean;
-  onOpenActions?: (message: RichMessage) => void;
-  onOpenThread?: (message: RichMessage) => void;
+  isDmView?: boolean;
+  onOpenActions?: (message: RichMessageDto) => void;
+  onMessagePrivately?: (peerId: string, alias: string) => void;
+  onReplyQuote?: (message: RichMessageDto) => void;
   onToggleReaction?: (messageId: number, emoji: string) => void;
   onVotePoll?: (pollId: number, optionIndex: number) => void;
   onVoteProposal?: (proposalId: number, vote: boolean) => void;
@@ -38,9 +39,10 @@ export interface MessageCardProps {
 export function MessageCard({
   message,
   myPeerId,
-  compactThreadView = false,
+  isDmView = false,
   onOpenActions,
-  onOpenThread,
+  onMessagePrivately,
+  onReplyQuote,
   onToggleReaction,
   onVotePoll,
   onVoteProposal,
@@ -60,6 +62,12 @@ export function MessageCard({
   const isIcebreaker = message.msgType === 'ICEBREAKER';
   const isGovernance = message.msgType === 'GOVERNANCE' && !!message.proposal;
   const proposal = message.proposal ?? null;
+  const canDmSender =
+    !isDmView &&
+    !isSelf &&
+    !!message.senderPeerId &&
+    !message.isDeleted &&
+    (!!onMessagePrivately || !!onOpenActions);
 
   const totalPollVotes = message.poll
     ? message.poll.options.reduce((acc, opt) => acc + opt.votes, 0)
@@ -67,10 +75,16 @@ export function MessageCard({
 
   return (
     <Pressable
-      onLongPress={onOpenActions ? () => onOpenActions(message) : undefined}
+      onLongPress={
+        onOpenActions && !message.isDeleted
+          ? () => onOpenActions(message)
+          : undefined
+      }
       delayLongPress={260}
       style={[
         styles.card,
+        isDmView && (isSelf ? styles.dmBubbleSelf : styles.dmBubblePeer),
+        !isDmView && isSelf && styles.groupSelfCard,
         isIcebreaker && styles.icebreakerCard,
         isGovernance && styles.governanceOuterCard,
         message.isPinned && styles.pinnedCard,
@@ -78,39 +92,64 @@ export function MessageCard({
     >
       {/* Header row: blind animal avatar + alias + badges + 44pt menu trigger */}
       <View style={styles.headerRow}>
-        <View style={[styles.avatarCircle, { backgroundColor: peerColor }]}>
-          <Text style={styles.avatarText}>
-            {aliasInitials(message.senderAlias)}
-          </Text>
-        </View>
+        <Pressable
+          accessibilityRole={canDmSender ? 'button' : undefined}
+          accessibilityLabel={
+            canDmSender
+              ? `Options for ${message.senderAlias}, including Message privately`
+              : undefined
+          }
+          disabled={!canDmSender}
+          onPress={() => {
+            if (onOpenActions) {
+              onOpenActions(message);
+            } else if (onMessagePrivately && message.senderPeerId) {
+              onMessagePrivately(message.senderPeerId, message.senderAlias);
+            }
+          }}
+          style={styles.authorTapRow}
+        >
+          {!(isDmView && isSelf) ? (
+            <View style={[styles.avatarCircle, { backgroundColor: peerColor }]}>
+              <Text style={styles.avatarText}>
+                {aliasInitials(message.senderAlias)}
+              </Text>
+            </View>
+          ) : null}
 
-        <View style={styles.headerMeta}>
-          <View style={styles.aliasRow}>
-            <Text style={[styles.aliasName, { color: peerColor }]}>
-              {message.senderAlias}
+          <View style={styles.headerMeta}>
+            <View style={styles.aliasRow}>
+              <Text
+                style={[
+                  styles.aliasName,
+                  { color: isSelf && isDmView ? PALETTE.forest : peerColor },
+                ]}
+              >
+                {isSelf && isDmView ? 'You' : message.senderAlias}
+              </Text>
+              {isSelf && !isDmView ? (
+                <View style={styles.youBadge}>
+                  <Text style={styles.youBadgeText}>YOU</Text>
+                </View>
+              ) : null}
+              {message.isPinned ? (
+                <View style={styles.pinBadge}>
+                  <Ionicons name="pin" size={11} color={PALETTE.forest} />
+                  <Text style={styles.pinBadgeText}>pinned</Text>
+                </View>
+              ) : null}
+              {message.isBookmarked ? (
+                <View style={styles.savedBadge}>
+                  <Ionicons name="bookmark" size={11} color={PALETTE.charcoal} />
+                </View>
+              ) : null}
+            </View>
+            <Text style={styles.timestampText}>
+              {formatShortTime(message.createdAt)}
+              {message.editedAt ? ' · edited' : ''}
             </Text>
-            {isSelf ? (
-              <View style={styles.youBadge}>
-                <Text style={styles.youBadgeText}>YOU</Text>
-              </View>
-            ) : null}
-            {message.isPinned ? (
-              <View style={styles.pinBadge}>
-                <Ionicons name="pin" size={11} color={PALETTE.forest} />
-                <Text style={styles.pinBadgeText}>pinned</Text>
-              </View>
-            ) : null}
-            {message.isBookmarked ? (
-              <View style={styles.savedBadge}>
-                <Ionicons name="bookmark" size={11} color={PALETTE.charcoal} />
-              </View>
-            ) : null}
           </View>
-          <Text style={styles.timestampText}>
-            {formatShortTime(message.createdAt)}
-            {message.editedAt ? ' · edited' : ''}
-          </Text>
-        </View>
+        </Pressable>
 
         {onOpenActions && !message.isDeleted ? (
           <Pressable
@@ -137,7 +176,12 @@ export function MessageCard({
 
       {/* Quoted reply preview */}
       {message.quoteMessage ? (
-        <View style={styles.quoteBox}>
+        <View
+          style={[
+            styles.quoteBox,
+            isDmView && isSelf && styles.quoteBoxOnMint,
+          ]}
+        >
           <Text style={styles.quoteAuthor}>
             {message.quoteMessage.senderAlias}
           </Text>
@@ -332,7 +376,7 @@ export function MessageCard({
               ) : null}
 
               <Text style={styles.govFooterText}>
-                Proposed by {proposal.proposerAlias} · Democratic YES vs NO vote
+                Proposed by {proposal.proposerAlias} · Democratic YES &gt; NO vote
               </Text>
             </View>
           ) : null}
@@ -436,12 +480,11 @@ export function MessageCard({
         </View>
       )}
 
-      {/* Reactions + Thread Reply Bar */}
+      {/* Reactions + Quick Actions Bar */}
       {!message.isDeleted &&
       (message.reactions.length > 0 ||
-        (!compactThreadView &&
-          message.parentMessageId === 0 &&
-          (message.replyCount > 0 || !!onOpenThread))) ? (
+        (!isDmView && !isSelf && !!onMessagePrivately && !!message.senderPeerId) ||
+        !!onReplyQuote) ? (
         <View style={styles.footerBar}>
           <View style={styles.reactionsWrap}>
             {message.reactions.map((rx) => (
@@ -470,22 +513,44 @@ export function MessageCard({
             ))}
           </View>
 
-          {!compactThreadView &&
-          message.parentMessageId === 0 &&
-          onOpenThread &&
-          message.replyCount > 0 ? (
-            <Pressable
-              accessibilityRole="button"
-              accessibilityLabel={`Open thread with ${message.replyCount} replies`}
-              onPress={() => onOpenThread(message)}
-              style={styles.threadBtn}
-            >
-              <Text style={styles.threadBtnText}>
-                💬 {message.replyCount}{' '}
-                {message.replyCount === 1 ? 'reply' : 'replies'} {'->'}
-              </Text>
-            </Pressable>
-          ) : null}
+          <View style={styles.quickFooterActions}>
+            {onReplyQuote ? (
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel={`Reply to ${message.senderAlias}`}
+                onPress={() => onReplyQuote(message)}
+                style={styles.quickReplyChip}
+              >
+                <Ionicons
+                  name="return-down-forward-outline"
+                  size={14}
+                  color={PALETTE.ink}
+                />
+                <Text style={styles.quickReplyText}>Reply</Text>
+              </Pressable>
+            ) : null}
+
+            {!isDmView &&
+            !isSelf &&
+            onMessagePrivately &&
+            message.senderPeerId ? (
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel={`Message ${message.senderAlias} privately`}
+                onPress={() =>
+                  onMessagePrivately(message.senderPeerId, message.senderAlias)
+                }
+                style={styles.quickDmChip}
+              >
+                <Ionicons
+                  name="lock-closed-outline"
+                  size={13}
+                  color={PALETTE.forest}
+                />
+                <Text style={styles.quickDmText}>DM</Text>
+              </Pressable>
+            ) : null}
+          </View>
         </View>
       ) : null}
     </Pressable>
@@ -503,18 +568,30 @@ const styles = StyleSheet.create({
     paddingVertical: 5,
     borderRadius: 999,
   },
-  systemText: {
-    fontSize: 12,
-    color: PALETTE.muted,
-    fontWeight: '500',
-  },
   card: {
     backgroundColor: PALETTE.card,
-    borderRadius: 14,
+    borderRadius: 16,
     padding: 12,
     borderWidth: 1,
     borderColor: PALETTE.border,
     gap: 8,
+  },
+  groupSelfCard: {
+    borderColor: PALETTE.borderStrong,
+  },
+  dmBubbleSelf: {
+    alignSelf: 'flex-end',
+    width: '86%',
+    backgroundColor: PALETTE.mintSoft,
+    borderColor: PALETTE.mintBorder,
+    borderBottomRightRadius: 4,
+  },
+  dmBubblePeer: {
+    alignSelf: 'flex-start',
+    width: '86%',
+    backgroundColor: PALETTE.card,
+    borderColor: PALETTE.border,
+    borderBottomLeftRadius: 4,
   },
   icebreakerCard: {
     backgroundColor: PALETTE.mintSoft,
@@ -528,6 +605,14 @@ const styles = StyleSheet.create({
     borderColor: PALETTE.forest,
   },
   headerRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 8,
+  },
+  authorTapRow: {
+    flex: 1,
+    minHeight: TOUCH_MIN,
     flexDirection: 'row',
     alignItems: 'center',
     gap: 10,
@@ -623,8 +708,11 @@ const styles = StyleSheet.create({
     backgroundColor: PALETTE.surface,
     paddingHorizontal: 10,
     paddingVertical: 6,
-    borderRadius: 6,
+    borderRadius: 8,
     gap: 2,
+  },
+  quoteBoxOnMint: {
+    backgroundColor: PALETTE.card,
   },
   quoteAuthor: {
     fontSize: 12,
@@ -953,18 +1041,45 @@ const styles = StyleSheet.create({
   reactionCountActive: {
     color: PALETTE.forest,
   },
-  threadBtn: {
+  quickFooterActions: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    marginLeft: 'auto',
+  },
+  quickReplyChip: {
     minHeight: TOUCH_MIN,
-    paddingHorizontal: 12,
+    paddingHorizontal: 10,
+    borderRadius: 10,
+    backgroundColor: PALETTE.surface,
+    borderWidth: 1,
+    borderColor: PALETTE.border,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 4,
+  },
+  quickReplyText: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: PALETTE.ink,
+  },
+  quickDmChip: {
+    minHeight: TOUCH_MIN,
+    paddingHorizontal: 10,
     borderRadius: 10,
     backgroundColor: PALETTE.mintSoft,
     borderWidth: 1,
     borderColor: PALETTE.mintBorder,
+    flexDirection: 'row',
+    alignItems: 'center',
     justifyContent: 'center',
+    gap: 4,
   },
-  threadBtnText: {
-    fontSize: 13,
+  quickDmText: {
+    fontSize: 12,
     fontWeight: '700',
     color: PALETTE.forest,
+    fontFamily: MONO_FONT,
   },
 });

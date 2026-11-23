@@ -20,25 +20,25 @@ import {
 import { apiFetch } from '@/lib/api';
 import {
   activePodIdAtom,
-  draftByChannelAtom,
+  draftByConvoAtom,
   interestModalOpenAtom,
   inviteModalPodIdAtom,
   presenceByPodAtom,
   proposeSheetOpenAtom,
-  quoteTargetByChannelAtom,
+  quoteTargetByConvoAtom,
   rightPanelAtom,
-  typingByChannelAtom,
+  typingByConvoAtom,
 } from '@/state/workspaceAtoms';
 import {
   sendPodWsFrame,
   syncProposalIntoCaches,
-  upsertChannelMessageInCache,
+  upsertConversationMessageInCache,
 } from '@/state/wsPodClient';
 import { useVoiceActions } from '@/state/voiceEngine';
 import {
+  conversationKey,
   parseKickCommandTarget,
   type AttachmentItem,
-  type PodChannel,
   type PodDetail,
   type PodInviteDto,
   type PodMember,
@@ -51,6 +51,7 @@ interface SlashCommandSpec {
   cmd: string;
   insert: string;
   description: string;
+  groupOnly?: boolean;
 }
 
 const SLASH_COMMANDS: SlashCommandSpec[] = [
@@ -58,21 +59,25 @@ const SLASH_COMMANDS: SlashCommandSpec[] = [
     cmd: '/propose',
     insert: '/propose',
     description: 'Open pod governance proposals & start a YES/NO vote',
+    groupOnly: true,
   },
   {
     cmd: '/kick',
     insert: '/kick @',
     description: 'Start a YES/NO vote-kick (or admin kick) for @Alias',
+    groupOnly: true,
   },
   {
     cmd: '/poll',
     insert: '/poll "What should we play?" "Option 1" "Option 2"',
-    description: 'Create an interactive live poll',
+    description: 'Create an interactive live poll in Group Chat',
+    groupOnly: true,
   },
   {
     cmd: '/icebreaker',
     insert: '/icebreaker',
     description: 'Post a curated question for this pod’s interest',
+    groupOnly: true,
   },
   {
     cmd: '/status',
@@ -88,16 +93,19 @@ const SLASH_COMMANDS: SlashCommandSpec[] = [
     cmd: '/invite',
     insert: '/invite',
     description: 'Share an invite link or code for this blind pod',
+    groupOnly: true,
   },
   {
     cmd: '/rematch',
     insert: '/rematch',
     description: 'Opt out and switch to another random 25-member pod',
+    groupOnly: true,
   },
   {
     cmd: '/leave',
     insert: '/leave',
     description: 'Leave this pod cleanly',
+    groupOnly: true,
   },
 ];
 
@@ -146,22 +154,26 @@ function buildFallbackWavBlob(durationMs = 1800): Blob {
 interface RichComposerProps {
   pod: PodDetail;
   allPods: PodDetail[];
-  channel: PodChannel;
+  activePeer: PodMember | null;
   members: PodMember[];
 }
 
 export function RichComposer({
   pod,
   allPods,
-  channel,
+  activePeer,
   members,
 }: RichComposerProps) {
   const queryClient = useQueryClient();
-  const [draft, setDraft] = useAtom(draftByChannelAtom(channel.channelId));
+  const activePeerId = activePeer?.peerId ?? null;
+  const isGroupChat = activePeerId === null;
+  const convoKey = conversationKey(pod.podId, activePeerId);
+
+  const [draft, setDraft] = useAtom(draftByConvoAtom(convoKey));
   const [quoteTarget, setQuoteTarget] = useAtom(
-    quoteTargetByChannelAtom(channel.channelId)
+    quoteTargetByConvoAtom(convoKey)
   );
-  const typingByChannel = useAtomValue(typingByChannelAtom);
+  const typingByConvo = useAtomValue(typingByConvoAtom);
   const setActivePodId = useSetAtom(activePodIdAtom);
   const setInterestOpen = useSetAtom(interestModalOpenAtom);
   const setInviteModalPodId = useSetAtom(inviteModalPodIdAtom);
@@ -179,9 +191,9 @@ export function RichComposer({
   const [uploading, setUploading] = useState(false);
   const [composerError, setComposerError] = useState<string | null>(null);
 
-  // Poll wizard & mobile formatting bar state
+  // Poll wizard & formatting bar state
   const [pollWizardOpen, setPollWizardOpen] = useState(false);
-  const [mobileFmtOpen, setMobileFmtOpen] = useState(false);
+  const [fmtBarOpen, setFmtBarOpen] = useState(false);
   const [pollQuestion, setPollQuestion] = useState('');
   const [pollOptions, setPollOptions] = useState<string[]>(['', '']);
 
@@ -208,7 +220,8 @@ export function RichComposer({
     setPendingAttachments([]);
     setPollWizardOpen(false);
     setComposerError(null);
-  }, [channel.channelId]);
+    lastTypingSentRef.current = 0;
+  }, [convoKey]);
 
   useEffect(() => {
     return () => {
@@ -224,7 +237,7 @@ export function RichComposer({
         lastTypingSentRef.current = now;
         sendPodWsFrame({
           type: 'typing',
-          channelId: channel.channelId,
+          targetPeerId: activePeerId,
           isTyping: true,
         });
       }
@@ -232,7 +245,7 @@ export function RichComposer({
       stopTypingTimerRef.current = setTimeout(() => {
         sendPodWsFrame({
           type: 'typing',
-          channelId: channel.channelId,
+          targetPeerId: activePeerId,
           isTyping: false,
         });
       }, 2400);
@@ -241,19 +254,24 @@ export function RichComposer({
       lastTypingSentRef.current = 0;
       sendPodWsFrame({
         type: 'typing',
-        channelId: channel.channelId,
+        targetPeerId: activePeerId,
         isTyping: false,
       });
     }
   };
+
+  const availableCommands = useMemo(
+    () => SLASH_COMMANDS.filter((c) => isGroupChat || !c.groupOnly),
+    [isGroupChat]
+  );
 
   // Detect Slash command menu
   const slashMatches = useMemo(() => {
     if (!draft.startsWith('/') || draft.includes('\n')) return [];
     const firstToken = draft.split(/\s+/)[0].toLowerCase();
     if (draft.includes(' ') && firstToken !== draft.toLowerCase()) return [];
-    return SLASH_COMMANDS.filter((c) => c.cmd.startsWith(firstToken));
-  }, [draft]);
+    return availableCommands.filter((c) => c.cmd.startsWith(firstToken));
+  }, [availableCommands, draft]);
 
   // Detect @mention menu
   const mentionQuery = useMemo(() => {
@@ -262,11 +280,12 @@ export function RichComposer({
     if (!match) return null;
     const q = match[1].toLowerCase();
     const isKickPrefix = /^\/kick\s+/i.test(draft);
+    const pool = activePeer ? [activePeer] : members;
     const candidates = [
-      ...(isKickPrefix
+      ...(isKickPrefix || activePeer
         ? []
-        : [{ alias: 'here', subtitle: 'Notify active channel' }]),
-      ...members
+        : [{ alias: 'here', subtitle: 'Notify Pod Group Chat' }]),
+      ...pool
         .filter((m) => !isKickPrefix || m.peerId !== pod.myPeerId)
         .map((m) => ({
           alias: m.alias,
@@ -274,7 +293,7 @@ export function RichComposer({
         })),
     ];
     return candidates.filter((c) => c.alias.toLowerCase().includes(q));
-  }, [draft, members, pod.myPeerId, slashMatches.length]);
+  }, [activePeer, draft, members, pod.myPeerId, slashMatches.length]);
 
   useEffect(() => {
     setMenuIndex(0);
@@ -319,11 +338,11 @@ export function RichComposer({
       quoteMessageId: number;
     }) => {
       const trimmed = payload.body.trim();
-      if (/^\/propose(?:\s|$)/i.test(trimmed)) {
+      if (isGroupChat && /^\/propose(?:\s|$)/i.test(trimmed)) {
         openGovernanceSheet();
         return { commandHandled: 'propose' } as PostMessageResponse;
       }
-      if (/^\/kick(?:\s|$)/i.test(trimmed)) {
+      if (isGroupChat && /^\/kick(?:\s|$)/i.test(trimmed)) {
         const parsed = parseKickCommandTarget(trimmed, members, pod.myPeerId);
         if (!parsed) {
           throw new Error(
@@ -347,7 +366,17 @@ export function RichComposer({
             old
               ? {
                   pods: old.pods.map((p) =>
-                    p.podId === res.pod.podId ? res.pod : p
+                    p.podId === res.pod.podId
+                      ? {
+                          ...p,
+                          ...res.pod,
+                          dmConversations:
+                            res.pod.dmConversations &&
+                            res.pod.dmConversations.length > 0
+                              ? res.pod.dmConversations
+                              : p.dmConversations,
+                        }
+                      : p
                   ),
                 }
               : { pods: [res.pod] }
@@ -377,12 +406,14 @@ export function RichComposer({
           }),
         });
         syncProposalIntoCaches(queryClient, pod.podId, res.proposal, res.pod);
-        queryClient.invalidateQueries({ queryKey: ['messages', pod.podId] });
+        queryClient.invalidateQueries({
+          queryKey: ['messages', pod.podId, 'group'],
+        });
         queryClient.invalidateQueries({ queryKey: ['pods'] });
         setRightPanel('votes');
         return { commandHandled: 'kick' } as PostMessageResponse;
       }
-      if (trimmed === '/invite') {
+      if (isGroupChat && trimmed === '/invite') {
         setInviteModalPodId(pod.podId);
         try {
           const res = await apiFetch<{ invite: PodInviteDto }>(
@@ -409,11 +440,11 @@ export function RichComposer({
         }
         return { commandHandled: 'invite' } as PostMessageResponse;
       }
-      if (trimmed === '/rematch') {
+      if (isGroupChat && trimmed === '/rematch') {
         await leaveOrRematch(true);
         return { commandHandled: 'rematch' } as PostMessageResponse;
       }
-      if (trimmed === '/leave') {
+      if (isGroupChat && trimmed === '/leave') {
         await leaveOrRematch(false);
         return { commandHandled: 'leave' } as PostMessageResponse;
       }
@@ -434,18 +465,20 @@ export function RichComposer({
         return { commandHandled: 'status' } as PostMessageResponse;
       }
 
-      return apiFetch<PostMessageResponse>(
-        `/api/pods/${pod.podId}/channels/${channel.channelId}/messages`,
-        {
-          method: 'POST',
-          body: JSON.stringify({
-            body: payload.body,
-            parentMessageId: 0,
-            quoteMessageId: payload.quoteMessageId,
-            attachmentIds: payload.attachmentIds,
-          }),
-        }
-      );
+      const endpoint = activePeerId
+        ? `/api/pods/${pod.podId}/dms/${encodeURIComponent(
+            activePeerId
+          )}/messages`
+        : `/api/pods/${pod.podId}/messages`;
+
+      return apiFetch<PostMessageResponse>(endpoint, {
+        method: 'POST',
+        body: JSON.stringify({
+          body: payload.body,
+          quoteMessageId: payload.quoteMessageId,
+          attachmentIds: payload.attachmentIds,
+        }),
+      });
     },
     onSuccess: (res) => {
       setComposerError(null);
@@ -454,11 +487,11 @@ export function RichComposer({
       setPendingAttachments([]);
       emitTyping(false);
       if (res?.message) {
-        upsertChannelMessageInCache(
+        upsertConversationMessageInCache(
           queryClient,
           pod.podId,
-          channel.channelId,
-          res.message
+          res.message,
+          pod.myPeerId
         );
       }
     },
@@ -502,7 +535,11 @@ export function RichComposer({
     }
   };
 
-  const wrapSelection = (prefix: string, suffix: string, placeholder: string) => {
+  const wrapSelection = (
+    prefix: string,
+    suffix: string,
+    placeholder: string
+  ) => {
     const el = textareaRef.current;
     if (!el) {
       setDraft(`${draft}${prefix}${placeholder}${suffix}`);
@@ -739,9 +776,13 @@ export function RichComposer({
     setPollWizardOpen(false);
   };
 
-  const activeTypers = (typingByChannel[channel.channelId] || []).filter(
+  const activeTypers = (typingByConvo[convoKey] || []).filter(
     (alias) => alias !== pod.myAlias
   );
+
+  const placeholderText = activePeer
+    ? `Message ${activePeer.alias} privately...`
+    : `Message Group Chat as ${pod.myAlias}...`;
 
   return (
     <div className={styles.composerOuter}>
@@ -846,8 +887,8 @@ export function RichComposer({
           </div>
         )}
 
-        {/* Inline Poll Wizard */}
-        {pollWizardOpen && (
+        {/* Inline Poll Wizard (Group Chat only) */}
+        {isGroupChat && pollWizardOpen && (
           <form
             onSubmit={submitPollWizard}
             style={{
@@ -969,84 +1010,62 @@ export function RichComposer({
           </div>
         )}
 
-        {/* Formatting Toolbar */}
-        <div
-          className={`${styles.formatToolbar} ${
-            mobileFmtOpen ? styles.formatToolbarOpen : ''
-          }`}
-          role="toolbar"
-          aria-label="Text formatting"
-        >
-          <button
-            type="button"
-            className={styles.fmtBtn}
-            onClick={() => wrapSelection('**', '**', 'bold')}
-            aria-label="Bold"
-            title="Bold"
+        {/* Collapsible Formatting Toolbar (toggled by Aa) */}
+        {fmtBarOpen && (
+          <div
+            className={`${styles.formatToolbar} ${styles.formatToolbarOpen}`}
+            role="toolbar"
+            aria-label="Text formatting"
           >
-            <Bold size={15} />
-          </button>
-          <button
-            type="button"
-            className={styles.fmtBtn}
-            onClick={() => wrapSelection('*', '*', 'italic')}
-            aria-label="Italic"
-            title="Italic"
-          >
-            <Italic size={15} />
-          </button>
-          <button
-            type="button"
-            className={styles.fmtBtn}
-            onClick={() => wrapSelection('`', '`', 'code')}
-            aria-label="Inline code"
-            title="Code"
-          >
-            <Code size={15} />
-          </button>
-          <button
-            type="button"
-            className={styles.fmtBtn}
-            onClick={() => wrapSelection('> ', '', 'quote')}
-            aria-label="Blockquote"
-            title="Quote"
-          >
-            <Quote size={15} />
-          </button>
-          <button
-            type="button"
-            className={styles.fmtBtn}
-            onClick={() => wrapSelection('||', '||', 'spoiler')}
-            aria-label="Spoiler tag"
-            title="Spoiler (||text||)"
-          >
-            <EyeOff size={15} />
-          </button>
-          <button
-            type="button"
-            className={styles.fmtBtn}
-            onClick={() => setPollWizardOpen((v) => !v)}
-            aria-label="Poll wizard"
-            title="Create /poll"
-          >
-            <BarChart2 size={15} />
-            <span>/poll</span>
-          </button>
-          {pod.governanceMode !== 'ADMIN' && (
             <button
               type="button"
               className={styles.fmtBtn}
-              onClick={openGovernanceSheet}
-              aria-label="Propose pod governance vote"
-              title="Open /propose democratic vote sheet"
+              onClick={() => wrapSelection('**', '**', 'bold')}
+              aria-label="Bold"
+              title="Bold"
             >
-              <Scale size={15} />
-              <span>/propose</span>
+              <Bold size={15} />
             </button>
-          )}
-        </div>
+            <button
+              type="button"
+              className={styles.fmtBtn}
+              onClick={() => wrapSelection('*', '*', 'italic')}
+              aria-label="Italic"
+              title="Italic"
+            >
+              <Italic size={15} />
+            </button>
+            <button
+              type="button"
+              className={styles.fmtBtn}
+              onClick={() => wrapSelection('`', '`', 'code')}
+              aria-label="Inline code"
+              title="Code"
+            >
+              <Code size={15} />
+            </button>
+            <button
+              type="button"
+              className={styles.fmtBtn}
+              onClick={() => wrapSelection('> ', '', 'quote')}
+              aria-label="Blockquote"
+              title="Quote"
+            >
+              <Quote size={15} />
+            </button>
+            <button
+              type="button"
+              className={styles.fmtBtn}
+              onClick={() => wrapSelection('||', '||', 'spoiler')}
+              aria-label="Spoiler tag"
+              title="Spoiler (||text||)"
+            >
+              <EyeOff size={15} />
+            </button>
+          </div>
+        )}
 
-        {/* Input + Upload + Aa + Voice Note + Send */}
+        {/* Clean Chat Input Bar: Clip + Aa + Group Quick Chips + Input + Mic + Mint Send */}
         <div className={styles.composerInputRow}>
           <input
             ref={fileInputRef}
@@ -1067,16 +1086,46 @@ export function RichComposer({
 
           <button
             type="button"
-            className={`${styles.composerIconBtn} ${styles.mobileFmtToggleBtn} ${
-              mobileFmtOpen ? styles.mobileFmtToggleBtnActive : ''
+            className={`${styles.composerIconBtn} ${styles.fmtToggleBtn} ${
+              fmtBarOpen ? styles.mobileFmtToggleBtnActive : ''
             }`}
-            onClick={() => setMobileFmtOpen((v) => !v)}
-            aria-expanded={mobileFmtOpen}
-            aria-label="Toggle formatting and poll toolbar"
-            title="Formatting, /poll & /propose"
+            onClick={() => setFmtBarOpen((v) => !v)}
+            aria-expanded={fmtBarOpen}
+            aria-label="Toggle text formatting"
+            title="Text formatting (Bold, Italic, Code, Spoiler)"
           >
             Aa
           </button>
+
+          {isGroupChat && (
+            <div className={styles.composerQuickChips}>
+              <button
+                type="button"
+                className={`${styles.composerChipBtn} ${
+                  pollWizardOpen ? styles.composerChipBtnActive : ''
+                }`}
+                onClick={() => setPollWizardOpen((v) => !v)}
+                aria-label="Create group poll"
+                title="Create /poll in Group Chat"
+              >
+                <BarChart2 size={14} />
+                <span>/poll</span>
+              </button>
+
+              {pod.governanceMode !== 'ADMIN' && (
+                <button
+                  type="button"
+                  className={styles.composerChipBtn}
+                  onClick={openGovernanceSheet}
+                  aria-label="Propose democratic pod vote"
+                  title="Open /propose democratic vote sheet"
+                >
+                  <Scale size={14} />
+                  <span>/propose</span>
+                </button>
+              )}
+            </div>
+          )}
 
           <textarea
             ref={textareaRef}
@@ -1132,10 +1181,10 @@ export function RichComposer({
                 submitCurrent();
               }
             }}
-            placeholder={`Message #${channel.label} as ${pod.myAlias} · Type /propose, /kick @, /poll, or @mention`}
+            placeholder={placeholderText}
             rows={1}
             className={styles.composerTextarea}
-            aria-label={`Message #${channel.label}`}
+            aria-label={placeholderText}
           />
 
           {!recording && (

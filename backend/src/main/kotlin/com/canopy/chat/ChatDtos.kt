@@ -3,6 +3,7 @@ package com.canopy.chat
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties
 import com.fasterxml.jackson.annotation.JsonInclude
 import com.fasterxml.jackson.annotation.JsonProperty
+import com.canopy.pods.DmSummaryDto
 import com.canopy.pods.PodProposalDto
 
 data class QuoteSnippetDto(
@@ -56,15 +57,14 @@ data class PollDto(
 data class RichMessageDto(
     val id: Long,
     val podId: String,
-    val channelId: String,
     val senderPeerId: String,
     val senderAlias: String,
     val senderColor: String,
-    val parentMessageId: Long,
+    val recipientPeerId: String?,
+    val recipientAlias: String?,
     val quoteMessage: QuoteSnippetDto?,
     val msgType: String,
     val body: String,
-    val replyCount: Int,
     @field:JsonProperty("isPinned")
     @get:JsonProperty("isPinned")
     @param:JsonProperty("isPinned")
@@ -110,15 +110,13 @@ data class MessagesListResponse(
     val messages: List<RichMessageDto>
 )
 
-data class ThreadResponse(
-    val parent: RichMessageDto,
-    val replies: List<RichMessageDto>
+data class DmConversationsResponse(
+    val conversations: List<DmSummaryDto>
 )
 
 @JsonIgnoreProperties(ignoreUnknown = true)
 data class SendMessageRequest(
     val body: String = "",
-    val parentMessageId: Long = 0L,
     val quoteMessageId: Long = 0L,
     val attachmentIds: List<Long> = emptyList()
 )

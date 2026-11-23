@@ -1,6 +1,6 @@
 # Canopy Mobile (React Native + Expo SDK 52)
 
-Native mobile client for **Canopy** — peer-blind multi-pod interest rooms with Slack-style threads, `/poll` cards, `expo-av` Voice Notes, persistent Discord-style Voice Lounges, and MySQL `FULLTEXT` search.
+Native mobile client for **Canopy** — peer-blind multi-pod rooms with **1 Pod Group Chat + 1:1 Private Member DMs**, `/poll` cards, `expo-av` Voice Notes, shared Pod Audio Calls, and MySQL `FULLTEXT` search.
 
 ## Tech Stack
 - **Expo SDK 52** (`react-native` `0.76.7`, `react` `18.3.1`, TypeScript `strict: true`)

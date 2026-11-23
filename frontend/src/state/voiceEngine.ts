@@ -4,9 +4,9 @@ import { useCallback, useEffect } from 'react';
 import { atom, useAtom, useAtomValue, useSetAtom, useStore } from 'jotai';
 import {
   activePodIdAtom,
-  presenceByPodAtom,
   podsQueryAtom,
-  voiceRosterByPodAtom,
+  presenceByPodAtom,
+  voicePeersByPodAtom,
 } from '@/state/workspaceAtoms';
 import {
   sendPodWsFrame,
@@ -17,8 +17,7 @@ import type { VoicePeer } from '@/types/canopy';
 
 export interface VoiceSessionState {
   podId: string | null;
-  voiceChannelId: string | null;
-  voiceChannelLabel: string;
+  podLabel: string;
   selfPeerId: string | null;
   status: 'idle' | 'connecting' | 'connected';
   usingFallbackSynth: boolean;
@@ -31,8 +30,7 @@ export interface VoiceSessionState {
 
 const INITIAL_VOICE_STATE: VoiceSessionState = {
   podId: null,
-  voiceChannelId: null,
-  voiceChannelLabel: '',
+  podLabel: '',
   selfPeerId: null,
   status: 'idle',
   usingFallbackSynth: false,
@@ -173,7 +171,10 @@ function createAudioContext(): AudioContext {
   return new Ctor();
 }
 
-function computeRms(analyser: AnalyserNode, buf: Uint8Array<ArrayBuffer>): number {
+function computeRms(
+  analyser: AnalyserNode,
+  buf: Uint8Array<ArrayBuffer>
+): number {
   analyser.getByteTimeDomainData(buf);
   let sumSq = 0;
   for (let i = 0; i < buf.length; i++) {
@@ -186,7 +187,7 @@ function computeRms(analyser: AnalyserNode, buf: Uint8Array<ArrayBuffer>): numbe
 export function useVoiceEngineController(): void {
   const store = useStore();
   const activePodId = useAtomValue(activePodIdAtom);
-  const voiceRosterByPod = useAtomValue(voiceRosterByPodAtom);
+  const voicePeersByPod = useAtomValue(voicePeersByPodAtom);
   const session = useAtomValue(voiceSessionAtom);
   const peerVolumes = useAtomValue(peerVolumeMapAtom);
   const setRemoteSpeaking = useSetAtom(remoteSpeakingMapAtom);
@@ -194,7 +195,6 @@ export function useVoiceEngineController(): void {
   const ensurePeerConnection = useCallback(
     (
       remotePeerId: string,
-      voiceChannelId: string,
       selfPeerId: string,
       shouldInitiate: boolean
     ): PeerConnectionEntry | null => {
@@ -226,7 +226,6 @@ export function useVoiceEngineController(): void {
           sendPodWsFrame({
             type: 'webrtc_signal',
             targetPeerId: remotePeerId,
-            voiceChannelId,
             signal: { candidate: ev.candidate.toJSON() },
           });
         };
@@ -282,7 +281,6 @@ export function useVoiceEngineController(): void {
             sendPodWsFrame({
               type: 'webrtc_signal',
               targetPeerId: remotePeerId,
-              voiceChannelId,
               signal: { sdp: entry.pc.localDescription.toJSON() },
             });
           })
@@ -296,20 +294,18 @@ export function useVoiceEngineController(): void {
     [store]
   );
 
-  // Sync peer mesh when voiceRoster updates
+  // Sync peer mesh when voicePeers updates
   useEffect(() => {
     if (
       session.status !== 'connected' ||
       !session.podId ||
-      !session.voiceChannelId ||
       !session.selfPeerId
     ) {
       return;
     }
-    const podRoster = voiceRosterByPod[session.podId] || {};
-    const peersInChannel: VoicePeer[] = podRoster[session.voiceChannelId] || [];
+    const peersInCall: VoicePeer[] = voicePeersByPod[session.podId] || [];
     const activeRemoteIds = new Set(
-      peersInChannel
+      peersInCall
         .map((p) => p.peerId)
         .filter((id) => id !== session.selfPeerId)
     );
@@ -321,37 +317,26 @@ export function useVoiceEngineController(): void {
     }
 
     for (const remotePeerId of activeRemoteIds) {
-      ensurePeerConnection(
-        remotePeerId,
-        session.voiceChannelId,
-        session.selfPeerId,
-        true
-      );
+      ensurePeerConnection(remotePeerId, session.selfPeerId, true);
     }
   }, [
     ensurePeerConnection,
     session.podId,
     session.selfPeerId,
     session.status,
-    session.voiceChannelId,
-    voiceRosterByPod,
+    voicePeersByPod,
   ]);
 
   // Handle incoming WebRTC SDP / ICE frames
   useEffect(() => {
     const unsubSignal = subscribeWebRtcSignals(async (frame) => {
       const current = store.get(voiceSessionAtom);
-      if (
-        current.status !== 'connected' ||
-        current.voiceChannelId !== frame.voiceChannelId ||
-        !current.selfPeerId
-      ) {
+      if (current.status !== 'connected' || !current.selfPeerId) {
         return;
       }
 
       const entry = ensurePeerConnection(
         frame.fromPeerId,
-        frame.voiceChannelId,
         current.selfPeerId,
         false
       );
@@ -376,7 +361,6 @@ export function useVoiceEngineController(): void {
               sendPodWsFrame({
                 type: 'webrtc_signal',
                 targetPeerId: frame.fromPeerId,
-                voiceChannelId: frame.voiceChannelId,
                 signal: { sdp: pc.localDescription.toJSON() },
               });
             }
@@ -395,14 +379,9 @@ export function useVoiceEngineController(): void {
 
     const unsubOpen = subscribeWsOpen((reconnectedPodId) => {
       const current = store.get(voiceSessionAtom);
-      if (
-        current.status === 'connected' &&
-        current.podId === reconnectedPodId &&
-        current.voiceChannelId
-      ) {
+      if (current.status === 'connected' && current.podId === reconnectedPodId) {
         sendPodWsFrame({
           type: 'voice_join',
-          voiceChannelId: current.voiceChannelId,
           muted: current.muted,
           deafened: current.deafened,
         });
@@ -467,13 +446,9 @@ export function useVoiceActions() {
   }, [setRemoteSpeaking, setSession]);
 
   const joinVoice = useCallback(
-    async (podId: string, voiceChannelId: string, voiceChannelLabel: string) => {
+    async (podId: string, podLabel?: string) => {
       const current = store.get(voiceSessionAtom);
-      if (
-        current.status === 'connected' &&
-        current.podId === podId &&
-        current.voiceChannelId === voiceChannelId
-      ) {
+      if (current.status === 'connected' && current.podId === podId) {
         return;
       }
 
@@ -485,12 +460,14 @@ export function useVoiceActions() {
       const podObj = podsQuery.data?.pods.find((p) => p.podId === podId);
       const selfPeerId =
         presenceByPod[podId]?.selfPeerId || podObj?.myPeerId || null;
+      const resolvedLabel =
+        podLabel ||
+        (podObj?.title ? podObj.title : podObj ? `#${podObj.code}` : 'Pod Audio Call');
 
       setSession({
         ...INITIAL_VOICE_STATE,
         podId,
-        voiceChannelId,
-        voiceChannelLabel,
+        podLabel: resolvedLabel,
         selfPeerId,
         status: 'connecting',
       });
@@ -629,8 +606,7 @@ export function useVoiceActions() {
 
       setSession({
         podId,
-        voiceChannelId,
-        voiceChannelLabel,
+        podLabel: resolvedLabel,
         selfPeerId,
         status: 'connected',
         usingFallbackSynth,
@@ -643,12 +619,11 @@ export function useVoiceActions() {
 
       sendPodWsFrame({
         type: 'voice_join',
-        voiceChannelId,
         muted: false,
         deafened: false,
       });
     },
-    [ podsQuery.data?.pods, presenceByPod, setRemoteSpeaking, setSession, store ]
+    [podsQuery.data?.pods, presenceByPod, setRemoteSpeaking, setSession, store]
   );
 
   const toggleMute = useCallback(() => {

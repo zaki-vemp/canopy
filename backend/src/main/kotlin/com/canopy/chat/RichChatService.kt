@@ -2,6 +2,7 @@ package com.canopy.chat
 
 import com.fasterxml.jackson.core.type.TypeReference
 import com.fasterxml.jackson.databind.ObjectMapper
+import com.canopy.pods.DmSummaryDto
 import com.canopy.pods.PodProposalReader
 import com.canopy.pods.parsePublicIdOrBadRequest
 import com.canopy.security.AuthPrincipal
@@ -67,32 +68,41 @@ class RichChatService(
         )
     }
 
-    private data class PodChannelContext(
+    private data class PodMemberContext(
         val podInternalId: Long,
         val podPublicBytes: ByteArray,
         val podIdHex: String,
         val interestSlug: String,
-        val channelInternalId: Long,
-        val channelIdHex: String,
-        val channelKind: Int,
+        val myUserId: Long,
+        val myPeerId: String,
         val myAlias: String,
         val myColor: String
+    )
+
+    private data class DmPeerContext(
+        val peerUserId: Long,
+        val peerId: String,
+        val peerAlias: String,
+        val dmLow: Long,
+        val dmHigh: Long
     )
 
     private data class RawMessageRow(
         val id: Long,
         val podInternalId: Long,
         val podPublicBytes: ByteArray,
-        val channelPublicBytes: ByteArray,
         val senderUserId: Long,
         val senderUserPublicBytes: ByteArray?,
         val senderAlias: String,
         val senderColor: String,
-        val parentMessageId: Long,
+        val recipientUserId: Long,
+        val recipientUserPublicBytes: ByteArray?,
+        val recipientAlias: String,
+        val dmUserLowId: Long,
+        val dmUserHighId: Long,
         val quoteMessageId: Long,
         val msgType: Int,
         val body: String,
-        val replyCount: Int,
         val isPinned: Boolean,
         val isDeleted: Boolean,
         val editedAtIso: String?,
@@ -106,16 +116,18 @@ class RichChatService(
             id = rs.getLong("id"),
             podInternalId = rs.getLong("pod_id"),
             podPublicBytes = rs.getBytes("pod_public_id"),
-            channelPublicBytes = rs.getBytes("channel_public_id"),
             senderUserId = rs.getLong("sender_user_id"),
             senderUserPublicBytes = rs.getBytes("sender_public_id"),
             senderAlias = rs.getString("sender_alias"),
             senderColor = rs.getString("sender_color"),
-            parentMessageId = rs.getLong("parent_message_id"),
+            recipientUserId = rs.getLong("recipient_user_id"),
+            recipientUserPublicBytes = rs.getBytes("recipient_public_id"),
+            recipientAlias = rs.getString("recipient_alias") ?: "",
+            dmUserLowId = rs.getLong("dm_user_low_id"),
+            dmUserHighId = rs.getLong("dm_user_high_id"),
             quoteMessageId = rs.getLong("quote_message_id"),
             msgType = rs.getInt("msg_type"),
             body = rs.getString("body") ?: "",
-            replyCount = rs.getInt("reply_count"),
             isPinned = rs.getInt("is_pinned") != 0,
             isDeleted = rs.getInt("is_deleted") != 0,
             editedAtIso = editedLdt?.toInstant(ZoneOffset.UTC)?.toString(),
@@ -127,52 +139,100 @@ class RichChatService(
         SELECT m.id,
                m.pod_id,
                p.public_id AS pod_public_id,
-               c.public_id AS channel_public_id,
                m.sender_user_id,
-               u.public_id AS sender_public_id,
+               su.public_id AS sender_public_id,
                m.sender_alias,
                m.sender_color,
-               m.parent_message_id,
+               m.recipient_user_id,
+               ru.public_id AS recipient_public_id,
+               m.recipient_alias,
+               m.dm_user_low_id,
+               m.dm_user_high_id,
                m.quote_message_id,
                m.msg_type,
                m.body,
-               m.reply_count,
                m.is_pinned,
                m.is_deleted,
                m.edited_at,
                m.created_at
         FROM messages m $indexHint
         JOIN pods p ON p.id = m.pod_id
-        JOIN pod_channels c ON c.id = m.channel_id
-        LEFT JOIN users u ON u.id = m.sender_user_id
+        LEFT JOIN users su ON su.id = m.sender_user_id
+        LEFT JOIN users ru ON ru.id = m.recipient_user_id
     """.trimIndent()
 
     private val baseMessageSelect = selectFromMessages()
-    private val channelCursorSelect = selectFromMessages("FORCE INDEX (idx_messages_channel_cursor)")
+    private val convoCursorSelect = selectFromMessages("FORCE INDEX (idx_messages_convo_cursor)")
+    private val podPinnedSelect = selectFromMessages("FORCE INDEX (idx_messages_pod_pinned)")
 
-    fun listChannelMessages(
+    fun listPodMessages(
         principal: AuthPrincipal,
         podIdHexRaw: String,
-        channelIdHexRaw: String,
         beforeId: Long,
         limit: Int
     ): MessagesPageResponse {
-        val ctx = requirePodChannelContext(principal.userId(), podIdHexRaw, channelIdHexRaw)
+        val ctx = requirePodMemberContext(principal, podIdHexRaw)
+        return fetchConversationPage(
+            podInternalId = ctx.podInternalId,
+            dmLow = 0L,
+            dmHigh = 0L,
+            beforeId = beforeId,
+            limit = limit,
+            callerUserId = principal.userId()
+        )
+    }
+
+    fun listDmConversations(principal: AuthPrincipal, podIdHexRaw: String): List<DmSummaryDto> {
+        val ctx = requirePodMemberContext(principal, podIdHexRaw)
+        return podRealtimeHub.loadDmSummariesByPod(principal.userId(), listOf(ctx.podInternalId))[ctx.podInternalId]
+            ?: emptyList()
+    }
+
+    fun listDmMessages(
+        principal: AuthPrincipal,
+        podIdHexRaw: String,
+        peerIdRaw: String,
+        beforeId: Long,
+        limit: Int
+    ): MessagesPageResponse {
+        val ctx = requirePodMemberContext(principal, podIdHexRaw)
+        val peer = resolveDmPeer(ctx, peerIdRaw)
+        return fetchConversationPage(
+            podInternalId = ctx.podInternalId,
+            dmLow = peer.dmLow,
+            dmHigh = peer.dmHigh,
+            beforeId = beforeId,
+            limit = limit,
+            callerUserId = principal.userId()
+        )
+    }
+
+    private fun fetchConversationPage(
+        podInternalId: Long,
+        dmLow: Long,
+        dmHigh: Long,
+        beforeId: Long,
+        limit: Int,
+        callerUserId: Long
+    ): MessagesPageResponse {
         val safeLimit = limit.coerceIn(1, 100)
         val fetchLimit = safeLimit + 1
 
         val rowsDesc = if (beforeId > 0L) {
             jdbcClient.sql(
                 """
-                $channelCursorSelect
-                WHERE m.channel_id = :channelId
-                  AND m.parent_message_id = 0
+                $convoCursorSelect
+                WHERE m.pod_id = :podId
+                  AND m.dm_user_low_id = :dmLow
+                  AND m.dm_user_high_id = :dmHigh
                   AND m.id < :beforeId
                 ORDER BY m.id DESC
                 LIMIT :fetchLimit
                 """.trimIndent()
             )
-                .param("channelId", ctx.channelInternalId)
+                .param("podId", podInternalId)
+                .param("dmLow", dmLow)
+                .param("dmHigh", dmHigh)
                 .param("beforeId", beforeId)
                 .param("fetchLimit", fetchLimit)
                 .query(rawMessageMapper)
@@ -180,14 +240,17 @@ class RichChatService(
         } else {
             jdbcClient.sql(
                 """
-                $channelCursorSelect
-                WHERE m.channel_id = :channelId
-                  AND m.parent_message_id = 0
+                $convoCursorSelect
+                WHERE m.pod_id = :podId
+                  AND m.dm_user_low_id = :dmLow
+                  AND m.dm_user_high_id = :dmHigh
                 ORDER BY m.id DESC
                 LIMIT :fetchLimit
                 """.trimIndent()
             )
-                .param("channelId", ctx.channelInternalId)
+                .param("podId", podInternalId)
+                .param("dmLow", dmLow)
+                .param("dmHigh", dmHigh)
                 .param("fetchLimit", fetchLimit)
                 .query(rawMessageMapper)
                 .list()
@@ -198,65 +261,18 @@ class RichChatService(
         val chronological = pageDesc.asReversed()
         val nextBeforeId = if (hasMore && chronological.isNotEmpty()) chronological.first().id else 0L
 
-        val hydrated = hydrateMessages(chronological, principal.userId())
+        val hydrated = hydrateMessages(chronological, callerUserId)
         return MessagesPageResponse(messages = hydrated, nextBeforeId = nextBeforeId)
     }
 
-    fun getThread(
+    fun sendPodMessage(
         principal: AuthPrincipal,
         podIdHexRaw: String,
-        channelIdHexRaw: String,
-        parentMessageId: Long
-    ): ThreadResponse {
-        val ctx = requirePodChannelContext(principal.userId(), podIdHexRaw, channelIdHexRaw)
-
-        val parentRow = jdbcClient.sql(
-            """
-            $baseMessageSelect
-            WHERE m.id = :parentId
-              AND m.pod_id = :podId
-              AND m.channel_id = :channelId
-            LIMIT 1
-            """.trimIndent()
-        )
-            .param("parentId", parentMessageId)
-            .param("podId", ctx.podInternalId)
-            .param("channelId", ctx.channelInternalId)
-            .query(rawMessageMapper)
-            .optional()
-            .orElseThrow { ResponseStatusException(HttpStatus.NOT_FOUND, "Thread parent message not found") }
-
-        val replyRows = jdbcClient.sql(
-            """
-            $baseMessageSelect
-            WHERE m.parent_message_id = :parentId
-              AND m.pod_id = :podId
-            ORDER BY m.id ASC
-            LIMIT 200
-            """.trimIndent()
-        )
-            .param("parentId", parentMessageId)
-            .param("podId", ctx.podInternalId)
-            .query(rawMessageMapper)
-            .list()
-
-        val allHydrated = hydrateMessages(listOf(parentRow) + replyRows, principal.userId())
-        return ThreadResponse(
-            parent = allHydrated.first(),
-            replies = allHydrated.drop(1)
-        )
-    }
-
-    fun sendMessage(
-        principal: AuthPrincipal,
-        podIdHexRaw: String,
-        channelIdHexRaw: String,
         req: SendMessageRequest
     ): SendMessageResponse {
-        val ctx = requirePodChannelContext(principal.userId(), podIdHexRaw, channelIdHexRaw)
+        val ctx = requirePodMemberContext(principal, podIdHexRaw)
         val trimmed = req.body.trim()
 
-        // Slash command: /status <text>
         if (trimmed.equals("/status", ignoreCase = true) || trimmed.startsWith("/status ", ignoreCase = true)) {
             val newStatus = trimmed.drop("/status".length).trim().take(80)
             jdbcClient.sql("UPDATE pod_members SET custom_status = :status WHERE pod_id = :podId AND user_id = :userId")
@@ -264,13 +280,13 @@ class RichChatService(
                 .param("podId", ctx.podInternalId)
                 .param("userId", principal.userId())
                 .update()
-            podRealtimeHub.clearTyping(ctx.podIdHex, ctx.channelIdHex, ctx.myAlias)
+            podRealtimeHub.clearGroupTyping(ctx.podIdHex, ctx.myAlias)
             podRealtimeHub.broadcastPresenceSnapshot(ctx.podInternalId, ctx.podIdHex)
             return SendMessageResponse(message = null, commandHandled = "status")
         }
 
         var msgType = 1 // TEXT
-        var effectiveBody = req.body.trim()
+        var effectiveBody = trimmed
         var parsedPoll: Pair<String, List<String>>? = null
 
         when {
@@ -301,45 +317,120 @@ class RichChatService(
             throw ResponseStatusException(HttpStatus.BAD_REQUEST, "Message body or attachment is required")
         }
 
-        val newMessageId = txTemplate.execute {
-            // Validate parent thread message if replying
-            if (req.parentMessageId > 0L) {
-                val validParent = jdbcClient.sql(
+        val newMessageId = insertMessageTx(
+            ctx = ctx,
+            recipientUserId = 0L,
+            recipientAlias = "",
+            dmLow = 0L,
+            dmHigh = 0L,
+            quoteMessageId = req.quoteMessageId,
+            initialMsgType = msgType,
+            effectiveBody = effectiveBody,
+            requestedAttachmentIds = requestedAttachmentIds,
+            parsedPoll = parsedPoll
+        )
+
+        podRealtimeHub.clearGroupTyping(ctx.podIdHex, ctx.myAlias)
+        val newDto = fetchSingleHydratedMessage(newMessageId, principal.userId())
+        podRealtimeHub.broadcastToPod(ctx.podIdHex, WsServerFrame.MessageCreatedOut(message = newDto))
+        return SendMessageResponse(message = newDto)
+    }
+
+    fun sendDmMessage(
+        principal: AuthPrincipal,
+        podIdHexRaw: String,
+        peerIdRaw: String,
+        req: SendMessageRequest
+    ): SendMessageResponse {
+        val ctx = requirePodMemberContext(principal, podIdHexRaw)
+        val peer = resolveDmPeer(ctx, peerIdRaw)
+        val trimmed = req.body.trim()
+
+        if (trimmed.equals("/status", ignoreCase = true) || trimmed.startsWith("/status ", ignoreCase = true)) {
+            val newStatus = trimmed.drop("/status".length).trim().take(80)
+            jdbcClient.sql("UPDATE pod_members SET custom_status = :status WHERE pod_id = :podId AND user_id = :userId")
+                .param("status", newStatus)
+                .param("podId", ctx.podInternalId)
+                .param("userId", principal.userId())
+                .update()
+            podRealtimeHub.clearDmTyping(ctx.podIdHex, principal.userId(), ctx.myPeerId, peer.peerUserId, peer.peerId)
+            podRealtimeHub.broadcastPresenceSnapshot(ctx.podInternalId, ctx.podIdHex)
+            return SendMessageResponse(message = null, commandHandled = "status")
+        }
+
+        var effectiveBody = trimmed
+        if (trimmed.equals("/shrug", ignoreCase = true) || trimmed.startsWith("/shrug ", ignoreCase = true)) {
+            val prefix = trimmed.drop("/shrug".length).trim()
+            effectiveBody = if (prefix.isEmpty()) "¯\\_(ツ)_/¯" else "$prefix ¯\\_(ツ)_/¯"
+        }
+        if (effectiveBody.length > 4000) {
+            effectiveBody = effectiveBody.take(4000)
+        }
+
+        val requestedAttachmentIds = req.attachmentIds.filter { it > 0L }.distinct().take(10)
+        if (effectiveBody.isBlank() && requestedAttachmentIds.isEmpty()) {
+            throw ResponseStatusException(HttpStatus.BAD_REQUEST, "Message body or attachment is required")
+        }
+
+        val newMessageId = insertMessageTx(
+            ctx = ctx,
+            recipientUserId = peer.peerUserId,
+            recipientAlias = peer.peerAlias,
+            dmLow = peer.dmLow,
+            dmHigh = peer.dmHigh,
+            quoteMessageId = req.quoteMessageId,
+            initialMsgType = 1,
+            effectiveBody = effectiveBody,
+            requestedAttachmentIds = requestedAttachmentIds,
+            parsedPoll = null
+        )
+
+        podRealtimeHub.clearDmTyping(ctx.podIdHex, principal.userId(), ctx.myPeerId, peer.peerUserId, peer.peerId)
+        val newDto = fetchSingleHydratedMessage(newMessageId, principal.userId())
+        podRealtimeHub.sendToUsers(
+            ctx.podIdHex,
+            setOf(principal.userId(), peer.peerUserId),
+            WsServerFrame.MessageCreatedOut(message = newDto)
+        )
+        return SendMessageResponse(message = newDto)
+    }
+
+    private fun insertMessageTx(
+        ctx: PodMemberContext,
+        recipientUserId: Long,
+        recipientAlias: String,
+        dmLow: Long,
+        dmHigh: Long,
+        quoteMessageId: Long,
+        initialMsgType: Int,
+        effectiveBody: String,
+        requestedAttachmentIds: List<Long>,
+        parsedPoll: Pair<String, List<String>>?
+    ): Long {
+        return txTemplate.execute {
+            var validQuoteId = 0L
+            if (quoteMessageId > 0L) {
+                validQuoteId = jdbcClient.sql(
                     """
                     SELECT id
                     FROM messages
-                    WHERE id = :parentId
+                    WHERE id = :qid
                       AND pod_id = :podId
-                      AND channel_id = :channelId
-                      AND parent_message_id = 0
+                      AND dm_user_low_id = :dmLow
+                      AND dm_user_high_id = :dmHigh
                     LIMIT 1
                     """.trimIndent()
                 )
-                    .param("parentId", req.parentMessageId)
+                    .param("qid", quoteMessageId)
                     .param("podId", ctx.podInternalId)
-                    .param("channelId", ctx.channelInternalId)
-                    .query { rs, _ -> rs.getLong("id") }
-                    .optional()
-                    .orElse(null)
-                if (validParent == null) {
-                    throw ResponseStatusException(HttpStatus.NOT_FOUND, "Parent message not found in channel")
-                }
-            }
-
-            // Validate quote message belongs to same pod
-            var validQuoteId = 0L
-            if (req.quoteMessageId > 0L) {
-                validQuoteId = jdbcClient.sql(
-                    "SELECT id FROM messages WHERE id = :qid AND pod_id = :podId LIMIT 1"
-                )
-                    .param("qid", req.quoteMessageId)
-                    .param("podId", ctx.podInternalId)
+                    .param("dmLow", dmLow)
+                    .param("dmHigh", dmHigh)
                     .query { rs, _ -> rs.getLong("id") }
                     .optional()
                     .orElse(0L)
             }
 
-            // Inspect unlinked caller attachments in this pod
+            var msgType = initialMsgType
             var validAttachmentIds = emptyList<Long>()
             if (requestedAttachmentIds.isNotEmpty()) {
                 val foundAttachments = jdbcClient.sql(
@@ -354,7 +445,7 @@ class RichChatService(
                 )
                     .param("attIds", requestedAttachmentIds)
                     .param("podId", ctx.podInternalId)
-                    .param("userId", principal.userId())
+                    .param("userId", ctx.myUserId)
                     .query { rs, _ -> rs.getLong("id") to rs.getString("kind") }
                     .list()
 
@@ -368,20 +459,24 @@ class RichChatService(
             jdbcClient.sql(
                 """
                 INSERT INTO messages (
-                    pod_id, channel_id, sender_user_id, sender_alias, sender_color,
-                    parent_message_id, quote_message_id, msg_type, body, created_at
+                    pod_id, sender_user_id, sender_alias, sender_color,
+                    recipient_user_id, recipient_alias, dm_user_low_id, dm_user_high_id,
+                    quote_message_id, msg_type, body, created_at
                 ) VALUES (
-                    :podId, :channelId, :userId, :alias, :color,
-                    :parentId, :quoteId, :msgType, :body, UTC_TIMESTAMP()
+                    :podId, :userId, :alias, :color,
+                    :recipientUserId, :recipientAlias, :dmLow, :dmHigh,
+                    :quoteId, :msgType, :body, UTC_TIMESTAMP()
                 )
                 """.trimIndent()
             )
                 .param("podId", ctx.podInternalId)
-                .param("channelId", ctx.channelInternalId)
-                .param("userId", principal.userId())
+                .param("userId", ctx.myUserId)
                 .param("alias", ctx.myAlias)
                 .param("color", ctx.myColor)
-                .param("parentId", req.parentMessageId.coerceAtLeast(0L))
+                .param("recipientUserId", recipientUserId)
+                .param("recipientAlias", recipientAlias)
+                .param("dmLow", dmLow)
+                .param("dmHigh", dmHigh)
                 .param("quoteId", validQuoteId)
                 .param("msgType", msgType)
                 .param("body", effectiveBody)
@@ -404,7 +499,7 @@ class RichChatService(
                     .param("messageId", insertedMsgId)
                     .param("attIds", validAttachmentIds)
                     .param("podId", ctx.podInternalId)
-                    .param("userId", principal.userId())
+                    .param("userId", ctx.myUserId)
                     .update()
             }
 
@@ -422,47 +517,8 @@ class RichChatService(
                     .update()
             }
 
-            if (req.parentMessageId > 0L) {
-                jdbcClient.sql("UPDATE messages SET reply_count = reply_count + 1 WHERE id = :parentId")
-                    .param("parentId", req.parentMessageId)
-                    .update()
-            }
-
             insertedMsgId
         }!!
-
-        podRealtimeHub.clearTyping(ctx.podIdHex, ctx.channelIdHex, ctx.myAlias)
-
-        if (req.parentMessageId > 0L) {
-            val both = fetchAndHydrateByIds(listOf(newMessageId, req.parentMessageId), principal.userId())
-            val replyDto = both[newMessageId]
-                ?: throw ResponseStatusException(HttpStatus.INTERNAL_SERVER_ERROR, "Created reply missing")
-            val parentDto = both[req.parentMessageId]
-
-            podRealtimeHub.broadcastFrame(
-                ctx.podIdHex,
-                WsServerFrame.ThreadReplyCreatedOut(
-                    channelId = ctx.channelIdHex,
-                    parentMessageId = req.parentMessageId,
-                    reply = replyDto,
-                    parentReplyCount = parentDto?.replyCount ?: 1
-                )
-            )
-            if (parentDto != null) {
-                podRealtimeHub.broadcastFrame(
-                    ctx.podIdHex,
-                    WsServerFrame.MessageUpdatedOut(channelId = ctx.channelIdHex, message = parentDto)
-                )
-            }
-            return SendMessageResponse(message = replyDto)
-        } else {
-            val newDto = fetchSingleHydratedMessage(newMessageId, principal.userId())
-            podRealtimeHub.broadcastFrame(
-                ctx.podIdHex,
-                WsServerFrame.MessageCreatedOut(channelId = ctx.channelIdHex, message = newDto)
-            )
-            return SendMessageResponse(message = newDto)
-        }
     }
 
     fun editMessage(principal: AuthPrincipal, messageId: Long, req: EditMessageRequest): RichMessageDto {
@@ -485,10 +541,7 @@ class RichChatService(
             .update()
 
         val updated = fetchSingleHydratedMessage(messageId, principal.userId())
-        podRealtimeHub.broadcastFrame(
-            meta.podIdHex,
-            WsServerFrame.MessageUpdatedOut(channelId = updated.channelId, message = updated)
-        )
+        dispatchMessageFrame(meta, WsServerFrame.MessageUpdatedOut(message = updated))
         return updated
     }
 
@@ -502,12 +555,12 @@ class RichChatService(
             .param("id", messageId)
             .update()
 
-        podRealtimeHub.broadcastFrame(
-            meta.podIdHex,
+        dispatchMessageFrame(
+            meta,
             WsServerFrame.MessageDeletedOut(
-                channelId = meta.channelIdHex,
                 messageId = messageId,
-                parentMessageId = meta.parentMessageId
+                senderPeerId = meta.senderPeerId,
+                recipientPeerId = meta.recipientPeerId
             )
         )
     }
@@ -548,10 +601,7 @@ class RichChatService(
         }
 
         val updated = fetchSingleHydratedMessage(messageId, principal.userId())
-        podRealtimeHub.broadcastFrame(
-            meta.podIdHex,
-            WsServerFrame.ReactionUpdatedOut(channelId = updated.channelId, message = updated)
-        )
+        dispatchMessageFrame(meta, WsServerFrame.ReactionUpdatedOut(message = updated))
         return updated
     }
 
@@ -568,10 +618,7 @@ class RichChatService(
             .update()
 
         val updated = fetchSingleHydratedMessage(messageId, principal.userId())
-        podRealtimeHub.broadcastFrame(
-            meta.podIdHex,
-            WsServerFrame.PinUpdatedOut(channelId = updated.channelId, message = updated)
-        )
+        dispatchMessageFrame(meta, WsServerFrame.PinUpdatedOut(message = updated))
         return updated
     }
 
@@ -615,6 +662,8 @@ class RichChatService(
             val isClosed: Boolean,
             val podInternalId: Long,
             val podIdHex: String,
+            val dmLow: Long,
+            val dmHigh: Long,
             val myAlias: String
         )
 
@@ -625,6 +674,8 @@ class RichChatService(
                    pl.options_json,
                    pl.is_closed,
                    m.pod_id,
+                   m.dm_user_low_id,
+                   m.dm_user_high_id,
                    p.public_id AS pod_public_id,
                    pm.alias AS my_alias
             FROM polls pl
@@ -640,6 +691,11 @@ class RichChatService(
             .query { rs, _ ->
                 val alias = rs.getString("my_alias")
                     ?: throw ResponseStatusException(HttpStatus.FORBIDDEN, "Not a member of this pod")
+                val dmLow = rs.getLong("dm_user_low_id")
+                val dmHigh = rs.getLong("dm_user_high_id")
+                if (dmLow > 0L && principal.userId() != dmLow && principal.userId() != dmHigh) {
+                    throw ResponseStatusException(HttpStatus.FORBIDDEN, "Private message restricted to participants")
+                }
                 PollLookup(
                     pollId = rs.getLong("poll_id"),
                     messageId = rs.getLong("message_id"),
@@ -647,6 +703,8 @@ class RichChatService(
                     isClosed = rs.getInt("is_closed") != 0,
                     podInternalId = rs.getLong("pod_id"),
                     podIdHex = UuidV7.toHex(rs.getBytes("pod_public_id")),
+                    dmLow = dmLow,
+                    dmHigh = dmHigh,
                     myAlias = alias
                 )
             }
@@ -682,10 +740,12 @@ class RichChatService(
             .update()
 
         val updated = fetchSingleHydratedMessage(lookup.messageId, principal.userId())
-        podRealtimeHub.broadcastFrame(
-            lookup.podIdHex,
-            WsServerFrame.PollUpdatedOut(channelId = updated.channelId, message = updated)
-        )
+        val frame = WsServerFrame.PollUpdatedOut(message = updated)
+        if (lookup.dmLow > 0L) {
+            podRealtimeHub.sendToUsers(lookup.podIdHex, setOf(lookup.dmLow, lookup.dmHigh), frame)
+        } else {
+            podRealtimeHub.broadcastToPod(lookup.podIdHex, frame)
+        }
         return updated
     }
 
@@ -693,8 +753,9 @@ class RichChatService(
         val podInternalId = requirePodMembershipInternalId(principal.userId(), podIdHexRaw)
         val rows = jdbcClient.sql(
             """
-            $baseMessageSelect
+            $podPinnedSelect
             WHERE m.pod_id = :podId
+              AND m.dm_user_low_id = 0
               AND m.is_pinned = 1
               AND m.is_deleted = 0
             ORDER BY m.id DESC
@@ -714,6 +775,7 @@ class RichChatService(
             JOIN user_bookmarks ub ON ub.message_id = m.id AND ub.user_id = :userId
             JOIN pod_members pm ON pm.pod_id = m.pod_id AND pm.user_id = :userId
             WHERE m.is_deleted = 0
+              AND (m.dm_user_low_id = 0 OR m.dm_user_low_id = :userId OR m.dm_user_high_id = :userId)
             ORDER BY ub.created_at DESC, m.id DESC
             LIMIT 100
             """.trimIndent()
@@ -729,7 +791,6 @@ class RichChatService(
         val trimmed = rawQuery.trim()
         if (trimmed.isEmpty()) return emptyList()
 
-        // Extract word tokens the same way InnoDB FULLTEXT tokenizes utf8mb4 text
         val wordTokens = Regex("[\\p{L}\\p{N}_]+")
             .findAll(trimmed)
             .map { it.value }
@@ -746,12 +807,14 @@ class RichChatService(
                 $baseMessageSelect
                 WHERE m.pod_id = :podId
                   AND m.is_deleted = 0
+                  AND (m.dm_user_low_id = 0 OR m.dm_user_low_id = :myUserId OR m.dm_user_high_id = :myUserId)
                   AND MATCH(m.body) AGAINST(:booleanQuery IN BOOLEAN MODE)
                 ORDER BY m.id DESC
                 LIMIT 50
                 """.trimIndent()
             )
                 .param("podId", podInternalId)
+                .param("myUserId", principal.userId())
                 .param("booleanQuery", booleanQuery)
                 .query(rawMessageMapper)
                 .list()
@@ -766,12 +829,14 @@ class RichChatService(
                 $baseMessageSelect
                 WHERE m.pod_id = :podId
                   AND m.is_deleted = 0
+                  AND (m.dm_user_low_id = 0 OR m.dm_user_low_id = :myUserId OR m.dm_user_high_id = :myUserId)
                   AND m.body LIKE :likePattern
                 ORDER BY m.id DESC
                 LIMIT 50
                 """.trimIndent()
             )
                 .param("podId", podInternalId)
+                .param("myUserId", principal.userId())
                 .param("likePattern", "%$escaped%")
                 .query(rawMessageMapper)
                 .list()
@@ -801,7 +866,7 @@ class RichChatService(
 
     /**
      * Batch-hydrates reactions, attachments, caller bookmarks, quoted message snippets,
-     * and polls + poll votes in flat IN(...) queries (zero N+1 queries per mysql/references/n-plus-one.md).
+     * polls + poll votes, and governance proposals in flat IN(...) queries (zero N+1 queries).
      */
     private fun hydrateMessages(rows: List<RawMessageRow>, callerUserId: Long): List<RichMessageDto> {
         if (rows.isEmpty()) return emptyList()
@@ -875,18 +940,27 @@ class RichChatService(
             emptySet()
         }
 
-        // 4. Batch fetch quoted snippets
+        // 4. Batch fetch quoted snippets (enforcing exact conversation scope match)
+        data class ScopedQuote(
+            val podInternalId: Long,
+            val dmLow: Long,
+            val dmHigh: Long,
+            val dto: QuoteSnippetDto
+        )
         val quoteIds = rows.map { it.quoteMessageId }.filter { it > 0L }.distinct()
-        val quotesById = HashMap<Long, QuoteSnippetDto>()
+        val quotesById = HashMap<Long, ScopedQuote>()
         if (quoteIds.isNotEmpty()) {
             jdbcClient.sql(
                 """
                 SELECT m.id,
+                       m.pod_id,
                        p.public_id AS pod_public_id,
                        m.sender_user_id,
                        u.public_id AS sender_public_id,
                        m.sender_alias,
                        m.sender_color,
+                       m.dm_user_low_id,
+                       m.dm_user_high_id,
                        m.body,
                        m.msg_type,
                        m.is_deleted
@@ -907,14 +981,19 @@ class RichChatService(
                         "system"
                     }
                     val deleted = rs.getInt("is_deleted") != 0
-                    quotesById[qid] = QuoteSnippetDto(
-                        id = qid,
-                        senderPeerId = senderPeerId,
-                        senderAlias = rs.getString("sender_alias"),
-                        senderColor = rs.getString("sender_color"),
-                        body = if (deleted) "" else (rs.getString("body") ?: "").take(240),
-                        msgType = msgTypeToName(rs.getInt("msg_type")),
-                        isDeleted = deleted
+                    quotesById[qid] = ScopedQuote(
+                        podInternalId = rs.getLong("pod_id"),
+                        dmLow = rs.getLong("dm_user_low_id"),
+                        dmHigh = rs.getLong("dm_user_high_id"),
+                        dto = QuoteSnippetDto(
+                            id = qid,
+                            senderPeerId = senderPeerId,
+                            senderAlias = rs.getString("sender_alias"),
+                            senderColor = rs.getString("sender_color"),
+                            body = if (deleted) "" else (rs.getString("body") ?: "").take(240),
+                            msgType = msgTypeToName(rs.getInt("msg_type")),
+                            isDeleted = deleted
+                        )
                     )
                 }
         }
@@ -1001,7 +1080,7 @@ class RichChatService(
             }
         }
 
-        // 6. Batch fetch governance proposals (pod-scoped for index & single-shard routing, zero N+1)
+        // 6. Batch fetch governance proposals
         val govRows = rows.filter { it.msgType == 6 }
         val proposalsByMsgId = if (govRows.isNotEmpty()) {
             podProposalReader.loadByAnnouncementMessageIds(
@@ -1015,11 +1094,20 @@ class RichChatService(
 
         return rows.map { r ->
             val podHex = UuidV7.toHex(r.podPublicBytes)
-            val chHex = UuidV7.toHex(r.channelPublicBytes)
             val senderPeerId = if (r.senderUserId > 0L && r.senderUserPublicBytes != null) {
                 UuidV7.peerId(r.podPublicBytes, r.senderUserPublicBytes)
             } else {
                 "system"
+            }
+            val recipientPeerId = if (r.recipientUserId > 0L && r.recipientUserPublicBytes != null) {
+                UuidV7.peerId(r.podPublicBytes, r.recipientUserPublicBytes)
+            } else {
+                null
+            }
+            val recipientAlias = if (r.recipientUserId > 0L && r.recipientAlias.isNotBlank()) {
+                r.recipientAlias
+            } else {
+                null
             }
 
             val groupedReactions = LinkedHashMap<String, MutableList<Pair<Long, String>>>()
@@ -1035,22 +1123,31 @@ class RichChatService(
                 )
             }
 
+            val quoteSnippet = if (r.quoteMessageId > 0L) {
+                quotesById[r.quoteMessageId]?.takeIf {
+                    it.podInternalId == r.podInternalId &&
+                        it.dmLow == r.dmUserLowId &&
+                        it.dmHigh == r.dmUserHighId
+                }?.dto
+            } else {
+                null
+            }
+
             RichMessageDto(
                 id = r.id,
                 podId = podHex,
-                channelId = chHex,
                 senderPeerId = senderPeerId,
                 senderAlias = r.senderAlias,
                 senderColor = r.senderColor,
-                parentMessageId = r.parentMessageId,
-                quoteMessage = if (r.quoteMessageId > 0L) quotesById[r.quoteMessageId] else null,
+                recipientPeerId = recipientPeerId,
+                recipientAlias = recipientAlias,
+                quoteMessage = quoteSnippet,
                 msgType = msgTypeToName(r.msgType),
                 body = if (r.isDeleted) "" else r.body,
-                replyCount = r.replyCount,
                 isPinned = r.isPinned,
                 isBookmarked = r.id in bookmarkedMsgIds,
                 isDeleted = r.isDeleted,
-                editedAtIsoOrNull(r),
+                editedAt = r.editedAtIso,
                 createdAt = r.createdAtIso,
                 reactions = reactionDtos,
                 attachments = if (r.isDeleted) emptyList() else (attachmentsByMsg[r.id] ?: emptyList()),
@@ -1059,8 +1156,6 @@ class RichChatService(
             )
         }
     }
-
-    private fun editedAtIsoOrNull(r: RawMessageRow): String? = r.editedAtIso
 
     internal fun parsePollCommand(commandText: String): Pair<String, List<String>> {
         val rest = commandText.drop("/poll".length).trim()
@@ -1100,12 +1195,22 @@ class RichChatService(
         val messageId: Long,
         val podInternalId: Long,
         val podIdHex: String,
-        val channelIdHex: String,
         val senderUserId: Long,
-        val parentMessageId: Long,
+        val senderPeerId: String,
+        val recipientPeerId: String?,
+        val dmUserLowId: Long,
+        val dmUserHighId: Long,
         val isDeleted: Boolean,
         val myAlias: String
     )
+
+    private fun dispatchMessageFrame(meta: MessageMembershipMeta, frame: WsServerFrame) {
+        if (meta.dmUserLowId > 0L) {
+            podRealtimeHub.sendToUsers(meta.podIdHex, setOf(meta.dmUserLowId, meta.dmUserHighId), frame)
+        } else {
+            podRealtimeHub.broadcastToPod(meta.podIdHex, frame)
+        }
+    }
 
     private fun requireMessageAndMembership(userId: Long, messageId: Long): MessageMembershipMeta {
         return jdbcClient.sql(
@@ -1113,14 +1218,18 @@ class RichChatService(
             SELECT m.id,
                    m.pod_id,
                    p.public_id AS pod_public_id,
-                   c.public_id AS channel_public_id,
                    m.sender_user_id,
-                   m.parent_message_id,
+                   su.public_id AS sender_public_id,
+                   m.recipient_user_id,
+                   ru.public_id AS recipient_public_id,
+                   m.dm_user_low_id,
+                   m.dm_user_high_id,
                    m.is_deleted,
                    pm.alias AS my_alias
             FROM messages m
             JOIN pods p ON p.id = m.pod_id
-            JOIN pod_channels c ON c.id = m.channel_id
+            LEFT JOIN users su ON su.id = m.sender_user_id
+            LEFT JOIN users ru ON ru.id = m.recipient_user_id
             LEFT JOIN pod_members pm ON pm.pod_id = m.pod_id AND pm.user_id = :userId
             WHERE m.id = :messageId
             LIMIT 1
@@ -1134,13 +1243,31 @@ class RichChatService(
                 }
                 val alias = rs.getString("my_alias")
                     ?: throw ResponseStatusException(HttpStatus.FORBIDDEN, "Not a member of this pod")
+
+                val dmLow = rs.getLong("dm_user_low_id")
+                val dmHigh = rs.getLong("dm_user_high_id")
+                if (dmLow > 0L && userId != dmLow && userId != dmHigh) {
+                    throw ResponseStatusException(
+                        HttpStatus.FORBIDDEN,
+                        "Private message restricted to participants"
+                    )
+                }
+
+                val podPub = rs.getBytes("pod_public_id")
+                val senderUserId = rs.getLong("sender_user_id")
+                val senderPub = rs.getBytes("sender_public_id")
+                val recipientUserId = rs.getLong("recipient_user_id")
+                val recipientPub = rs.getBytes("recipient_public_id")
+
                 MessageMembershipMeta(
                     messageId = rs.getLong("id"),
                     podInternalId = rs.getLong("pod_id"),
-                    podIdHex = UuidV7.toHex(rs.getBytes("pod_public_id")),
-                    channelIdHex = UuidV7.toHex(rs.getBytes("channel_public_id")),
-                    senderUserId = rs.getLong("sender_user_id"),
-                    parentMessageId = rs.getLong("parent_message_id"),
+                    podIdHex = UuidV7.toHex(podPub),
+                    senderUserId = senderUserId,
+                    senderPeerId = if (senderUserId > 0L && senderPub != null) UuidV7.peerId(podPub, senderPub) else "system",
+                    recipientPeerId = if (recipientUserId > 0L && recipientPub != null) UuidV7.peerId(podPub, recipientPub) else null,
+                    dmUserLowId = dmLow,
+                    dmUserHighId = dmHigh,
                     isDeleted = rs.getInt("is_deleted") != 0,
                     myAlias = alias
                 )
@@ -1165,54 +1292,81 @@ class RichChatService(
             .orElseThrow { ResponseStatusException(HttpStatus.FORBIDDEN, "Not a member of this pod") }
     }
 
-    private fun requirePodChannelContext(
-        userId: Long,
-        podIdHexRaw: String,
-        channelIdHexRaw: String
-    ): PodChannelContext {
+    private fun requirePodMemberContext(principal: AuthPrincipal, podIdHexRaw: String): PodMemberContext {
         val podPub = parsePublicIdOrBadRequest(podIdHexRaw, "podId")
-        val chPub = parsePublicIdOrBadRequest(channelIdHexRaw, "channelId")
-
         return jdbcClient.sql(
             """
             SELECT p.id AS pod_id,
                    p.public_id AS pod_public_id,
                    i.slug AS interest_slug,
-                   c.id AS channel_id,
-                   c.public_id AS channel_public_id,
-                   c.kind AS channel_kind,
                    pm.alias AS my_alias,
                    pm.alias_color AS my_color
             FROM pods p
             JOIN interests i ON i.id = p.interest_id
-            JOIN pod_channels c ON c.pod_id = p.id AND c.public_id = :chPub
             LEFT JOIN pod_members pm ON pm.pod_id = p.id AND pm.user_id = :userId
             WHERE p.public_id = :podPub
             LIMIT 1
             """.trimIndent()
         )
-            .param("chPub", chPub)
-            .param("userId", userId)
+            .param("userId", principal.userId())
             .param("podPub", podPub)
             .query(ResultSetExtractor { rs ->
                 if (!rs.next()) {
-                    throw ResponseStatusException(HttpStatus.NOT_FOUND, "Pod or channel not found")
+                    throw ResponseStatusException(HttpStatus.NOT_FOUND, "Pod not found")
                 }
                 val alias = rs.getString("my_alias")
                     ?: throw ResponseStatusException(HttpStatus.FORBIDDEN, "Not a member of this pod")
                 val pBytes = rs.getBytes("pod_public_id")
-                val cBytes = rs.getBytes("channel_public_id")
-                PodChannelContext(
+                PodMemberContext(
                     podInternalId = rs.getLong("pod_id"),
                     podPublicBytes = pBytes,
                     podIdHex = UuidV7.toHex(pBytes),
                     interestSlug = rs.getString("interest_slug"),
-                    channelInternalId = rs.getLong("channel_id"),
-                    channelIdHex = UuidV7.toHex(cBytes),
-                    channelKind = rs.getInt("channel_kind"),
+                    myUserId = principal.userId(),
+                    myPeerId = UuidV7.peerId(pBytes, principal.userPublicId()),
                     myAlias = alias,
                     myColor = rs.getString("my_color")
                 )
             })!!
+    }
+
+    private fun resolveDmPeer(ctx: PodMemberContext, rawPeerId: String): DmPeerContext {
+        val cleanPeerId = rawPeerId.trim()
+        if (cleanPeerId.isEmpty()) {
+            throw ResponseStatusException(HttpStatus.BAD_REQUEST, "Invalid peerId")
+        }
+
+        data class MemberCandidate(val userId: Long, val peerId: String, val alias: String)
+        val matched = jdbcClient.sql(
+            """
+            SELECT pm.user_id, u.public_id AS user_public_id, pm.alias
+            FROM pod_members pm
+            JOIN users u ON u.id = pm.user_id
+            WHERE pm.pod_id = :podId
+            """.trimIndent()
+        )
+            .param("podId", ctx.podInternalId)
+            .query { rs, _ ->
+                MemberCandidate(
+                    userId = rs.getLong("user_id"),
+                    peerId = UuidV7.peerId(ctx.podPublicBytes, rs.getBytes("user_public_id")),
+                    alias = rs.getString("alias")
+                )
+            }
+            .list()
+            .firstOrNull { it.peerId == cleanPeerId }
+            ?: throw ResponseStatusException(HttpStatus.NOT_FOUND, "Peer member not found in pod")
+
+        if (matched.userId == ctx.myUserId) {
+            throw ResponseStatusException(HttpStatus.BAD_REQUEST, "Cannot message yourself")
+        }
+
+        return DmPeerContext(
+            peerUserId = matched.userId,
+            peerId = matched.peerId,
+            peerAlias = matched.alias,
+            dmLow = minOf(ctx.myUserId, matched.userId),
+            dmHigh = maxOf(ctx.myUserId, matched.userId)
+        )
     }
 }

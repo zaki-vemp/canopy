@@ -78,7 +78,6 @@ class BlindMatchService(
         val podIdHex: String,
         val newlyJoined: Boolean,
         val joinedMember: MemberDto?,
-        val generalChannelHex: String?,
         val joinSystemMessage: RichMessageDto?
     )
 
@@ -288,7 +287,6 @@ class BlindMatchService(
                             podIdHex = chosenExisting.podIdHex,
                             newlyJoined = false,
                             joinedMember = null,
-                            generalChannelHex = null,
                             joinSystemMessage = null
                         )
                     }
@@ -338,28 +336,11 @@ class BlindMatchService(
 
                 val targetPodId: Long
                 val targetPodPublicBytes: ByteArray
-                val generalChannelId: Long
-                val generalChannelHex: String
 
                 if (candidates.isNotEmpty()) {
                     val chosen = candidates[rng.nextInt(candidates.size)]
                     targetPodId = chosen.id
                     targetPodPublicBytes = chosen.publicId
-
-                    val generalCh = jdbcClient.sql(
-                        """
-                        SELECT id, public_id
-                        FROM pod_channels
-                        WHERE pod_id = :podId AND kind = 1
-                        ORDER BY position ASC, id ASC
-                        LIMIT 1
-                        """.trimIndent()
-                    )
-                        .param("podId", targetPodId)
-                        .query { rs, _ -> rs.getLong("id") to UuidV7.toHex(rs.getBytes("public_id")) }
-                        .single()
-                    generalChannelId = generalCh.first
-                    generalChannelHex = generalCh.second
                 } else {
                     targetPodPublicBytes = UuidV7.generate()
                     val code = "${interest.slug.take(18)}-${1000 + rng.nextInt(9000)}"
@@ -386,16 +367,14 @@ class BlindMatchService(
                     targetPodId = podKeyHolder.key?.toLong()
                         ?: throw IllegalStateException("Failed to generate pod ID")
 
-                    val createdGeneral = insertDefaultPodChannels(targetPodId, interest.label, code)
-                    generalChannelId = createdGeneral.first
-                    generalChannelHex = createdGeneral.second
+                    insertWelcomeSystemMessage(targetPodId, interest.label, code)
                 }
 
                 val (alias, color) = pickUniqueAliasAndColor(targetPodId, principal.userId())
 
                 jdbcClient.sql(
                     """
-                    INSERT INTO pod_members (pod_id, user_id, alias, alias_color, role, custom_status, voice_channel_id, joined_at)
+                    INSERT INTO pod_members (pod_id, user_id, alias, alias_color, role, custom_status, in_voice, joined_at)
                     VALUES (:podId, :userId, :alias, :color, 'MEMBER', '', 0, UTC_TIMESTAMP())
                     """.trimIndent()
                 )
@@ -422,38 +401,16 @@ class BlindMatchService(
 
                 val podIdHex = UuidV7.toHex(targetPodPublicBytes)
                 val selfPeerId = UuidV7.peerId(targetPodPublicBytes, principal.userPublicId())
-                val joinBody = "$alias joined the pod"
-                val joinMsgId = insertSystemMessage(targetPodId, generalChannelId, joinBody)
-
-                val joinMsgDto = RichMessageDto(
-                    id = joinMsgId,
-                    podId = podIdHex,
-                    channelId = generalChannelHex,
-                    senderPeerId = "system",
-                    senderAlias = SYSTEM_ALIAS,
-                    senderColor = SYSTEM_COLOR,
-                    parentMessageId = 0L,
-                    quoteMessage = null,
-                    msgType = "SYSTEM",
-                    body = joinBody,
-                    replyCount = 0,
-                    isPinned = false,
-                    isBookmarked = false,
-                    isDeleted = false,
-                    editedAt = null,
-                    createdAt = Instant.now().toString(),
-                    reactions = emptyList(),
-                    attachments = emptyList(),
-                    poll = null
-                )
+                val joinMsgDto = insertSystemMessageAndBuildDto(targetPodId, podIdHex, "$alias joined the pod")
 
                 val memberDto = MemberDto(
                     peerId = selfPeerId,
                     alias = alias,
                     color = color,
+                    role = "MEMBER",
                     customStatus = "",
                     online = podRealtimeHub.isPeerOnline(podIdHex, selfPeerId),
-                    voiceChannelId = null,
+                    inVoice = false,
                     isSelf = false
                 )
 
@@ -462,18 +419,14 @@ class BlindMatchService(
                     podIdHex = podIdHex,
                     newlyJoined = true,
                     joinedMember = memberDto,
-                    generalChannelHex = generalChannelHex,
                     joinSystemMessage = joinMsgDto
                 )
             }!!
         }
 
-        if (outcome.newlyJoined && outcome.joinedMember != null && outcome.generalChannelHex != null && outcome.joinSystemMessage != null) {
-            podRealtimeHub.broadcastFrame(outcome.podIdHex, WsServerFrame.MemberJoinedOut(member = outcome.joinedMember))
-            podRealtimeHub.broadcastFrame(
-                outcome.podIdHex,
-                WsServerFrame.MessageCreatedOut(channelId = outcome.generalChannelHex, message = outcome.joinSystemMessage)
-            )
+        if (outcome.newlyJoined && outcome.joinedMember != null && outcome.joinSystemMessage != null) {
+            podRealtimeHub.broadcastToPod(outcome.podIdHex, WsServerFrame.MemberJoinedOut(member = outcome.joinedMember))
+            podRealtimeHub.broadcastToPod(outcome.podIdHex, WsServerFrame.MessageCreatedOut(message = outcome.joinSystemMessage))
             podRealtimeHub.broadcastPresenceSnapshot(outcome.podInternalId, outcome.podIdHex)
         }
 
@@ -564,36 +517,7 @@ class BlindMatchService(
         val podBytesById = headers.associate { it.id to it.publicIdBytes }
         val podHexById = headers.associate { it.id to it.podIdHex }
 
-        // Batch query 1: all channels across caller's pods
-        val channelIdToHex = HashMap<Long, String>()
-        val channelsByPod = HashMap<Long, MutableList<ChannelDto>>()
-        jdbcClient.sql(
-            """
-            SELECT id, public_id, pod_id, slug, label, topic, kind, position
-            FROM pod_channels
-            WHERE pod_id IN (:podIds)
-            ORDER BY position ASC, id ASC
-            """.trimIndent()
-        )
-            .param("podIds", podIds)
-            .query { rs ->
-                val chInternalId = rs.getLong("id")
-                val chHex = UuidV7.toHex(rs.getBytes("public_id"))
-                val podId = rs.getLong("pod_id")
-                channelIdToHex[chInternalId] = chHex
-                channelsByPod.computeIfAbsent(podId) { mutableListOf() }.add(
-                    ChannelDto(
-                        channelId = chHex,
-                        slug = rs.getString("slug"),
-                        label = rs.getString("label"),
-                        topic = rs.getString("topic") ?: "",
-                        kind = if (rs.getInt("kind") == 2) "VOICE" else "TEXT",
-                        position = rs.getInt("position")
-                    )
-                )
-            }
-
-        // Batch query 2: all members across caller's pods (strictly peer-blind: only u.public_id read for peerId hash)
+        // Batch query 1: all members across caller's pods (strictly peer-blind: only u.public_id read for peerId hash)
         val membersByPod = HashMap<Long, MutableList<MemberDto>>()
         jdbcClient.sql(
             """
@@ -604,7 +528,7 @@ class BlindMatchService(
                    pm.alias_color,
                    pm.role,
                    pm.custom_status,
-                   pm.voice_channel_id
+                   pm.in_voice
             FROM pod_members pm
             JOIN users u ON u.id = pm.user_id
             WHERE pm.pod_id IN (:podIds)
@@ -619,9 +543,7 @@ class BlindMatchService(
                 val memberUserId = rs.getLong("user_id")
                 val peerId = UuidV7.peerId(podPubBytes, rs.getBytes("user_public_id"))
                 val online = podRealtimeHub.isPeerOnline(podHex, peerId)
-                val vcInternalId = rs.getLong("voice_channel_id")
-                val voiceChannelHex = podRealtimeHub.getPeerVoiceChannelId(podHex, peerId)
-                    ?: if (online && vcInternalId > 0L) channelIdToHex[vcInternalId] else null
+                val inVoice = podRealtimeHub.isPeerInVoice(podHex, peerId) || (online && rs.getInt("in_voice") != 0)
 
                 membersByPod.computeIfAbsent(podId) { mutableListOf() }.add(
                     MemberDto(
@@ -631,13 +553,13 @@ class BlindMatchService(
                         role = rs.getString("role") ?: "MEMBER",
                         customStatus = rs.getString("custom_status") ?: "",
                         online = online,
-                        voiceChannelId = voiceChannelHex,
+                        inVoice = inVoice,
                         isSelf = memberUserId == principal.userId()
                     )
                 )
             }
 
-        // Batch query 3: open governance proposals count per pod (zero N+1, index-ordered GROUP BY)
+        // Batch query 2: open governance proposals count per pod (zero N+1, index-ordered GROUP BY)
         val openProposalsByPod = HashMap<Long, Int>()
         jdbcClient.sql(
             """
@@ -653,6 +575,9 @@ class BlindMatchService(
             .query { rs ->
                 openProposalsByPod[rs.getLong("pod_id")] = rs.getInt("open_cnt")
             }
+
+        // Batch query 3: caller's own 1:1 DM conversation summaries across pods (zero N+1)
+        val dmsByPod = podRealtimeHub.loadDmSummariesByPod(principal.userId(), podIds)
 
         return headers.map { h ->
             val members = membersByPod[h.id] ?: emptyList()
@@ -675,7 +600,7 @@ class BlindMatchService(
                 memberCount = h.memberCount,
                 maxMembers = h.maxMembers,
                 openProposalsCount = openProposalsByPod[h.id] ?: 0,
-                channels = channelsByPod[h.id] ?: emptyList(),
+                dmConversations = dmsByPod[h.id] ?: emptyList(),
                 members = members
             )
         }
@@ -744,31 +669,6 @@ class BlindMatchService(
             .optional()
             .orElse(null) ?: return null
 
-        val channelIdToHex = HashMap<Long, String>()
-        val channels = jdbcClient.sql(
-            """
-            SELECT id, public_id, slug, label, topic, kind, position
-            FROM pod_channels
-            WHERE pod_id = :podId
-            ORDER BY position ASC, id ASC
-            """.trimIndent()
-        )
-            .param("podId", pod.id)
-            .query { rs, _ ->
-                val chId = rs.getLong("id")
-                val chHex = UuidV7.toHex(rs.getBytes("public_id"))
-                channelIdToHex[chId] = chHex
-                ChannelDto(
-                    channelId = chHex,
-                    slug = rs.getString("slug"),
-                    label = rs.getString("label"),
-                    topic = rs.getString("topic") ?: "",
-                    kind = if (rs.getInt("kind") == 2) "VOICE" else "TEXT",
-                    position = rs.getInt("position")
-                )
-            }
-            .list()
-
         val members = jdbcClient.sql(
             """
             SELECT u.public_id AS user_public_id,
@@ -776,7 +676,7 @@ class BlindMatchService(
                    pm.alias_color,
                    pm.role,
                    pm.custom_status,
-                   pm.voice_channel_id
+                   pm.in_voice
             FROM pod_members pm
             JOIN users u ON u.id = pm.user_id
             WHERE pm.pod_id = :podId
@@ -787,9 +687,7 @@ class BlindMatchService(
             .query { rs, _ ->
                 val peerId = UuidV7.peerId(pod.pubBytes, rs.getBytes("user_public_id"))
                 val online = podRealtimeHub.isPeerOnline(pod.podHex, peerId)
-                val vcId = rs.getLong("voice_channel_id")
-                val vcHex = podRealtimeHub.getPeerVoiceChannelId(pod.podHex, peerId)
-                    ?: if (online && vcId > 0L) channelIdToHex[vcId] else null
+                val inVoice = podRealtimeHub.isPeerInVoice(pod.podHex, peerId) || (online && rs.getInt("in_voice") != 0)
                 MemberDto(
                     peerId = peerId,
                     alias = rs.getString("alias"),
@@ -797,7 +695,7 @@ class BlindMatchService(
                     role = rs.getString("role") ?: "MEMBER",
                     customStatus = rs.getString("custom_status") ?: "",
                     online = online,
-                    voiceChannelId = vcHex,
+                    inVoice = inVoice,
                     isSelf = false
                 )
             }
@@ -835,196 +733,9 @@ class BlindMatchService(
             memberCount = pod.memberCount,
             maxMembers = pod.maxMembers,
             openProposalsCount = openProposals,
-            channels = channels,
+            dmConversations = emptyList(),
             members = members
         )
-    }
-
-    fun createChannel(principal: AuthPrincipal, podIdHexRaw: String, req: CreateChannelRequest): ChannelDto {
-        val podPublicBytes = parsePublicIdOrBadRequest(podIdHexRaw, "podId")
-        val rawLabel = req.label.trim()
-        if (rawLabel.isEmpty()) {
-            throw ResponseStatusException(HttpStatus.BAD_REQUEST, "Channel label is required")
-        }
-
-        val (podInternalId, podIdHex, channelDto) = executeWithDeadlockRetry {
-            txTemplate.execute {
-                val podRow = requireLockedMemberPodRow(principal.userId(), podPublicBytes)
-                if (podRow.governanceMode == "DEMOCRATIC" && podRow.memberCount > 1) {
-                    throw ResponseStatusException(
-                        HttpStatus.FORBIDDEN,
-                        "Democratic pods require a member vote to add channels — submit a proposal"
-                    )
-                }
-                if (podRow.governanceMode == "ADMIN" && podRow.role !in setOf("OWNER", "ADMIN")) {
-                    throw ResponseStatusException(
-                        HttpStatus.FORBIDDEN,
-                        "Only pod owners and admins can add channels"
-                    )
-                }
-
-                val dto = insertChannelTx(podRow.podInternalId, rawLabel, req.topic, req.kind)
-                Triple(podRow.podInternalId, podRow.podIdHex, dto)
-            }!!
-        }
-
-        podRealtimeHub.broadcastFrame(podIdHex, WsServerFrame.ChannelCreatedOut(channel = channelDto))
-        buildCanonicalPodDetail(podInternalId)?.let { podRealtimeHub.broadcastPodUpdated(it) }
-        return channelDto
-    }
-
-    internal fun insertChannelTx(
-        podInternalId: Long,
-        rawLabelInput: String,
-        rawTopicInput: String,
-        rawKindInput: String
-    ): ChannelDto {
-        val rawLabel = rawLabelInput.trim()
-        if (rawLabel.isEmpty()) {
-            throw ResponseStatusException(HttpStatus.BAD_REQUEST, "Channel label is required")
-        }
-        val kindInt = when (rawKindInput.trim().uppercase()) {
-            "VOICE" -> 2
-            "TEXT", "" -> 1
-            else -> throw ResponseStatusException(HttpStatus.BAD_REQUEST, "Channel kind must be TEXT or VOICE")
-        }
-        val baseSlug = normalizeSlug(rawLabel).take(42).ifEmpty { if (kindInt == 2) "voice-room" else "channel" }
-        val cleanLabel = if (kindInt == 1) baseSlug else rawLabel.take(64)
-        val cleanTopic = rawTopicInput.trim().take(160)
-
-        val existingSlugs = jdbcClient.sql("SELECT slug FROM pod_channels WHERE pod_id = :podId")
-            .param("podId", podInternalId)
-            .query(String::class.java)
-            .set()
-
-        var finalSlug = baseSlug
-        var suffix = 2
-        while (finalSlug in existingSlugs) {
-            finalSlug = "${baseSlug.take(42)}-$suffix"
-            suffix++
-        }
-
-        val nextPos = jdbcClient.sql(
-            "SELECT COALESCE(MAX(position), 0) + 1 AS next_pos FROM pod_channels WHERE pod_id = :podId"
-        )
-            .param("podId", podInternalId)
-            .query { rs, _ -> rs.getInt("next_pos") }
-            .single()
-            .coerceAtMost(250)
-
-        val chPubBytes = UuidV7.generate()
-        jdbcClient.sql(
-            """
-            INSERT INTO pod_channels (public_id, pod_id, slug, label, topic, kind, position, created_at)
-            VALUES (:publicId, :podId, :slug, :label, :topic, :kind, :position, UTC_TIMESTAMP())
-            """.trimIndent()
-        )
-            .param("publicId", chPubBytes)
-            .param("podId", podInternalId)
-            .param("slug", finalSlug)
-            .param("label", if (kindInt == 1) finalSlug else cleanLabel)
-            .param("topic", cleanTopic)
-            .param("kind", kindInt)
-            .param("position", nextPos)
-            .update()
-
-        return ChannelDto(
-            channelId = UuidV7.toHex(chPubBytes),
-            slug = finalSlug,
-            label = if (kindInt == 1) finalSlug else cleanLabel,
-            topic = cleanTopic,
-            kind = if (kindInt == 2) "VOICE" else "TEXT",
-            position = nextPos
-        )
-    }
-
-    fun deleteChannel(principal: AuthPrincipal, podIdHexRaw: String, channelIdHexRaw: String): PodDetailDto {
-        val podPublicBytes = parsePublicIdOrBadRequest(podIdHexRaw, "podId")
-        val chPublicBytes = parsePublicIdOrBadRequest(channelIdHexRaw, "channelId")
-
-        val (podInternalId, podIdHex, deletedChannelHex) = executeWithDeadlockRetry {
-            txTemplate.execute {
-                val podRow = requireLockedMemberPodRow(principal.userId(), podPublicBytes)
-                if (podRow.governanceMode == "DEMOCRATIC" && podRow.memberCount > 1) {
-                    throw ResponseStatusException(
-                        HttpStatus.FORBIDDEN,
-                        "Democratic pods require a member vote — create a proposal"
-                    )
-                }
-                if (podRow.governanceMode == "ADMIN" && podRow.role !in setOf("OWNER", "ADMIN")) {
-                    throw ResponseStatusException(
-                        HttpStatus.FORBIDDEN,
-                        "Only pod owners and admins can delete channels"
-                    )
-                }
-                val (chHex, _) = deleteChannelTx(podRow.podInternalId, chPublicBytes)
-                Triple(podRow.podInternalId, podRow.podIdHex, chHex)
-            }!!
-        }
-
-        podRealtimeHub.evictVoiceChannel(podIdHex, deletedChannelHex)
-        podRealtimeHub.broadcastFrame(podIdHex, WsServerFrame.ChannelDeletedOut(channelId = deletedChannelHex))
-        val detail = getPodDetailForUser(principal, podInternalId)
-        podRealtimeHub.broadcastPodUpdated(detail)
-        return detail
-    }
-
-    internal fun deleteChannelTx(podInternalId: Long, channelPublicBytes: ByteArray): Pair<String, String> {
-        data class ChRow(val id: Long, val hex: String, val slug: String, val label: String, val kind: Int)
-        val ch = jdbcClient.sql(
-            """
-            SELECT id, public_id, slug, label, kind
-            FROM pod_channels
-            WHERE pod_id = :podId AND public_id = :chPub
-            LIMIT 1
-            """.trimIndent()
-        )
-            .param("podId", podInternalId)
-            .param("chPub", channelPublicBytes)
-            .query { rs, _ ->
-                ChRow(
-                    id = rs.getLong("id"),
-                    hex = UuidV7.toHex(rs.getBytes("public_id")),
-                    slug = rs.getString("slug"),
-                    label = rs.getString("label"),
-                    kind = rs.getInt("kind")
-                )
-            }
-            .optional()
-            .orElseThrow { ResponseStatusException(HttpStatus.NOT_FOUND, "Channel not found") }
-
-        if (ch.slug == "general") {
-            throw ResponseStatusException(HttpStatus.BAD_REQUEST, "Cannot remove #general")
-        }
-        if (ch.kind == 1) {
-            val textCount = jdbcClient.sql(
-                "SELECT COUNT(*) FROM pod_channels WHERE pod_id = :podId AND kind = 1"
-            )
-                .param("podId", podInternalId)
-                .query { rs, _ -> rs.getInt(1) }
-                .single()
-            if (textCount <= 1) {
-                throw ResponseStatusException(HttpStatus.BAD_REQUEST, "Cannot remove the last text channel")
-            }
-        }
-
-        jdbcClient.sql("UPDATE pod_members SET voice_channel_id = 0 WHERE pod_id = :podId AND voice_channel_id = :chId")
-            .param("podId", podInternalId)
-            .param("chId", ch.id)
-            .update()
-
-        jdbcClient.sql("DELETE FROM messages WHERE pod_id = :podId AND channel_id = :chId")
-            .param("podId", podInternalId)
-            .param("chId", ch.id)
-            .update()
-
-        jdbcClient.sql("DELETE FROM pod_channels WHERE pod_id = :podId AND id = :chId")
-            .param("podId", podInternalId)
-            .param("chId", ch.id)
-            .update()
-
-        val display = if (ch.kind == 2) ch.label else "#${ch.slug}"
-        return ch.hex to display
     }
 
     fun updateStatus(principal: AuthPrincipal, podIdHexRaw: String, customStatusRaw: String) {
@@ -1425,7 +1136,6 @@ class BlindMatchService(
                         podIdHex = podIdHex,
                         newlyJoined = false,
                         joinedMember = null,
-                        generalChannelHex = null,
                         joinSystemMessage = null
                     )
                 }
@@ -1457,27 +1167,12 @@ class BlindMatchService(
                     .param("interestId", pod.interestId)
                     .update()
 
-                val generalCh = jdbcClient.sql(
-                    """
-                    SELECT id, public_id
-                    FROM pod_channels
-                    WHERE pod_id = :podId AND kind = 1
-                    ORDER BY position ASC, id ASC
-                    LIMIT 1
-                    """.trimIndent()
-                )
-                    .param("podId", pod.id)
-                    .query { rs, _ -> rs.getLong("id") to UuidV7.toHex(rs.getBytes("public_id")) }
-                    .single()
-                val generalChannelId = generalCh.first
-                val generalChannelHex = generalCh.second
-
                 val (alias, color) = pickUniqueAliasAndColor(pod.id, principal.userId())
 
                 jdbcClient.sql(
                     """
-                    INSERT INTO pod_members (pod_id, user_id, alias, alias_color, custom_status, voice_channel_id, joined_at)
-                    VALUES (:podId, :userId, :alias, :color, '', 0, UTC_TIMESTAMP())
+                    INSERT INTO pod_members (pod_id, user_id, alias, alias_color, role, custom_status, in_voice, joined_at)
+                    VALUES (:podId, :userId, :alias, :color, 'MEMBER', '', 0, UTC_TIMESTAMP())
                     """.trimIndent()
                 )
                     .param("podId", pod.id)
@@ -1508,38 +1203,16 @@ class BlindMatchService(
                     .update()
 
                 val selfPeerId = UuidV7.peerId(pod.publicId, principal.userPublicId())
-                val joinBody = "$alias joined via invite link"
-                val joinMsgId = insertSystemMessage(pod.id, generalChannelId, joinBody)
-
-                val joinMsgDto = RichMessageDto(
-                    id = joinMsgId,
-                    podId = podIdHex,
-                    channelId = generalChannelHex,
-                    senderPeerId = "system",
-                    senderAlias = SYSTEM_ALIAS,
-                    senderColor = SYSTEM_COLOR,
-                    parentMessageId = 0L,
-                    quoteMessage = null,
-                    msgType = "SYSTEM",
-                    body = joinBody,
-                    replyCount = 0,
-                    isPinned = false,
-                    isBookmarked = false,
-                    isDeleted = false,
-                    editedAt = null,
-                    createdAt = Instant.now().toString(),
-                    reactions = emptyList(),
-                    attachments = emptyList(),
-                    poll = null
-                )
+                val joinMsgDto = insertSystemMessageAndBuildDto(pod.id, podIdHex, "$alias joined via invite link")
 
                 val memberDto = MemberDto(
                     peerId = selfPeerId,
                     alias = alias,
                     color = color,
+                    role = "MEMBER",
                     customStatus = "",
                     online = podRealtimeHub.isPeerOnline(podIdHex, selfPeerId),
-                    voiceChannelId = null,
+                    inVoice = false,
                     isSelf = false
                 )
 
@@ -1548,18 +1221,14 @@ class BlindMatchService(
                     podIdHex = podIdHex,
                     newlyJoined = true,
                     joinedMember = memberDto,
-                    generalChannelHex = generalChannelHex,
                     joinSystemMessage = joinMsgDto
                 )
             }!!
         }
 
-        if (outcome.newlyJoined && outcome.joinedMember != null && outcome.generalChannelHex != null && outcome.joinSystemMessage != null) {
-            podRealtimeHub.broadcastFrame(outcome.podIdHex, WsServerFrame.MemberJoinedOut(member = outcome.joinedMember))
-            podRealtimeHub.broadcastFrame(
-                outcome.podIdHex,
-                WsServerFrame.MessageCreatedOut(channelId = outcome.generalChannelHex, message = outcome.joinSystemMessage)
-            )
+        if (outcome.newlyJoined && outcome.joinedMember != null && outcome.joinSystemMessage != null) {
+            podRealtimeHub.broadcastToPod(outcome.podIdHex, WsServerFrame.MemberJoinedOut(member = outcome.joinedMember))
+            podRealtimeHub.broadcastToPod(outcome.podIdHex, WsServerFrame.MessageCreatedOut(message = outcome.joinSystemMessage))
             podRealtimeHub.broadcastPresenceSnapshot(outcome.podInternalId, outcome.podIdHex)
         }
 
@@ -1659,7 +1328,7 @@ class BlindMatchService(
                 val (alias, color) = pickUniqueAliasAndColor(createdPodId, principal.userId())
                 jdbcClient.sql(
                     """
-                    INSERT INTO pod_members (pod_id, user_id, alias, alias_color, role, custom_status, voice_channel_id, joined_at)
+                    INSERT INTO pod_members (pod_id, user_id, alias, alias_color, role, custom_status, in_voice, joined_at)
                     VALUES (:podId, :userId, :alias, :color, 'OWNER', '', 0, UTC_TIMESTAMP())
                     """.trimIndent()
                 )
@@ -1669,7 +1338,7 @@ class BlindMatchService(
                     .param("color", color)
                     .update()
 
-                insertDefaultPodChannels(createdPodId, cleanTitle, finalCode)
+                insertWelcomeSystemMessage(createdPodId, cleanTitle, finalCode)
                 createdPodId
             }!!
         }
@@ -1803,7 +1472,6 @@ class BlindMatchService(
                         podIdHex = podIdHex,
                         newlyJoined = false,
                         joinedMember = null,
-                        generalChannelHex = null,
                         joinSystemMessage = null
                     )
                 }
@@ -1848,7 +1516,7 @@ class BlindMatchService(
                 val (alias, color) = pickUniqueAliasAndColor(pod.id, principal.userId())
                 jdbcClient.sql(
                     """
-                    INSERT INTO pod_members (pod_id, user_id, alias, alias_color, role, custom_status, voice_channel_id, joined_at)
+                    INSERT INTO pod_members (pod_id, user_id, alias, alias_color, role, custom_status, in_voice, joined_at)
                     VALUES (:podId, :userId, :alias, :color, 'MEMBER', '', 0, UTC_TIMESTAMP())
                     """.trimIndent()
                 )
@@ -1873,11 +1541,7 @@ class BlindMatchService(
                 }
 
                 val selfPeerId = UuidV7.peerId(pod.publicId, principal.userPublicId())
-                val (generalChHex, joinMsgDto) = insertSystemMessageAndBuildDto(
-                    pod.id,
-                    podIdHex,
-                    "$alias joined the group"
-                )
+                val joinMsgDto = insertSystemMessageAndBuildDto(pod.id, podIdHex, "$alias joined the group")
 
                 val memberDto = MemberDto(
                     peerId = selfPeerId,
@@ -1886,7 +1550,7 @@ class BlindMatchService(
                     role = "MEMBER",
                     customStatus = "",
                     online = podRealtimeHub.isPeerOnline(podIdHex, selfPeerId),
-                    voiceChannelId = null,
+                    inVoice = false,
                     isSelf = false
                 )
 
@@ -1895,18 +1559,14 @@ class BlindMatchService(
                     podIdHex = podIdHex,
                     newlyJoined = true,
                     joinedMember = memberDto,
-                    generalChannelHex = generalChHex,
                     joinSystemMessage = joinMsgDto
                 )
             }!!
         }
 
-        if (outcome.newlyJoined && outcome.joinedMember != null && outcome.generalChannelHex != null && outcome.joinSystemMessage != null) {
-            podRealtimeHub.broadcastFrame(outcome.podIdHex, WsServerFrame.MemberJoinedOut(member = outcome.joinedMember))
-            podRealtimeHub.broadcastFrame(
-                outcome.podIdHex,
-                WsServerFrame.MessageCreatedOut(channelId = outcome.generalChannelHex, message = outcome.joinSystemMessage)
-            )
+        if (outcome.newlyJoined && outcome.joinedMember != null && outcome.joinSystemMessage != null) {
+            podRealtimeHub.broadcastToPod(outcome.podIdHex, WsServerFrame.MemberJoinedOut(member = outcome.joinedMember))
+            podRealtimeHub.broadcastToPod(outcome.podIdHex, WsServerFrame.MessageCreatedOut(message = outcome.joinSystemMessage))
             podRealtimeHub.broadcastPresenceSnapshot(outcome.podInternalId, outcome.podIdHex)
         }
 
@@ -2044,7 +1704,6 @@ class BlindMatchService(
             val podIdHex: String,
             val kickedPeerId: String,
             val kickedAlias: String,
-            val generalChHex: String,
             val sysMsg: RichMessageDto
         )
 
@@ -2104,7 +1763,7 @@ class BlindMatchService(
                     .param("podId", pod.podInternalId)
                     .update()
 
-                val (chHex, sysMsg) = insertSystemMessageAndBuildDto(
+                val sysMsg = insertSystemMessageAndBuildDto(
                     pod.podInternalId,
                     pod.podIdHex,
                     "${target.alias} was removed by ${pod.alias}"
@@ -2115,21 +1774,17 @@ class BlindMatchService(
                     podIdHex = pod.podIdHex,
                     kickedPeerId = target.peerId,
                     kickedAlias = target.alias,
-                    generalChHex = chHex,
                     sysMsg = sysMsg
                 )
             }!!
         }
 
-        podRealtimeHub.broadcastFrame(
+        podRealtimeHub.broadcastToPod(
             out.podIdHex,
             WsServerFrame.MemberKickedOut(peerId = out.kickedPeerId, alias = out.kickedAlias)
         )
         podRealtimeHub.evictMember(out.podIdHex, out.kickedPeerId, out.kickedAlias)
-        podRealtimeHub.broadcastFrame(
-            out.podIdHex,
-            WsServerFrame.MessageCreatedOut(channelId = out.generalChHex, message = out.sysMsg)
-        )
+        podRealtimeHub.broadcastToPod(out.podIdHex, WsServerFrame.MessageCreatedOut(message = out.sysMsg))
 
         val detail = getPodDetailForUser(principal, out.podInternalId)
         podRealtimeHub.broadcastPodUpdated(detail)
@@ -2151,7 +1806,7 @@ class BlindMatchService(
             throw ResponseStatusException(HttpStatus.BAD_REQUEST, "Role must be ADMIN or MEMBER")
         }
 
-        val (podInternalId, podIdHex, sysPair) = executeWithDeadlockRetry {
+        val (podInternalId, podIdHex, sysMsg) = executeWithDeadlockRetry {
             txTemplate.execute {
                 val pod = requireLockedMemberPodRow(principal.userId(), podPublicBytes)
                 if (pod.governanceMode != "ADMIN") {
@@ -2184,10 +1839,7 @@ class BlindMatchService(
             }!!
         }
 
-        podRealtimeHub.broadcastFrame(
-            podIdHex,
-            WsServerFrame.MessageCreatedOut(channelId = sysPair.first, message = sysPair.second)
-        )
+        podRealtimeHub.broadcastToPod(podIdHex, WsServerFrame.MessageCreatedOut(message = sysMsg))
         podRealtimeHub.broadcastPresenceSnapshot(podInternalId, podIdHex)
         val detail = getPodDetailForUser(principal, podInternalId)
         podRealtimeHub.broadcastPodUpdated(detail)
@@ -2198,6 +1850,7 @@ class BlindMatchService(
         val userId: Long,
         val peerId: String,
         val alias: String,
+        val color: String,
         val role: String
     )
 
@@ -2208,7 +1861,7 @@ class BlindMatchService(
     ): ResolvedPodMember? {
         return jdbcClient.sql(
             """
-            SELECT pm.user_id, u.public_id AS user_public_id, pm.alias, pm.role
+            SELECT pm.user_id, u.public_id AS user_public_id, pm.alias, pm.alias_color, pm.role
             FROM pod_members pm
             JOIN users u ON u.id = pm.user_id
             WHERE pm.pod_id = :podId
@@ -2220,6 +1873,7 @@ class BlindMatchService(
                     userId = rs.getLong("user_id"),
                     peerId = UuidV7.peerId(podPublicBytes, rs.getBytes("user_public_id")),
                     alias = rs.getString("alias"),
+                    color = rs.getString("alias_color"),
                     role = rs.getString("role") ?: "MEMBER"
                 )
             }
@@ -2231,33 +1885,19 @@ class BlindMatchService(
         podInternalId: Long,
         podIdHex: String,
         body: String
-    ): Pair<String, RichMessageDto> {
-        val generalCh = jdbcClient.sql(
-            """
-            SELECT id, public_id
-            FROM pod_channels
-            WHERE pod_id = :podId AND kind = 1
-            ORDER BY CASE WHEN slug = 'general' THEN 0 ELSE 1 END ASC, position ASC, id ASC
-            LIMIT 1
-            """.trimIndent()
-        )
-            .param("podId", podInternalId)
-            .query { rs, _ -> rs.getLong("id") to UuidV7.toHex(rs.getBytes("public_id")) }
-            .single()
-
-        val msgId = insertSystemMessage(podInternalId, generalCh.first, body)
-        val dto = RichMessageDto(
+    ): RichMessageDto {
+        val msgId = insertSystemMessage(podInternalId, body)
+        return RichMessageDto(
             id = msgId,
             podId = podIdHex,
-            channelId = generalCh.second,
             senderPeerId = "system",
             senderAlias = SYSTEM_ALIAS,
             senderColor = SYSTEM_COLOR,
-            parentMessageId = 0L,
+            recipientPeerId = null,
+            recipientAlias = null,
             quoteMessage = null,
             msgType = "SYSTEM",
             body = body,
-            replyCount = 0,
             isPinned = false,
             isBookmarked = false,
             isDeleted = false,
@@ -2268,7 +1908,35 @@ class BlindMatchService(
             poll = null,
             proposal = null
         )
-        return generalCh.second to dto
+    }
+
+    private fun insertWelcomeSystemMessage(podId: Long, label: String, podCode: String): Long {
+        val welcomeBody =
+            "Welcome to **$label** (`$podCode`) — peer-blind room where only aliases exist. Say hi or run `/icebreaker` and `/poll`!"
+        return insertSystemMessage(podId, welcomeBody)
+    }
+
+    private fun insertSystemMessage(podId: Long, body: String): Long {
+        val kh = GeneratedKeyHolder()
+        jdbcClient.sql(
+            """
+            INSERT INTO messages (
+                pod_id, sender_user_id, sender_alias, sender_color,
+                recipient_user_id, recipient_alias, dm_user_low_id, dm_user_high_id,
+                quote_message_id, msg_type, body, created_at
+            ) VALUES (
+                :podId, 0, :alias, :color,
+                0, '', 0, 0,
+                0, 2, :body, UTC_TIMESTAMP()
+            )
+            """.trimIndent()
+        )
+            .param("podId", podId)
+            .param("alias", SYSTEM_ALIAS)
+            .param("color", SYSTEM_COLOR)
+            .param("body", body)
+            .update(kh)
+        return kh.key!!.toLong()
     }
 
     private fun generateInviteCode(): String {
@@ -2422,72 +2090,6 @@ class BlindMatchService(
             }
             .optional()
             .orElseThrow { ResponseStatusException(HttpStatus.FORBIDDEN, "Not a member of this pod") }
-    }
-
-    private fun insertDefaultPodChannels(podId: Long, interestLabel: String, podCode: String): Pair<Long, String> {
-        data class DefaultCh(val slug: String, val label: String, val topic: String, val kind: Int, val pos: Int)
-
-        val defaults = listOf(
-            DefaultCh("general", "general", "Main lounge & introductions", 1, 0),
-            DefaultCh("links-and-clips", "links-and-clips", "Share links, builds, and media", 1, 1),
-            DefaultCh("off-topic", "off-topic", "Random side tangents", 1, 2),
-            DefaultCh("lounge-voice", "Lounge Voice", "Always-open group audio call", 2, 3),
-            DefaultCh("coop-voice", "Co-op & Focus", "Secondary voice huddle", 2, 4)
-        )
-
-        var generalInternalId = 0L
-        var generalHex = ""
-
-        for (ch in defaults) {
-            val chPub = UuidV7.generate()
-            val kh = GeneratedKeyHolder()
-            jdbcClient.sql(
-                """
-                INSERT INTO pod_channels (public_id, pod_id, slug, label, topic, kind, position, created_at)
-                VALUES (:publicId, :podId, :slug, :label, :topic, :kind, :position, UTC_TIMESTAMP())
-                """.trimIndent()
-            )
-                .param("publicId", chPub)
-                .param("podId", podId)
-                .param("slug", ch.slug)
-                .param("label", ch.label)
-                .param("topic", ch.topic)
-                .param("kind", ch.kind)
-                .param("position", ch.pos)
-                .update(kh)
-
-            if (ch.slug == "general") {
-                generalInternalId = kh.key!!.toLong()
-                generalHex = UuidV7.toHex(chPub)
-            }
-        }
-
-        val welcomeBody =
-            "Welcome to **$interestLabel** (`$podCode`) — peer-blind room where only aliases exist. Say hi or run `/icebreaker` and `/poll`!"
-        insertSystemMessage(podId, generalInternalId, welcomeBody)
-        return generalInternalId to generalHex
-    }
-
-    private fun insertSystemMessage(podId: Long, channelId: Long, body: String): Long {
-        val kh = GeneratedKeyHolder()
-        jdbcClient.sql(
-            """
-            INSERT INTO messages (
-                pod_id, channel_id, sender_user_id, sender_alias, sender_color,
-                parent_message_id, quote_message_id, msg_type, body, created_at
-            ) VALUES (
-                :podId, :channelId, 0, :alias, :color,
-                0, 0, 2, :body, UTC_TIMESTAMP()
-            )
-            """.trimIndent()
-        )
-            .param("podId", podId)
-            .param("channelId", channelId)
-            .param("alias", SYSTEM_ALIAS)
-            .param("color", SYSTEM_COLOR)
-            .param("body", body)
-            .update(kh)
-        return kh.key!!.toLong()
     }
 
     private fun pickUniqueAliasAndColor(podId: Long, userId: Long): Pair<String, String> {

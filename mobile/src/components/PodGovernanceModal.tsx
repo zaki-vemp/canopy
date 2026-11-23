@@ -12,24 +12,27 @@ import {
   View,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import { useSetAtom } from 'jotai';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Ionicons } from '@expo/vector-icons';
 import {
   adminKickMember,
   adminUpdateMemberRole,
-  createChannel,
   createPodProposal,
-  deletePodChannel,
   fetchPodProposals,
   resolveProposal,
   updatePodSettings,
   voteProposal,
 } from '../api/client';
+import {
+  activeDmPeerByPodAtom,
+  activePodIdAtom,
+  activeTabAtom,
+} from '../state/atoms';
 import type {
-  ChannelKind,
   CreateProposalRequest,
   PodCapacityPreset,
-  PodDetail,
+  PodDetailDto,
   PodProposalDto,
 } from '../types/canopy';
 import {
@@ -69,41 +72,42 @@ function isProposalExpired(expiresAt: string): boolean {
 
 export interface PodGovernanceModalProps {
   visible: boolean;
-  pod: PodDetail | null;
+  pod: PodDetailDto | null;
   onClose: () => void;
+  onOpenMemberDm?: (peerId: string) => void;
 }
 
 type DemocraticTab = 'votes' | 'propose' | 'roster';
-type AdminTab = 'settings' | 'roster' | 'channels';
+type AdminTab = 'settings' | 'roster';
 
 export function PodGovernanceModal({
   visible,
   pod,
   onClose,
+  onOpenMemberDm,
 }: PodGovernanceModalProps) {
   const queryClient = useQueryClient();
+  const setActivePodId = useSetAtom(activePodIdAtom);
+  const setActiveDmPeerMap = useSetAtom(activeDmPeerByPodAtom);
+  const setActiveTab = useSetAtom(activeTabAtom);
+
   const [demTab, setDemTab] = useState<DemocraticTab>('votes');
   const [adminTab, setAdminTab] = useState<AdminTab>('settings');
 
   const [bannerMsg, setBannerMsg] = useState<string | null>(null);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
-  // Shared / Democratic proposal inputs
+  // Democratic proposal inputs
   const [reasonDraft, setReasonDraft] = useState('');
   const [renameDraft, setRenameDraft] = useState('');
-  const [propChannelLabel, setPropChannelLabel] = useState('');
-  const [propChannelTopic, setPropChannelTopic] = useState('');
-  const [propChannelKind, setPropChannelKind] = useState<ChannelKind>('TEXT');
+  const [topicDraft, setTopicDraft] = useState('');
   const [propCapacity, setPropCapacity] = useState<PodCapacityPreset>(25);
 
-  // Admin group settings & channel creator inputs
+  // Admin group settings inputs
   const [adminTitle, setAdminTitle] = useState('');
   const [adminDesc, setAdminDesc] = useState('');
   const [adminCapacity, setAdminCapacity] = useState<PodCapacityPreset>(25);
   const [adminPublicized, setAdminPublicized] = useState(false);
-  const [adminChLabel, setAdminChLabel] = useState('');
-  const [adminChTopic, setAdminChTopic] = useState('');
-  const [adminChKind, setAdminChKind] = useState<ChannelKind>('TEXT');
 
   const podId = pod?.podId ?? '';
   const isAdminPod = pod?.governanceMode === 'ADMIN';
@@ -115,6 +119,7 @@ export function PodGovernanceModal({
     setBannerMsg(null);
     setErrorMsg(null);
     setRenameDraft(pod.title || '');
+    setTopicDraft(pod.description || '');
     setPropCapacity(normalizePreset(pod.maxMembers));
     setAdminTitle(pod.title || '');
     setAdminDesc(pod.description || '');
@@ -128,11 +133,11 @@ export function PodGovernanceModal({
     enabled: visible && !!podId && !isAdminPod,
   });
 
-  const patchPodInCache = (updatedPod: PodDetail | null | undefined) => {
+  const patchPodInCache = (updatedPod: PodDetailDto | null | undefined) => {
     if (!updatedPod) return;
     queryClient.setQueryData(
       ['pods'],
-      (old: { pods: PodDetail[] } | undefined) =>
+      (old: { pods: PodDetailDto[] } | undefined) =>
         old
           ? {
               pods: old.pods.map((p) =>
@@ -160,6 +165,18 @@ export function PodGovernanceModal({
     );
   };
 
+  const handleOpenDm = (peerId: string) => {
+    if (!pod || peerId === pod.myPeerId) return;
+    if (onOpenMemberDm) {
+      onOpenMemberDm(peerId);
+      return;
+    }
+    setActivePodId(pod.podId);
+    setActiveDmPeerMap((prev) => ({ ...prev, [pod.podId]: peerId }));
+    setActiveTab('chat');
+    onClose();
+  };
+
   const createProposalMutation = useMutation({
     mutationFn: (payload: CreateProposalRequest) =>
       createPodProposal(podId, payload),
@@ -168,11 +185,9 @@ export function PodGovernanceModal({
       patchPodInCache(res.pod);
       upsertProposalInCache(res.proposal);
       queryClient.invalidateQueries({ queryKey: ['proposals', podId] });
-      queryClient.invalidateQueries({ queryKey: ['messages', podId] });
+      queryClient.invalidateQueries({ queryKey: ['messages', podId, 'group'] });
       queryClient.invalidateQueries({ queryKey: ['pods'] });
       setReasonDraft('');
-      setPropChannelLabel('');
-      setPropChannelTopic('');
       setDemTab('votes');
       setBannerMsg(
         res.proposal.status === 'PASSED'
@@ -200,7 +215,7 @@ export function PodGovernanceModal({
       upsertProposalInCache(res.proposal);
       if (res.pod) patchPodInCache(res.pod);
       queryClient.invalidateQueries({ queryKey: ['proposals', podId] });
-      queryClient.invalidateQueries({ queryKey: ['messages', podId] });
+      queryClient.invalidateQueries({ queryKey: ['messages', podId, 'group'] });
       queryClient.invalidateQueries({ queryKey: ['pods'] });
     },
     onError: (err) => {
@@ -280,42 +295,6 @@ export function PodGovernanceModal({
     },
   });
 
-  const adminCreateChannelMutation = useMutation({
-    mutationFn: () =>
-      createChannel(podId, {
-        label: adminChLabel.trim(),
-        topic: adminChTopic.trim(),
-        kind: adminChKind,
-      }),
-    onSuccess: () => {
-      setErrorMsg(null);
-      setAdminChLabel('');
-      setAdminChTopic('');
-      queryClient.invalidateQueries({ queryKey: ['pods'] });
-      setBannerMsg('Created channel.');
-    },
-    onError: (err) => {
-      setErrorMsg(
-        err instanceof Error ? err.message : 'Could not add channel.'
-      );
-    },
-  });
-
-  const adminDeleteChannelMutation = useMutation({
-    mutationFn: (channelId: string) => deletePodChannel(podId, channelId),
-    onSuccess: (res) => {
-      setErrorMsg(null);
-      patchPodInCache(res.pod);
-      queryClient.invalidateQueries({ queryKey: ['pods'] });
-      setBannerMsg('Deleted channel.');
-    },
-    onError: (err) => {
-      setErrorMsg(
-        err instanceof Error ? err.message : 'Could not delete channel.'
-      );
-    },
-  });
-
   if (!pod) return null;
 
   const proposals = proposalsQuery.data?.proposals ?? [];
@@ -364,7 +343,6 @@ export function PodGovernanceModal({
                 [
                   { key: 'settings', label: 'Settings' },
                   { key: 'roster', label: `Members (${pod.members.length})` },
-                  { key: 'channels', label: `Channels (${pod.channels.length})` },
                 ] as const
               ).map((t) => {
                 const active = adminTab === t.key;
@@ -399,7 +377,10 @@ export function PodGovernanceModal({
                     })`,
                   },
                   { key: 'propose', label: 'New Vote' },
-                  { key: 'roster', label: `Kick / Roster (${pod.members.length})` },
+                  {
+                    key: 'roster',
+                    label: `Members / Roster (${pod.members.length})`,
+                  },
                 ] as const
               ).map((t) => {
                 const active = demTab === t.key;
@@ -460,8 +441,8 @@ export function PodGovernanceModal({
                     ⚖️ 100% Democratic Peer-Blind Pod
                   </Text>
                   <Text style={styles.infoNoteBody}>
-                    No single member has admin power. Every kick, channel edit,
-                    rename, capacity change, or lock passes by YES vs NO vote.
+                    No single member has admin power. Every kick, rename, topic
+                    update, capacity change, or lock passes by YES &gt; NO vote.
                   </Text>
                 </View>
 
@@ -486,7 +467,7 @@ export function PodGovernanceModal({
                   <View style={styles.emptyCard}>
                     <Text style={styles.emptyTitle}>No proposals yet</Text>
                     <Text style={styles.emptyBody}>
-                      Tap New Vote above or Kick / Roster to open a YES vs NO
+                      Tap New Vote above or Members / Roster to open a YES vs NO
                       vote for this pod.
                     </Text>
                   </View>
@@ -573,7 +554,9 @@ export function PodGovernanceModal({
                               ]}
                             >
                               <Text style={styles.voteYesBtnText}>
-                                {prop.myVote === true ? '✓ Voted YES' : 'Vote YES'}{' '}
+                                {prop.myVote === true
+                                  ? '✓ Voted YES'
+                                  : 'Vote YES'}{' '}
                                 ({prop.yesCount})
                               </Text>
                             </Pressable>
@@ -600,7 +583,9 @@ export function PodGovernanceModal({
                                     styles.voteNoBtnTextActive,
                                 ]}
                               >
-                                {prop.myVote === false ? '✕ Voted NO' : 'Vote NO'}{' '}
+                                {prop.myVote === false
+                                  ? '✕ Voted NO'
+                                  : 'Vote NO'}{' '}
                                 ({prop.noCount})
                               </Text>
                             </Pressable>
@@ -642,107 +627,6 @@ export function PodGovernanceModal({
                   />
                 </View>
 
-                {/* Vote to Add Channel */}
-                <View style={styles.card}>
-                  <Text style={styles.cardTitle}>Vote to Add Channel</Text>
-                  <TextInput
-                    value={propChannelLabel}
-                    onChangeText={setPropChannelLabel}
-                    placeholder="Channel name (e.g. clips-and-builds)"
-                    placeholderTextColor={PALETTE.muted}
-                    autoCapitalize="none"
-                    style={styles.input}
-                  />
-                  <TextInput
-                    value={propChannelTopic}
-                    onChangeText={setPropChannelTopic}
-                    placeholder="Optional topic..."
-                    placeholderTextColor={PALETTE.muted}
-                    style={styles.input}
-                  />
-                  <View style={styles.rowGap}>
-                    {(['TEXT', 'VOICE'] as const).map((k) => {
-                      const active = propChannelKind === k;
-                      return (
-                        <Pressable
-                          key={k}
-                          accessibilityRole="button"
-                          accessibilityState={{ selected: active }}
-                          onPress={() => setPropChannelKind(k)}
-                          style={[styles.chipBtn, active && styles.chipActive]}
-                        >
-                          <Text
-                            style={[
-                              styles.chipText,
-                              active && styles.chipTextActive,
-                            ]}
-                          >
-                            {k === 'TEXT' ? '# Text Channel' : '🔊 Voice Lounge'}
-                          </Text>
-                        </Pressable>
-                      );
-                    })}
-                  </View>
-                  <Pressable
-                    accessibilityRole="button"
-                    disabled={
-                      !propChannelLabel.trim() ||
-                      createProposalMutation.isPending
-                    }
-                    onPress={() =>
-                      createProposalMutation.mutate({
-                        kind: 'ADD_CHANNEL',
-                        label: propChannelLabel.trim(),
-                        topic: propChannelTopic.trim(),
-                        channelKind: propChannelKind,
-                        reason: reasonDraft.trim(),
-                      })
-                    }
-                    style={[
-                      styles.mintCtaBtn,
-                      !propChannelLabel.trim() && styles.disabledBtn,
-                    ]}
-                  >
-                    <Text style={styles.mintCtaText}>Vote to Add Channel</Text>
-                  </Pressable>
-                </View>
-
-                {/* Vote to Remove Channel */}
-                <View style={styles.card}>
-                  <Text style={styles.cardTitle}>Vote to Remove Channel</Text>
-                  {pod.channels.filter((c) => c.slug !== 'general').length ===
-                  0 ? (
-                    <Text style={styles.helperText}>
-                      Only #general exists (protected).
-                    </Text>
-                  ) : (
-                    pod.channels
-                      .filter((c) => c.slug !== 'general')
-                      .map((ch) => (
-                        <View key={ch.channelId} style={styles.listItemRow}>
-                          <Text style={styles.listItemLabel}>
-                            {ch.kind === 'VOICE' ? `🔊 ${ch.label}` : `#${ch.slug}`}
-                          </Text>
-                          <Pressable
-                            accessibilityRole="button"
-                            disabled={createProposalMutation.isPending}
-                            onPress={() =>
-                              createProposalMutation.mutate({
-                                kind: 'REMOVE_CHANNEL',
-                                channelId: ch.channelId,
-                                label: ch.label,
-                                reason: reasonDraft.trim(),
-                              })
-                            }
-                            style={styles.dangerSmBtn}
-                          >
-                            <Text style={styles.dangerSmText}>Vote Remove</Text>
-                          </Pressable>
-                        </View>
-                      ))
-                  )}
-                </View>
-
                 {/* Vote to Rename Pod */}
                 <View style={styles.card}>
                   <Text style={styles.cardTitle}>Vote to Rename Pod</Text>
@@ -771,6 +655,40 @@ export function PodGovernanceModal({
                     ]}
                   >
                     <Text style={styles.mintCtaText}>Vote to Rename Pod</Text>
+                  </Pressable>
+                </View>
+
+                {/* Vote to Update Pod Topic */}
+                <View style={styles.card}>
+                  <Text style={styles.cardTitle}>
+                    Vote to Update Pod Topic
+                  </Text>
+                  <TextInput
+                    value={topicDraft}
+                    onChangeText={setTopicDraft}
+                    placeholder="Pod description / topic..."
+                    placeholderTextColor={PALETTE.muted}
+                    multiline
+                    style={styles.input}
+                  />
+                  <Pressable
+                    accessibilityRole="button"
+                    disabled={
+                      !topicDraft.trim() || createProposalMutation.isPending
+                    }
+                    onPress={() =>
+                      createProposalMutation.mutate({
+                        kind: 'UPDATE_TOPIC',
+                        topic: topicDraft.trim(),
+                        reason: reasonDraft.trim(),
+                      })
+                    }
+                    style={[
+                      styles.mintCtaBtn,
+                      !topicDraft.trim() && styles.disabledBtn,
+                    ]}
+                  >
+                    <Text style={styles.mintCtaText}>Vote to Update Topic</Text>
                   </Pressable>
                 </View>
 
@@ -865,16 +783,16 @@ export function PodGovernanceModal({
               <View style={styles.sectionStack}>
                 <View style={styles.card}>
                   <Text style={styles.cardTitle}>
-                    Blind Pod Roster · Vote to Kick
+                    Blind Pod Roster · Private DM or Vote to Kick
                   </Text>
                   <Text style={styles.helperText}>
-                    Peers only appear by their room-scoped animal alias. Kicking
-                    requires a democratic YES vs NO majority.
+                    Peers only appear by their room-scoped animal alias. Tap DM
+                    for a private 1:1 chat, or open a YES vs NO kick vote.
                   </Text>
                   <TextInput
                     value={reasonDraft}
                     onChangeText={setReasonDraft}
-                    placeholder="Kick reason (e.g. audio spam)..."
+                    placeholder="Optional kick reason (e.g. audio spam)..."
                     placeholderTextColor={PALETTE.muted}
                     style={styles.input}
                   />
@@ -902,25 +820,42 @@ export function PodGovernanceModal({
                         </Text>
                         <Text style={styles.memberMeta}>
                           {m.online ? '● Online' : '○ Offline'}
+                          {m.inVoice ? ' · 🔊 Call' : ''}
                           {m.customStatus ? ` · ${m.customStatus}` : ''}
                         </Text>
                       </View>
                       {!isSelf ? (
-                        <Pressable
-                          accessibilityRole="button"
-                          accessibilityLabel={`Vote to kick ${m.alias}`}
-                          disabled={createProposalMutation.isPending}
-                          onPress={() =>
-                            createProposalMutation.mutate({
-                              kind: 'KICK_MEMBER',
-                              targetPeerId: m.peerId,
-                              reason: reasonDraft.trim(),
-                            })
-                          }
-                          style={styles.dangerSmBtn}
-                        >
-                          <Text style={styles.dangerSmText}>Vote to Kick</Text>
-                        </Pressable>
+                        <View style={styles.memberActionRow}>
+                          <Pressable
+                            accessibilityRole="button"
+                            accessibilityLabel={`Direct message ${m.alias}`}
+                            onPress={() => handleOpenDm(m.peerId)}
+                            style={styles.dmSmBtn}
+                          >
+                            <Ionicons
+                              name="chatbubble-ellipses-outline"
+                              size={15}
+                              color={PALETTE.charcoal}
+                            />
+                            <Text style={styles.dmSmText}>DM</Text>
+                          </Pressable>
+
+                          <Pressable
+                            accessibilityRole="button"
+                            accessibilityLabel={`Vote to kick ${m.alias}`}
+                            disabled={createProposalMutation.isPending}
+                            onPress={() =>
+                              createProposalMutation.mutate({
+                                kind: 'KICK_MEMBER',
+                                targetPeerId: m.peerId,
+                                reason: reasonDraft.trim(),
+                              })
+                            }
+                            style={styles.dangerSmBtn}
+                          >
+                            <Text style={styles.dangerSmText}>Kick Vote</Text>
+                          </Pressable>
+                        </View>
                       ) : null}
                     </View>
                   );
@@ -956,7 +891,7 @@ export function PodGovernanceModal({
                       style={styles.input}
                     />
 
-                    <Text style={styles.fieldLabel}>Description</Text>
+                    <Text style={styles.fieldLabel}>Description / Topic</Text>
                     <TextInput
                       value={adminDesc}
                       onChangeText={setAdminDesc}
@@ -1059,8 +994,8 @@ export function PodGovernanceModal({
                       <Text style={styles.helperText}>{pod.description}</Text>
                     ) : null}
                     <Text style={styles.helperText}>
-                      Only the Group Owner and Co-Admins can modify settings,
-                      channels, or member roles.
+                      Only the Group Owner and Co-Admins can modify group
+                      settings or member roles.
                     </Text>
                   </View>
                 )}
@@ -1093,8 +1028,24 @@ export function PodGovernanceModal({
                           </Text>
                           <Text style={styles.memberMeta}>
                             {role} · {m.online ? '● Online' : '○ Offline'}
+                            {m.inVoice ? ' · 🔊 Call' : ''}
                           </Text>
                         </View>
+                        {!isSelf ? (
+                          <Pressable
+                            accessibilityRole="button"
+                            accessibilityLabel={`Direct message ${m.alias}`}
+                            onPress={() => handleOpenDm(m.peerId)}
+                            style={styles.dmSmBtn}
+                          >
+                            <Ionicons
+                              name="chatbubble-ellipses-outline"
+                              size={15}
+                              color={PALETTE.charcoal}
+                            />
+                            <Text style={styles.dmSmText}>DM</Text>
+                          </Pressable>
+                        ) : null}
                       </View>
 
                       {canAdminManage && !isSelf && role !== 'OWNER' ? (
@@ -1132,102 +1083,6 @@ export function PodGovernanceModal({
                     </View>
                   );
                 })}
-              </View>
-            ) : null}
-
-            {isAdminPod && adminTab === 'channels' ? (
-              <View style={styles.sectionStack}>
-                {canAdminManage ? (
-                  <View style={styles.card}>
-                    <Text style={styles.cardTitle}>Add Channel</Text>
-                    <TextInput
-                      value={adminChLabel}
-                      onChangeText={setAdminChLabel}
-                      placeholder="Channel label (e.g. raid-notes)"
-                      placeholderTextColor={PALETTE.muted}
-                      autoCapitalize="none"
-                      style={styles.input}
-                    />
-                    <TextInput
-                      value={adminChTopic}
-                      onChangeText={setAdminChTopic}
-                      placeholder="Optional topic..."
-                      placeholderTextColor={PALETTE.muted}
-                      style={styles.input}
-                    />
-                    <View style={styles.rowGap}>
-                      {(['TEXT', 'VOICE'] as const).map((k) => {
-                        const active = adminChKind === k;
-                        return (
-                          <Pressable
-                            key={k}
-                            accessibilityRole="button"
-                            accessibilityState={{ selected: active }}
-                            onPress={() => setAdminChKind(k)}
-                            style={[
-                              styles.chipFlexBtn,
-                              active && styles.chipActive,
-                            ]}
-                          >
-                            <Text
-                              style={[
-                                styles.chipText,
-                                active && styles.chipTextActive,
-                              ]}
-                            >
-                              {k === 'TEXT' ? '# Text' : '🔊 Voice'}
-                            </Text>
-                          </Pressable>
-                        );
-                      })}
-                    </View>
-                    <Pressable
-                      accessibilityRole="button"
-                      disabled={
-                        !adminChLabel.trim() ||
-                        adminCreateChannelMutation.isPending
-                      }
-                      onPress={() => adminCreateChannelMutation.mutate()}
-                      style={[
-                        styles.mintCtaBtn,
-                        !adminChLabel.trim() && styles.disabledBtn,
-                      ]}
-                    >
-                      <Text style={styles.mintCtaText}>+ Create Channel</Text>
-                    </Pressable>
-                  </View>
-                ) : null}
-
-                <View style={styles.card}>
-                  <Text style={styles.cardTitle}>Group Channels</Text>
-                  {pod.channels.map((ch) => (
-                    <View key={ch.channelId} style={styles.listItemRow}>
-                      <View style={styles.memberInfoCol}>
-                        <Text style={styles.listItemLabel}>
-                          {ch.kind === 'VOICE'
-                            ? `🔊 ${ch.label}`
-                            : `#${ch.slug}`}
-                        </Text>
-                        {ch.topic ? (
-                          <Text style={styles.helperText}>{ch.topic}</Text>
-                        ) : null}
-                      </View>
-                      {canAdminManage && ch.slug !== 'general' ? (
-                        <Pressable
-                          accessibilityRole="button"
-                          accessibilityLabel={`Delete channel ${ch.label}`}
-                          disabled={adminDeleteChannelMutation.isPending}
-                          onPress={() =>
-                            adminDeleteChannelMutation.mutate(ch.channelId)
-                          }
-                          style={styles.dangerSmBtn}
-                        >
-                          <Text style={styles.dangerSmText}>Delete</Text>
-                        </Pressable>
-                      ) : null}
-                    </View>
-                  ))}
-                </View>
               </View>
             ) : null}
           </ScrollView>
@@ -1651,24 +1506,32 @@ const styles = StyleSheet.create({
   voteNoBtnTextActive: {
     color: PALETTE.danger,
   },
-  listItemRow: {
+  memberActionRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'space-between',
-    gap: 8,
-    paddingVertical: 4,
-    borderTopWidth: 1,
-    borderTopColor: PALETTE.surfaceMuted,
+    gap: 6,
   },
-  listItemLabel: {
-    fontSize: 14,
+  dmSmBtn: {
+    minHeight: TOUCH_MIN,
+    paddingHorizontal: 12,
+    borderRadius: 10,
+    backgroundColor: PALETTE.mint,
+    borderWidth: 1,
+    borderColor: PALETTE.forest,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 4,
+  },
+  dmSmText: {
+    fontSize: 12,
     fontWeight: '700',
     color: PALETTE.charcoal,
     fontFamily: MONO_FONT,
   },
   dangerSmBtn: {
     minHeight: TOUCH_MIN,
-    paddingHorizontal: 14,
+    paddingHorizontal: 12,
     borderRadius: 10,
     backgroundColor: PALETTE.dangerSoft,
     borderWidth: 1,

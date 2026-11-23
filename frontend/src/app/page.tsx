@@ -5,14 +5,14 @@ import Link from 'next/link';
 
 const DIAGRAM_SPEC = JSON.stringify({
   layout: 'hub',
-  alt: 'Canopy separates private login verification from 25-seat democratic pods, Pro groups, room aliases, votes, and voice lounges.',
+  alt: 'Canopy separates private login verification from 25-seat group chats, private member DMs, votes, and Pod Audio Calls.',
   center: { label: 'Canopy', icon: 'text:Mu' },
   spokes: [
     { label: 'Auth vault', icon: 'ui:user' },
-    { label: '25-seat pod', icon: 'ui:gamepad-2' },
-    { label: 'Cobalt Fox', icon: 'ui:users' },
+    { label: 'Group Chat', icon: 'ui:gamepad-2' },
+    { label: 'Member DMs', icon: 'ui:users' },
     { label: 'Yes/No votes', icon: 'ui:message-square' },
-    { label: 'Lounge Voice', icon: 'ui:captions' },
+    { label: 'Pod Audio Call', icon: 'ui:captions' },
     { label: 'Pro groups', icon: 'ui:refresh-cw' },
   ],
 });
@@ -382,7 +382,7 @@ export default function LandingPage() {
                 </p>
                 <h1 id="hero-h">Voice and chat rooms matched by interest</h1>
                 <p className="hero__lead">
-                  Pick a topic and join a 25-person democratic pod with threads, voice, and live Yes-or-No room votes, or run a Canopy Pro group with custom rules.
+                  Pick a topic and join a 25-person democratic pod with group chat, private member DMs, and Yes-or-No room votes, or run a Canopy Pro group.
                 </p>
                 <div className="btn-row">
                   <Link className="btn btn--primary" href="/app">
@@ -402,21 +402,21 @@ export default function LandingPage() {
                 <div
                   className="ui m-pod-win"
                   role="img"
-                  aria-label="Room gaming-4821 showing 18 of 25 democratic seats, a live Pod Vote card, and Lounge Voice"
+                  aria-label="Room gaming-4821 showing Group Chat (18/25), Direct Messages, a live Pod Vote card, and Pod Audio Call"
                 >
                   <div className="m-pod-side" aria-hidden="true">
                     <div className="m-pod-head">
                       <span className="m-pod-code">#gaming-4821</span>
                       <span className="m-pod-cap">18/25</span>
                     </div>
-                    <span className="m-pod-lbl">Text channels</span>
-                    <span className="m-pod-ch is-active"># general</span>
-                    <span className="m-pod-ch"># co-op-finder</span>
-                    <span className="m-pod-ch"># patch-notes</span>
-                    <span className="m-pod-lbl">Voice lounge</span>
+                    <span className="m-pod-ch is-active">Group Chat (18/25)</span>
+                    <span className="m-pod-lbl">Direct Messages</span>
+                    <span className="m-pod-ch">Amber Heron</span>
+                    <span className="m-pod-ch">Slate Otter</span>
+                    <span className="m-pod-ch">Jade Owl</span>
                     <div className="m-pod-voice">
                       <strong style={{ fontSize: 12, fontWeight: 500 }}>
-                        Lounge Voice
+                        Pod Audio Call
                       </strong>
                       <span className="m-pod-vpeer">
                         <i className="m-ring" />
@@ -428,15 +428,15 @@ export default function LandingPage() {
                       </span>
                       <span className="m-pod-vpeer">
                         <i className="m-ring m-ring--idle" />
-                        Slate Otter
+                        Jade Owl
                       </span>
                     </div>
                   </div>
                   <div className="m-pod-main" aria-hidden="true">
                     <div className="m-pod-bar">
                       <span>
-                        <strong>#gaming-4821</strong> &middot;{' '}
-                        <span className="mono">18/25 &middot; Democratic</span>
+                        <strong>Group Chat (18/25)</strong> &middot;{' '}
+                        <span className="mono">#gaming-4821</span>
                       </span>
                       <span className="mono" style={{ color: '#545454' }}>
                         Cobalt Fox
@@ -452,7 +452,7 @@ export default function LandingPage() {
                           Anyone free for two co-op missions at 22:00 UTC?
                         </div>
                         <span className="m-thread-chip">
-                          3 replies in thread &middot; last 1m ago
+                          Quoted reply from Jade Owl &middot; 1m ago
                         </span>
                       </div>
                       <div className="m-msg">
@@ -462,7 +462,7 @@ export default function LandingPage() {
                         </div>
                         <div className="m-poll-box">
                           <div className="m-poll-q">
-                            Add #builds-and-clips? &middot; 11 Yes &middot; 2 No
+                            Expand pod to 50 Club seats? &middot; 11 Yes &middot; 2 No
                           </div>
                           <div className="m-poll-opt is-lead">
                             <span>Vote Yes (Yes &gt; No wins)</span>
@@ -480,7 +480,7 @@ export default function LandingPage() {
                           <span className="m-time">21:16</span>
                         </div>
                         <div className="m-msg__body">
-                          Voted Yes on #builds-and-clips. Jumping into Lounge Voice now.
+                          Voted Yes on 50 seats. Joining Pod Audio Call now.
                         </div>
                       </div>
                     </div>
@@ -489,11 +489,11 @@ export default function LandingPage() {
 
                 <div className="ly-float">
                   <div className="ly-float__row">
-                    <span className="ly-live">Lounge Voice</span>
+                    <span className="ly-live">Pod Audio Call</span>
                     <span>18/25 &middot; Democratic</span>
                   </div>
                   <div className="ly-float__title">
-                    Pod Vote: Add #builds-and-clips? &middot; 11 Yes &middot; 2 No
+                    Pod Vote: Expand pod to 50 Club seats? &middot; 11 Yes &middot; 2 No
                   </div>
                 </div>
               </div>
@@ -509,7 +509,7 @@ export default function LandingPage() {
               </div>
               <div className="span-6 start-7 stack-4">
                 <p className="t-lead">
-                  Every 25-member pod votes Yes or No to add channels, edit rules, or remove disruptive peers. Canopy Pro hosts owner-run custom groups.
+                  Every 25-member pod pairs one group chat with private 1-on-1 member DMs and Yes-or-No votes on room rules. Canopy Pro hosts owner-run custom groups.
                 </p>
                 <p>
                   <a className="link" href="#privacy">
@@ -522,7 +522,7 @@ export default function LandingPage() {
             <div
               className="ui app fill"
               role="img"
-              aria-label="Canopy workspace showing 25-member democratic pods, a live Pod Vote card, Pro custom groups, and open side thread"
+              aria-label="Canopy workspace showing Group Chat (18/25), Direct Messages, a live Pod Vote card, and Pod Audio Call"
             >
               <div className="app__pane app__pane--list">
                 <div
@@ -566,15 +566,15 @@ export default function LandingPage() {
                       <span className="ui-win__nav">
                         <span className="ui-win__hash">#</span>Raiders<em>12/25</em>
                       </span>
-                      <span className="ui-win__label">Channels</span>
+                      <span className="ui-win__label">Direct Messages</span>
                       <span className="ui-win__nav">
-                        <span className="ui-win__hash">#</span>general
+                        <span className="ui-win__hash">&bull;</span>Amber Heron
                       </span>
                       <span className="ui-win__nav">
-                        <span className="ui-win__hash">#</span>co-op-finder
+                        <span className="ui-win__hash">&bull;</span>Slate Otter
                       </span>
                       <span className="ui-win__nav">
-                        <span className="ui-win__hash">#</span>Lounge Voice
+                        <span className="ui-win__hash">&bull;</span>Jade Owl
                       </span>
                     </nav>
                     <div className="ui-win__main">
@@ -588,35 +588,35 @@ export default function LandingPage() {
                         <li className="ui-win__row" data-row="">
                           <span className="ui-avatar" data-tone="3">CF</span>
                           <span className="ui-win__who">Cobalt Fox</span>
-                          <span className="ui-win__sub">Speaking in Lounge Voice</span>
+                          <span className="ui-win__sub">Speaking in Pod Audio Call</span>
                           <span className="ui-win__st" data-st="">Voice</span>
                           <span className="ui-win__age">#4821</span>
                         </li>
                         <li className="ui-win__row" data-row="">
                           <span className="ui-avatar" data-tone="2">AH</span>
                           <span className="ui-win__who">Amber Heron</span>
-                          <span className="ui-win__sub">Proposed #builds</span>
+                          <span className="ui-win__sub">Started 50-seat Pod Vote</span>
                           <span className="ui-win__st" data-st="">Vote</span>
                           <span className="ui-win__age">#4821</span>
                         </li>
                         <li className="ui-win__row" data-row="">
                           <span className="ui-avatar" data-tone="4">SO</span>
                           <span className="ui-win__who">Slate Otter</span>
-                          <span className="ui-win__sub">Replied in #general</span>
+                          <span className="ui-win__sub">Posted in Group Chat</span>
                           <span className="ui-win__st" data-st="">Active</span>
                           <span className="ui-win__age">#4821</span>
                         </li>
                         <li className="ui-win__row" data-row="">
-                          <span className="ui-avatar" data-tone="1">MO</span>
-                          <span className="ui-win__who">Mint Owl</span>
-                          <span className="ui-win__sub">Voted Yes on #4821</span>
+                          <span className="ui-avatar" data-tone="1">JO</span>
+                          <span className="ui-win__who">Jade Owl</span>
+                          <span className="ui-win__sub">Private 1:1 DM active</span>
                           <span className="ui-win__st is-done" data-st="">Online</span>
                           <span className="ui-win__age">#4821</span>
                         </li>
                         <li className="ui-win__row" data-row="">
                           <span className="ui-avatar" data-tone="5">CP</span>
                           <span className="ui-win__who">Cedar Pike</span>
-                          <span className="ui-win__sub">Shared audio (4.2s)</span>
+                          <span className="ui-win__sub">Shared voice note (4.2s)</span>
                           <span className="ui-win__st is-done" data-st="">Online</span>
                           <span className="ui-win__age">#4821</span>
                         </li>
@@ -644,7 +644,7 @@ export default function LandingPage() {
                         <li className="ui-win__row" data-row="">
                           <span className="ui-avatar" data-tone="1">KM</span>
                           <span className="ui-win__who">Kelp Marten</span>
-                          <span className="ui-win__sub">Joined Lounge Voice</span>
+                          <span className="ui-win__sub">Joined Pod Audio Call</span>
                           <span className="ui-win__st" data-st="">Voice</span>
                           <span className="ui-win__age">#2910</span>
                         </li>
@@ -659,7 +659,7 @@ export default function LandingPage() {
                   <div className="m-ws-col">
                     <div className="m-ws-head">
                       <span>
-                        <strong>#gaming-4821</strong> &middot; 18/25 &middot; Democratic
+                        <strong>Group Chat (18/25)</strong> &middot; #gaming-4821
                       </span>
                       <span className="m-leave-pill">Leave pod</span>
                     </div>
@@ -669,9 +669,9 @@ export default function LandingPage() {
                         <span className="m-time">21:14</span>
                       </div>
                       <div className="m-msg__body">
-                        Queued two co-op drops. Drop loadouts in the thread so main chat stays clean.
+                        Queued two co-op drops. Message Jade Owl privately if you need a squad invite.
                       </div>
-                      <span className="m-thread-chip">Thread &middot; 3 replies</span>
+                      <span className="m-thread-chip">Reply quote &middot; Jade Owl</span>
                     </div>
                     <div className="m-msg">
                       <div className="m-msg__top">
@@ -680,7 +680,7 @@ export default function LandingPage() {
                       </div>
                       <div className="m-poll-box">
                         <div className="m-poll-q">
-                          Add #builds-and-clips? &middot; 11 Yes &middot; 2 No
+                          Expand pod to 50 Club seats? &middot; 11 Yes &middot; 2 No
                         </div>
                         <div className="m-poll-opt is-lead">
                           <span>Yes &middot; Cobalt Fox, Birch Lynx +9</span>
@@ -702,21 +702,21 @@ export default function LandingPage() {
                         <span className="m-time">21:18</span>
                       </div>
                       <div className="m-msg__body">
-                        Voted on the channel proposal. Jumping into Lounge Voice now.
+                        Voted Yes on 50 seats. Joining Pod Audio Call now.
                       </div>
                     </div>
                   </div>
 
                   <div className="m-ws-col">
                     <div className="m-ws-head">
-                      <strong>Thread &middot; #general</strong>
+                      <strong>Private 1:1 &middot; Jade Owl</strong>
                       <span className="mono" style={{ color: '#545454' }}>
-                        3 replies
+                        Only you two
                       </span>
                     </div>
                     <div className="m-msg">
                       <div className="m-msg__top">
-                        <span className="m-alias m-alias--slate">Slate Otter</span>
+                        <span className="m-alias">Jade Owl</span>
                         <span className="m-time">21:15</span>
                       </div>
                       <div className="m-msg__body">
@@ -725,7 +725,7 @@ export default function LandingPage() {
                     </div>
                     <div className="m-msg">
                       <div className="m-msg__top">
-                        <span className="m-alias">Mint Owl</span>
+                        <span className="m-alias m-alias--slate">Cobalt Fox</span>
                         <span className="m-time">21:16</span>
                       </div>
                       <div className="m-msg__body">
@@ -734,11 +734,11 @@ export default function LandingPage() {
                     </div>
                     <div className="m-msg">
                       <div className="m-msg__top">
-                        <span className="m-alias">Cobalt Fox</span>
+                        <span className="m-alias">Jade Owl</span>
                         <span className="m-time">21:17</span>
                       </div>
                       <div className="m-msg__body">
-                        Locked. Meet in Lounge Voice, 3 peers on mic right now.
+                        Locked. Meet in Pod Audio Call, 3 peers on mic right now.
                       </div>
                     </div>
                     <div className="m-pod-voice" style={{ marginTop: 8 }}>
@@ -750,7 +750,7 @@ export default function LandingPage() {
                         }}
                       >
                         <strong style={{ fontSize: 12, fontWeight: 500 }}>
-                          Lounge Voice (WebRTC)
+                          Pod Audio Call (WebRTC)
                         </strong>
                         <span
                           className="mono"
@@ -769,7 +769,7 @@ export default function LandingPage() {
                       </span>
                       <span className="m-pod-vpeer">
                         <i className="m-ring m-ring--idle" />
-                        Slate Otter &middot; connected
+                        Jade Owl &middot; connected
                       </span>
                     </div>
                   </div>
@@ -832,7 +832,7 @@ export default function LandingPage() {
                 <li className="mo-pc__step">
                   <h3>Vote Yes or No in 25-member rooms</h3>
                   <p>
-                    Join a 25-seat pod where adding channels, editing rules, or kicking a disruptive peer runs on a Yes-or-No vote (Yes &gt; No wins), never one moderator.
+                    Join a 25-seat pod with one shared group chat and private 1-on-1 member DMs, where room rules and kicks run on a Yes-or-No vote (Yes &gt; No wins).
                   </p>
                   <figure className="mo-pc__visual mo-pc__visual--lit">
                     <div
@@ -851,7 +851,7 @@ export default function LandingPage() {
                         <span className="m-step-tag">18 / 25</span>
                       </div>
                       <div className="m-step-row">
-                        <span>Add #builds-and-clips?</span>
+                        <span>Expand pod to 50 seats?</span>
                         <span className="mono">11 Yes &middot; 2 No</span>
                       </div>
                       <div className="m-step-row">
@@ -1136,7 +1136,7 @@ export default function LandingPage() {
               <div className="faq__item">
                 <h3>How do 25-member rooms vote?</h3>
                 <p>
-                  Adding channels, editing rules, or kicking peers runs on a Yes-or-No vote (Yes &gt; No wins).
+                  Renaming the pod, changing seat capacity, or kicking peers runs on a Yes-or-No vote (Yes &gt; No wins).
                 </p>
               </div>
               <div className="faq__item">

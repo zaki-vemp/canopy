@@ -22,12 +22,13 @@ import {
   updatePlanTier,
 } from '../api/client';
 import {
+  activeDmPeerByPodAtom,
   activePodIdAtom,
-  activeThreadParentAtom,
   activeVoiceSessionAtom,
   apiBaseUrlAtom,
   authTokenAtom,
   authUserAtom,
+  unreadDmByPodPeerAtom,
 } from '../state/atoms';
 import { PALETTE, TOUCH_MIN } from '../theme/palette';
 import { GENDER_OPTIONS, NATIONALITY_CHIPS } from './AuthScreen';
@@ -47,7 +48,8 @@ export function AccountScreen({
   const [user, setUser] = useAtom(authUserAtom);
   const setToken = useSetAtom(authTokenAtom);
   const setActivePodId = useSetAtom(activePodIdAtom);
-  const setThreadParent = useSetAtom(activeThreadParentAtom);
+  const setActiveDmPeerMap = useSetAtom(activeDmPeerByPodAtom);
+  const setUnreadDmMap = useSetAtom(unreadDmByPodPeerAtom);
   const setVoiceSession = useSetAtom(activeVoiceSessionAtom);
   const [apiBaseUrl, setApiBaseUrl] = useAtom(apiBaseUrlAtom);
 
@@ -141,7 +143,8 @@ export function AccountScreen({
     await logoutAccount();
     await clearStoredToken();
     setVoiceSession(null);
-    setThreadParent(null);
+    setActiveDmPeerMap({});
+    setUnreadDmMap({});
     setActivePodId(null);
     setUser(null);
     setToken(null);
@@ -179,10 +182,10 @@ export function AccountScreen({
           </View>
         </View>
         <Text style={styles.helperText}>
-          Free includes unlimited 25-member democratic pods, voice lounges, and
-          threads. Canopy Pro unlocks creating & owning custom Admin groups
-          (private invite-only or publicized in the directory) with 100%
-          peer-blind aliases.
+          Free includes unlimited 25-member democratic pods, 1:1 private member
+          DMs, and pod audio calls. Canopy Pro unlocks creating &amp; owning
+          custom Admin groups (private invite-only or publicized in the
+          directory) with 100% peer-blind aliases.
         </Text>
         {planNotice ? <Text style={styles.successText}>{planNotice}</Text> : null}
         <Pressable

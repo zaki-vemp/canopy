@@ -1,15 +1,15 @@
 # Canopy
 
-Peer-blind, interest-matched **25-member** democratic rooms (`YES > NO` voting on every pod change) + **Canopy Pro** custom private/publicized admin groups, with Slack-style threads, polls, voice notes, pod invite links, `FULLTEXT` search, and Discord-style WebRTC voice lounges.
+Peer-blind, interest-matched **25-member** democratic pods (`YES > NO` voting on every pod change) + **Canopy Pro** custom private/publicized admin groups — built around a clean **Messenger / Chat feel**: **1 Pod Group Chat** + **1:1 Private Messages (DMs)** with any pod member, inline quoted replies, polls, voice notes, pod invite links, `FULLTEXT` search, and **1-tap Pod Audio Calls** (WebRTC).
 
-- **Database (`db/`)**: MySQL 8.0 / PlanetScale Vitess (`utf8mb4_0900_ai_ci`, narrow `BIGINT UNSIGNED` PKs, `BINARY(16)` UUIDv7 public IDs, composite keyset cursor indexes, `FULLTEXT` search, `vschema.json`).
-- **Backend (`backend/`)**: Spring Boot 3.4 on Java 21 (auth, JWT security, private account demographics, `FREE`/`PREMIUM` plan tier, attachments) + Kotlin 2.x (multi-pod blind matching with `Compact (10)` / `Standard (25)` / `Club (50)` capacities, `YES > NO` Democratic Pod Governance engine across 8 action kinds, Canopy Pro owned `ADMIN` groups & Publicized Directory, Pod Invite Links, rich chat, native WebSocket hub & WebRTC signaling) via explicit `JdbcClient` SQL.
-- **Web Frontend (`frontend/`)**: Mobile-first Next.js 15 App Router, React 19, Jotai + TanStack Query/Virtual (zero Redux), WebAudio + WebRTC P2P Opus mesh, inline & drawer Pod Vote cards, Publicized Groups directory, Pro Custom Group creator & Admin panel, Pod Invite Modal, and `tasteskill 2.5` (`white-mint-tiles`, `Familjen Grotesk` + `IBM Plex Mono`, zero violet).
-- **Mobile App (`mobile/`)**: React Native + Expo SDK 52 (TypeScript, zero Redux — Jotai atoms + TanStack Query + native WebSocket + `expo-av` voice notes & voice lounges) sharing 1-for-1 DTO parity across 25-seat democratic voting, Pro custom/publicized groups, and pod invite links.
+- **Database (`db/`)**: MySQL 8.0 / PlanetScale Vitess (`utf8mb4_0900_ai_ci`, narrow `BIGINT UNSIGNED` PKs, `BINARY(16)` UUIDv7 public IDs, unified Group + 1:1 DM composite cursor index `idx_messages_convo_cursor`, `FULLTEXT` search, `vschema.json`).
+- **Backend (`backend/`)**: Spring Boot 3.4 on Java 21 (auth, JWT security, private account demographics, `FREE`/`PREMIUM` plan tier, DM-gated attachments) + Kotlin 2.x (multi-pod blind matching with `Compact (10)` / `Standard (25)` / `Club (50)` capacities, `YES > NO` Democratic Pod Governance, Canopy Pro owned `ADMIN` groups & Publicized Directory, Pod Invite Links, Group Chat + strictly isolated 1:1 Member DMs, native WebSocket hub & WebRTC signaling) via explicit `JdbcClient` SQL.
+- **Web Frontend (`frontend/`)**: Mobile-first Next.js 15 App Router, React 19, Jotai + TanStack Query/Virtual (zero Redux), WebAudio + WebRTC P2P Opus mesh, Messenger-style Group Chat + 1:1 Member DM list with live unread & snippet previews, Pod Vote cards, Publicized Groups directory, Pro Custom Group creator, and `tasteskill 2.5` (`white-mint-tiles`, `Familjen Grotesk` + `IBM Plex Mono`, zero violet).
+- **Mobile App (`mobile/`)**: React Native + Expo SDK 52 (TypeScript, zero Redux — Jotai atoms + TanStack Query + native WebSocket + `expo-av` voice notes & Pod Audio Calls) sharing 1-for-1 DTO parity across Group Chat, 1:1 Member DMs, 25-seat democratic voting, Pro custom/publicized groups, and pod invite links.
 
 ## Privacy Boundary
 
-`users` stores `full_name`, `email`, `gender`, and `nationality_code` **strictly** for account authentication and `/api/auth/me`. Matching queries never inspect gender or nationality, and every pod mints an unlinkable room-scoped animal alias (e.g. `Cobalt Fox`) and SHA-256 peer ID (`p_<12hex>`). Zero PII or internal user IDs ever enter pod, channel, message, reaction, poll, or WebSocket payloads.
+`users` stores `full_name`, `email`, `gender`, and `nationality_code` **strictly** for account authentication and `/api/auth/me`. Matching queries never inspect gender or nationality, and every pod mints an unlinkable room-scoped animal alias (e.g. `Cobalt Fox`) and SHA-256 peer ID (`p_<12hex>`). Zero PII or internal user IDs ever enter pod, group message, 1:1 DM, reaction, poll, or WebSocket payloads — and 1:1 DMs inside a pod are strictly isolated to the two participating members across REST, WebSocket, search, typing indicators, and attachments.
 
 ---
 
@@ -136,7 +136,7 @@ pscale deploy-request deploy canopy 1
 
 ### 4. Apply Sharded Vitess VSchema (When Scaling Beyond Unsharded Primary)
 
-`db/vschema.json` co-locates user-private tables (`users`, `user_interests`, `pod_opt_outs`, `user_bookmarks`) on `user_id_xxhash`, co-locates room/chat tables (`pods`, `pod_channels`, `pod_members`, `messages`, `message_attachments`, `message_reactions`, `polls`, `poll_votes`) on `pod_id_xxhash` with lookup vindexes and Vitess sequences in an unsharded `canopy_lookup` keyspace, and replicates `interests` as a reference table:
+`db/vschema.json` co-locates user-private tables (`users`, `user_interests`, `pod_opt_outs`, `user_bookmarks`) on `user_id_xxhash`, co-locates pod/chat/DM/governance tables (`pods`, `pod_members`, `messages`, `message_attachments`, `message_reactions`, `polls`, `poll_votes`, `pod_invites`, `pod_proposals`, `pod_proposal_votes`) on `pod_id_xxhash` with lookup vindexes and Vitess sequences in an unsharded `canopy_lookup` keyspace, and replicates `interests` as a reference table:
 
 ```bash
 pscale vschema apply canopy main --vschema db/vschema.json

@@ -1,6 +1,7 @@
 -- Canopy schema (MySQL 8.0 / PlanetScale Vitess compatible)
 -- Narrow monotonic BIGINT UNSIGNED PKs, BINARY(16) UUIDv7 public IDs,
 -- utf8mb4_0900_ai_ci, DATETIME, zero ENUMs, zero triggers/stored procs/FK DDL.
+-- Pure Chat architecture: 1 Pod Group Chat + 1:1 Member Private Messages (zero pod_channels).
 -- Private auth PII lives strictly in `users`; pod/chat tables are peer-blind.
 
 CREATE TABLE IF NOT EXISTS users (
@@ -11,9 +12,9 @@ CREATE TABLE IF NOT EXISTS users (
   full_name VARCHAR(100) NOT NULL DEFAULT '',
   gender VARCHAR(32) NOT NULL DEFAULT '',
   nationality_code CHAR(2) NOT NULL DEFAULT '',
+  plan_tier VARCHAR(16) NOT NULL DEFAULT 'FREE',
   created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-  plan_tier VARCHAR(16) NOT NULL DEFAULT 'FREE',
   UNIQUE KEY idx_users_public_id (public_id),
   UNIQUE KEY idx_users_email (email)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
@@ -43,31 +44,16 @@ CREATE TABLE IF NOT EXISTS pods (
   member_count TINYINT UNSIGNED NOT NULL DEFAULT 0,
   max_members TINYINT UNSIGNED NOT NULL DEFAULT 25,
   is_open TINYINT UNSIGNED NOT NULL DEFAULT 1,
-  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   title VARCHAR(80) NOT NULL DEFAULT '',
   description VARCHAR(280) NOT NULL DEFAULT '',
   governance_mode VARCHAR(16) NOT NULL DEFAULT 'DEMOCRATIC',
   owner_user_id BIGINT UNSIGNED NOT NULL DEFAULT 0,
   is_publicized TINYINT UNSIGNED NOT NULL DEFAULT 0,
   allow_random_match TINYINT UNSIGNED NOT NULL DEFAULT 1,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   UNIQUE KEY idx_pods_public_id (public_id),
   KEY idx_pods_match (interest_id, is_open, member_count, id),
   KEY idx_pods_publicized (is_publicized, interest_id, member_count, id DESC)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
-
-CREATE TABLE IF NOT EXISTS pod_channels (
-  id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
-  public_id BINARY(16) NOT NULL,
-  pod_id BIGINT UNSIGNED NOT NULL,
-  slug VARCHAR(48) NOT NULL,
-  label VARCHAR(64) NOT NULL,
-  topic VARCHAR(160) NOT NULL DEFAULT '',
-  kind TINYINT UNSIGNED NOT NULL DEFAULT 1,
-  position TINYINT UNSIGNED NOT NULL DEFAULT 0,
-  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  UNIQUE KEY idx_pod_channels_public_id (public_id),
-  UNIQUE KEY idx_pod_channels_pod_slug (pod_id, slug),
-  KEY idx_pod_channels_pod_pos (pod_id, kind, position)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
 
 CREATE TABLE IF NOT EXISTS pod_members (
@@ -76,9 +62,9 @@ CREATE TABLE IF NOT EXISTS pod_members (
   alias VARCHAR(32) NOT NULL,
   alias_color VARCHAR(16) NOT NULL,
   custom_status VARCHAR(80) NOT NULL DEFAULT '',
-  voice_channel_id BIGINT UNSIGNED NOT NULL DEFAULT 0,
-  joined_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  in_voice TINYINT UNSIGNED NOT NULL DEFAULT 0,
   role VARCHAR(12) NOT NULL DEFAULT 'MEMBER',
+  joined_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY (pod_id, user_id),
   KEY idx_pod_members_user (user_id, pod_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
@@ -94,23 +80,24 @@ CREATE TABLE IF NOT EXISTS pod_opt_outs (
 CREATE TABLE IF NOT EXISTS messages (
   id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
   pod_id BIGINT UNSIGNED NOT NULL,
-  channel_id BIGINT UNSIGNED NOT NULL,
   sender_user_id BIGINT UNSIGNED NOT NULL DEFAULT 0,
   sender_alias VARCHAR(32) NOT NULL,
   sender_color VARCHAR(16) NOT NULL DEFAULT '#232323',
-  parent_message_id BIGINT UNSIGNED NOT NULL DEFAULT 0,
+  recipient_user_id BIGINT UNSIGNED NOT NULL DEFAULT 0,
+  recipient_alias VARCHAR(32) NOT NULL DEFAULT '',
+  dm_user_low_id BIGINT UNSIGNED NOT NULL DEFAULT 0,
+  dm_user_high_id BIGINT UNSIGNED NOT NULL DEFAULT 0,
   quote_message_id BIGINT UNSIGNED NOT NULL DEFAULT 0,
   msg_type TINYINT UNSIGNED NOT NULL DEFAULT 1,
   body VARCHAR(4000) NOT NULL DEFAULT '',
-  reply_count INT UNSIGNED NOT NULL DEFAULT 0,
   is_pinned TINYINT UNSIGNED NOT NULL DEFAULT 0,
   is_deleted TINYINT UNSIGNED NOT NULL DEFAULT 0,
   edited_at DATETIME NULL DEFAULT NULL,
   created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  KEY idx_messages_channel_cursor (channel_id, parent_message_id, id DESC),
-  KEY idx_messages_thread_cursor (parent_message_id, id ASC),
-  KEY idx_messages_channel_pinned (channel_id, is_pinned, id DESC),
-  KEY idx_messages_pod_pinned (pod_id, is_pinned, id DESC),
+  KEY idx_messages_convo_cursor (pod_id, dm_user_low_id, dm_user_high_id, id DESC),
+  KEY idx_messages_dm_low (pod_id, dm_user_low_id, id DESC),
+  KEY idx_messages_dm_high (pod_id, dm_user_high_id, id DESC),
+  KEY idx_messages_pod_pinned (pod_id, dm_user_low_id, is_pinned, id DESC),
   FULLTEXT KEY ft_messages_body (body)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
 

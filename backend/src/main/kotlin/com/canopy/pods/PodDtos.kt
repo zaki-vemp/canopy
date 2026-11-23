@@ -36,13 +36,16 @@ data class MatchRequest(
     val allowAdditional: Boolean = false
 )
 
-data class ChannelDto(
-    val channelId: String,
-    val slug: String,
-    val label: String,
-    val topic: String,
-    val kind: String,
-    val position: Int
+data class DmSummaryDto(
+    val peerId: String,
+    val peerAlias: String,
+    val peerColor: String,
+    val online: Boolean,
+    val lastMessageId: Long,
+    val lastBody: String,
+    val lastSenderPeerId: String,
+    val lastSenderAlias: String,
+    val lastCreatedAt: String
 )
 
 data class MemberDto(
@@ -52,7 +55,7 @@ data class MemberDto(
     val role: String = "MEMBER",
     val customStatus: String,
     val online: Boolean,
-    val voiceChannelId: String?,
+    val inVoice: Boolean,
     @field:JsonProperty("isSelf")
     @get:JsonProperty("isSelf")
     @param:JsonProperty("isSelf")
@@ -84,7 +87,7 @@ data class PodDetailDto(
     val memberCount: Int,
     val maxMembers: Int,
     val openProposalsCount: Int = 0,
-    val channels: List<ChannelDto>,
+    val dmConversations: List<DmSummaryDto> = emptyList(),
     val members: List<MemberDto>
 )
 
@@ -95,17 +98,6 @@ data class MatchResponse(
 
 data class PodsListResponse(
     val pods: List<PodDetailDto>
-)
-
-@JsonIgnoreProperties(ignoreUnknown = true)
-data class CreateChannelRequest(
-    val label: String = "",
-    val topic: String = "",
-    val kind: String = "TEXT"
-)
-
-data class CreateChannelResponse(
-    val channel: ChannelDto
 )
 
 @JsonIgnoreProperties(ignoreUnknown = true)
@@ -211,10 +203,9 @@ data class PodProposalDto(
 data class CreateProposalRequest(
     val kind: String = "",
     val targetPeerId: String? = null,
-    val channelId: String? = null,
     val label: String? = null,
     val topic: String? = null,
-    val channelKind: String? = "TEXT",
+    val description: String? = null,
     val maxMembers: Int? = null,
     val locked: Boolean? = null,
     val messageId: Long? = null,

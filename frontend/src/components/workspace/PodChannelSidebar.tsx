@@ -1,32 +1,26 @@
 'use client';
 
-import React, { useEffect, useState } from 'react';
-import { useMutation, useQueryClient } from '@tanstack/react-query';
+import React, { useEffect, useMemo, useState } from 'react';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useAtom, useAtomValue, useSetAtom } from 'jotai';
 import {
-  AudioLines,
   Crown,
-  Hash,
-  HeadphoneOff,
-  Headphones,
   LogOut,
   Mic,
-  MicOff,
-  PhoneOff,
   Plus,
   Radio,
   Scale,
+  Search,
   Settings,
   Shuffle,
-  Sliders,
   UserPlus,
-  Volume2,
+  Users,
+  X,
 } from 'lucide-react';
-import { ApiError, apiFetch } from '@/lib/api';
+import { apiFetch } from '@/lib/api';
 import {
-  activeChannelIdMapAtom,
+  activeDmPeerByPodAtom,
   activePodIdAtom,
-  activeThreadMessageIdAtom,
   adminSettingsPodIdAtom,
   interestModalOpenAtom,
   interestModalTabAtom,
@@ -34,42 +28,47 @@ import {
   mobileNavOpenAtom,
   presenceByPodAtom,
   rightPanelAtom,
-  unreadByChannelAtom,
-  voiceRosterByPodAtom,
+  unreadByConvoAtom,
+  voicePeersByPodAtom,
 } from '@/state/workspaceAtoms';
-import { syncProposalIntoCaches } from '@/state/wsPodClient';
-import {
-  remoteSpeakingMapAtom,
-  useVoiceActions,
-} from '@/state/voiceEngine';
+import { useVoiceActions } from '@/state/voiceEngine';
 import { aliasInitials, safeAvatarColor } from '@/components/workspace/markdown';
 import {
+  conversationKey,
   getPodTierLabel,
-  type ChannelKind,
+  sortMembersWithDmConversations,
+  type DmConversationSummary,
   type LeavePodRequest,
-  type PodChannel,
   type PodDetail,
-  type PodProposalDto,
+  type PodMember,
   type VoicePeer,
 } from '@/types/canopy';
 import styles from '@/app/app/workspace.module.css';
 
+function formatShortTime(iso: string | undefined): string {
+  if (!iso) return '';
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return '';
+  return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+}
+
 interface PodChannelSidebarProps {
   pod: PodDetail | null;
   allPods: PodDetail[];
-  activeChannelId: string | null;
+  activePeerId: string | null;
+  members: PodMember[];
 }
 
 export function PodChannelSidebar({
   pod,
   allPods,
-  activeChannelId,
+  activePeerId,
+  members,
 }: PodChannelSidebarProps) {
   const queryClient = useQueryClient();
   const setActivePodId = useSetAtom(activePodIdAtom);
-  const [channelMap, setChannelMap] = useAtom(activeChannelIdMapAtom);
-  const [unreadMap, setUnreadMap] = useAtom(unreadByChannelAtom);
-  const setActiveThreadId = useSetAtom(activeThreadMessageIdAtom);
+  const [dmPeerMap, setDmPeerMap] = useAtom(activeDmPeerByPodAtom);
+  const [unreadMap, setUnreadMap] = useAtom(unreadByConvoAtom);
   const setInterestOpen = useSetAtom(interestModalOpenAtom);
   const setInterestTab = useSetAtom(interestModalTabAtom);
   const setInviteModalPodId = useSetAtom(inviteModalPodIdAtom);
@@ -77,37 +76,33 @@ export function PodChannelSidebar({
   const setRightPanel = useSetAtom(rightPanelAtom);
   const setMobileNavOpen = useSetAtom(mobileNavOpenAtom);
   const presenceByPod = useAtomValue(presenceByPodAtom);
-  const voiceRosterByPod = useAtomValue(voiceRosterByPodAtom);
-  const remoteSpeakingMap = useAtomValue(remoteSpeakingMapAtom);
+  const voicePeersByPod = useAtomValue(voicePeersByPodAtom);
 
-  const {
-    session: voiceSession,
-    peerVolumes,
-    joinVoice,
-    leaveVoice,
-    toggleMute,
-    toggleDeafen,
-    toggleTestTone,
-    setPeerVolume,
-  } = useVoiceActions();
+  const { session: voiceSession, leaveVoice } = useVoiceActions();
 
   const [statusInput, setStatusInput] = useState('');
   const [statusSavedMsg, setStatusSavedMsg] = useState(false);
-  const [showCreateChannel, setShowCreateChannel] = useState(false);
-  const [newChannelLabel, setNewChannelLabel] = useState('');
-  const [newChannelTopic, setNewChannelTopic] = useState('');
-  const [newChannelKind, setNewChannelKind] = useState<ChannelKind>('TEXT');
-  const [channelErr, setChannelErr] = useState<string | null>(null);
-  const [openVolumePeerId, setOpenVolumePeerId] = useState<string | null>(null);
+  const [memberFilter, setMemberFilter] = useState('');
   const [leaveFeedback, setLeaveFeedback] = useState<string | null>(null);
 
   useEffect(() => {
     setStatusInput(pod?.myStatus || '');
-    setShowCreateChannel(false);
-    setChannelErr(null);
-    setOpenVolumePeerId(null);
+    setMemberFilter('');
     setLeaveFeedback(null);
   }, [pod?.podId, pod?.myStatus]);
+
+  const dmsQuery = useQuery<{ conversations: DmConversationSummary[] }>({
+    queryKey: ['dms', pod?.podId || ''],
+    queryFn: () =>
+      apiFetch<{ conversations: DmConversationSummary[] }>(
+        `/api/pods/${pod!.podId}/dms`
+      ),
+    enabled: Boolean(pod?.podId),
+    staleTime: 10_000,
+    initialData: pod?.dmConversations
+      ? { conversations: pod.dmConversations }
+      : undefined,
+  });
 
   const statusMutation = useMutation({
     mutationFn: async (customStatus: string) => {
@@ -130,103 +125,6 @@ export function PodChannelSidebar({
           ),
         };
       });
-    },
-  });
-
-  const liveOccupancy = pod
-    ? presenceByPod[pod.podId]?.members.length || pod.memberCount
-    : 0;
-  const isAdminPod = pod?.governanceMode === 'ADMIN';
-  const canManageAdminPod =
-    isAdminPod && (pod?.myRole === 'OWNER' || pod?.myRole === 'ADMIN');
-  const requiresChannelVote = Boolean(
-    pod && !isAdminPod && Math.max(liveOccupancy, pod.memberCount) > 1
-  );
-  const canShowAddChannelBtn = Boolean(
-    pod && (!isAdminPod || canManageAdminPod)
-  );
-
-  const submitAddChannelProposal = async () => {
-    if (!pod) return null;
-    const res = await apiFetch<{
-      proposal: PodProposalDto;
-      pod?: PodDetail | null;
-    }>(`/api/pods/${pod.podId}/proposals`, {
-      method: 'POST',
-      body: JSON.stringify({
-        kind: 'ADD_CHANNEL',
-        label: newChannelLabel.trim(),
-        topic: newChannelTopic.trim(),
-        channelKind: newChannelKind,
-      }),
-    });
-    syncProposalIntoCaches(queryClient, pod.podId, res.proposal, res.pod);
-    queryClient.invalidateQueries({ queryKey: ['messages', pod.podId] });
-    queryClient.invalidateQueries({ queryKey: ['pods'] });
-    setNewChannelLabel('');
-    setNewChannelTopic('');
-    setShowCreateChannel(false);
-    setMobileNavOpen(false);
-    setRightPanel('votes');
-    return null;
-  };
-
-  const createChannelMutation = useMutation({
-    mutationFn: async () => {
-      if (!pod || !newChannelLabel.trim()) return null;
-      if (requiresChannelVote) {
-        return submitAddChannelProposal();
-      }
-      try {
-        return await apiFetch<{ channel: PodChannel }>(
-          `/api/pods/${pod.podId}/channels`,
-          {
-            method: 'POST',
-            body: JSON.stringify({
-              label: newChannelLabel.trim(),
-              topic: newChannelTopic.trim(),
-              kind: newChannelKind,
-            }),
-          }
-        );
-      } catch (err) {
-        if (
-          !isAdminPod &&
-          err instanceof ApiError &&
-          (err.status === 403 || err.status === 409)
-        ) {
-          return submitAddChannelProposal();
-        }
-        throw err;
-      }
-    },
-    onSuccess: (res) => {
-      setChannelErr(null);
-      if (!pod || !res?.channel) return;
-      queryClient.setQueryData<{ pods: PodDetail[] }>(['pods'], (old) => {
-        if (!old) return old;
-        return {
-          pods: old.pods.map((p) => {
-            if (p.podId !== pod.podId) return p;
-            if (p.channels.some((c) => c.channelId === res.channel.channelId)) {
-              return p;
-            }
-            return {
-              ...p,
-              channels: [...p.channels, res.channel],
-            };
-          }),
-        };
-      });
-      if (res.channel.kind === 'TEXT') {
-        setChannelMap({ ...channelMap, [pod.podId]: res.channel.channelId });
-      }
-      setNewChannelLabel('');
-      setNewChannelTopic('');
-      setShowCreateChannel(false);
-    },
-    onError: (err: Error) => {
-      setChannelErr(err.message || 'Could not create channel');
     },
   });
 
@@ -269,9 +167,40 @@ export function PodChannelSidebar({
     },
   });
 
+  const dmConversations = useMemo<DmConversationSummary[]>(
+    () => dmsQuery.data?.conversations ?? pod?.dmConversations ?? [],
+    [dmsQuery.data?.conversations, pod?.dmConversations]
+  );
+
+  const dmMap = useMemo(() => {
+    const map = new Map<string, DmConversationSummary>();
+    for (const dm of dmConversations) {
+      map.set(dm.peerId, dm);
+    }
+    return map;
+  }, [dmConversations]);
+
+  const orderedPeers = useMemo(() => {
+    if (!pod) return [];
+    return sortMembersWithDmConversations(members, pod.myPeerId, dmConversations);
+  }, [dmConversations, members, pod]);
+
+  const filteredPeers = useMemo(() => {
+    const q = memberFilter.trim().toLowerCase();
+    if (!q) return orderedPeers;
+    return orderedPeers.filter((m) => {
+      const dm = dmMap.get(m.peerId);
+      return (
+        m.alias.toLowerCase().includes(q) ||
+        m.customStatus.toLowerCase().includes(q) ||
+        (dm?.lastBody || '').toLowerCase().includes(q)
+      );
+    });
+  }, [dmMap, memberFilter, orderedPeers]);
+
   if (!pod) {
     return (
-      <aside className={styles.channelSidebar} aria-label="Pod channels">
+      <aside className={styles.channelSidebar} aria-label="Pod conversations">
         <div className={styles.podHeader}>
           <h2 className={styles.podCode}>No Pod Selected</h2>
           <p style={{ fontSize: 13, color: '#686868', margin: '8px 0 12px' }}>
@@ -295,49 +224,51 @@ export function PodChannelSidebar({
     );
   }
 
-  const textChannels = pod.channels.filter((c) => c.kind === 'TEXT');
-  const voiceChannels = pod.channels.filter((c) => c.kind === 'VOICE');
-  const podVoiceRoster = voiceRosterByPod[pod.podId] || {};
+  const liveOccupancy =
+    presenceByPod[pod.podId]?.members.length || members.length || pod.memberCount;
+  const isAdminPod = pod.governanceMode === 'ADMIN';
+  const canManageAdminPod =
+    isAdminPod && (pod.myRole === 'OWNER' || pod.myRole === 'ADMIN');
   const tierLabel = getPodTierLabel(pod.maxMembers);
   const displayTitle = pod.title ? pod.title : `#${pod.code}`;
 
-  const handleSelectTextChannel = (channelId: string) => {
-    setChannelMap({ ...channelMap, [pod.podId]: channelId });
-    setActiveThreadId(null);
-    if (unreadMap[channelId]) {
+  const rawVoicePeers = voicePeersByPod[pod.podId] || [];
+  const voicePeers: VoicePeer[] = [...rawVoicePeers];
+  if (
+    voiceSession.status === 'connected' &&
+    voiceSession.podId === pod.podId &&
+    !voicePeers.some((p) => p.peerId === pod.myPeerId)
+  ) {
+    voicePeers.unshift({
+      peerId: pod.myPeerId,
+      alias: pod.myAlias,
+      color: pod.myColor,
+      muted: voiceSession.muted,
+      deafened: voiceSession.deafened,
+      speaking: voiceSession.selfSpeaking,
+    });
+  }
+  const voicePeerIdSet = new Set(voicePeers.map((p) => p.peerId));
+
+  const groupConvoKey = conversationKey(pod.podId, null);
+  const groupUnread = unreadMap[groupConvoKey] || 0;
+  const isGroupSelected = activePeerId === null;
+
+  const selectConversation = (peerId: string | null) => {
+    setDmPeerMap({ ...dmPeerMap, [pod.podId]: peerId });
+    const key = conversationKey(pod.podId, peerId);
+    if (unreadMap[key]) {
       const copy = { ...unreadMap };
-      delete copy[channelId];
+      delete copy[key];
       setUnreadMap(copy);
     }
     setMobileNavOpen(false);
   };
 
-  const getChannelVoicePeers = (voiceChannelId: string): VoicePeer[] => {
-    const list = podVoiceRoster[voiceChannelId]
-      ? [...podVoiceRoster[voiceChannelId]]
-      : [];
-    if (
-      voiceSession.status === 'connected' &&
-      voiceSession.podId === pod.podId &&
-      voiceSession.voiceChannelId === voiceChannelId &&
-      !list.some((p) => p.peerId === pod.myPeerId)
-    ) {
-      list.unshift({
-        peerId: pod.myPeerId,
-        alias: pod.myAlias,
-        color: pod.myColor,
-        muted: voiceSession.muted,
-        deafened: voiceSession.deafened,
-        speaking: voiceSession.selfSpeaking,
-      });
-    }
-    return list;
-  };
-
   return (
     <aside
       className={styles.channelSidebar}
-      aria-label={`Pod ${displayTitle} sidebar`}
+      aria-label={`Pod ${displayTitle} conversations`}
     >
       <div className={styles.podHeader}>
         <div className={styles.podTitleRow}>
@@ -383,8 +314,7 @@ export function PodChannelSidebar({
               <span className={styles.govModePillAdmin}>
                 <Crown size={12} />
                 <span>
-                  👑 Custom Group ·{' '}
-                  {pod.isPublicized ? 'Publicized' : 'Private'}
+                  Canopy Pro Group · {pod.isPublicized ? 'Publicized' : 'Private'}
                 </span>
               </span>
               {canManageAdminPod && (
@@ -397,7 +327,7 @@ export function PodChannelSidebar({
                   }}
                 >
                   <Settings size={12} />
-                  <span>Manage Group</span>
+                  <span>Manage</span>
                 </button>
               )}
             </>
@@ -405,7 +335,7 @@ export function PodChannelSidebar({
             <>
               <span className={styles.govModePillDemocratic}>
                 <Scale size={12} />
-                <span>⚖️ Democratic · Vote-Run</span>
+                <span>Democratic · Vote-Run</span>
               </span>
               <button
                 type="button"
@@ -533,409 +463,197 @@ export function PodChannelSidebar({
       </div>
 
       <div className={styles.sidebarScroll}>
-        {/* TEXT CHANNELS */}
-        <section aria-label="Text channels">
-          <div className={styles.sectionHeader}>
-            <span>Text Channels</span>
-            {canShowAddChannelBtn && (
-              <button
-                type="button"
-                className={styles.iconSmallBtn}
-                onClick={() => {
-                  setChannelErr(null);
-                  setShowCreateChannel((v) => !v);
-                }}
-                aria-label={
-                  requiresChannelVote
-                    ? 'Propose new channel vote'
-                    : 'Create sub-channel'
-                }
-                title={
-                  requiresChannelVote
-                    ? 'Propose Channel Vote (Democratic YES/NO)'
-                    : 'Create channel in pod'
-                }
-              >
-                <Plus size={15} />
-              </button>
-            )}
-          </div>
+        {/* PINNED TOP CONVERSATION: POD GROUP CHAT */}
+        <section aria-label="Pod Group Chat">
+          <button
+            type="button"
+            className={`${styles.convoItem} ${styles.convoItemGroup} ${
+              isGroupSelected ? styles.convoItemActive : ''
+            }`}
+            onClick={() => selectConversation(null)}
+            aria-current={isGroupSelected ? 'page' : undefined}
+          >
+            <span className={styles.groupConvoAvatar} aria-hidden="true">
+              <Users size={18} />
+            </span>
 
-          {showCreateChannel && canShowAddChannelBtn && (
-            <form
-              onSubmit={(e) => {
-                e.preventDefault();
-                createChannelMutation.mutate();
-              }}
-              style={{
-                padding: 10,
-                marginBottom: 8,
-                borderRadius: 9,
-                background: '#ffffff',
-                border: '1px solid rgba(35,35,35,0.13)',
-                display: 'flex',
-                flexDirection: 'column',
-                gap: 6,
-              }}
-            >
-              {requiresChannelVote && (
-                <div
-                  style={{
-                    fontSize: 11,
-                    fontFamily: 'var(--m-font-mono)',
-                    color: '#154726',
-                    fontWeight: 600,
-                  }}
-                >
-                  ⚖️ Democratic pod: starts a YES/NO channel vote
-                </div>
-              )}
-              {channelErr && (
-                <div
-                  style={{
-                    padding: '5px 8px',
-                    borderRadius: 6,
-                    background: '#fef3f2',
-                    color: '#b42318',
-                    fontSize: 11.5,
-                  }}
-                  role="alert"
-                >
-                  {channelErr}
-                </div>
-              )}
-              <input
-                type="text"
-                value={newChannelLabel}
-                onChange={(e) => setNewChannelLabel(e.target.value)}
-                placeholder="Channel name (e.g. strategy-notes)"
-                maxLength={48}
-                required
-                className={styles.statusInput}
-                aria-label="New channel name"
-              />
-              <input
-                type="text"
-                value={newChannelTopic}
-                onChange={(e) => setNewChannelTopic(e.target.value)}
-                placeholder="Topic (optional)"
-                maxLength={140}
-                className={styles.statusInput}
-                aria-label="New channel topic"
-              />
-              <div style={{ display: 'flex', gap: 6 }}>
-                <button
-                  type="button"
-                  onClick={() => setNewChannelKind('TEXT')}
-                  className={styles.statusSaveBtn}
-                  style={{
-                    flex: 1,
-                    background: newChannelKind === 'TEXT' ? '#a1ffcb' : '#ffffff',
-                  }}
-                >
-                  # Text
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setNewChannelKind('VOICE')}
-                  className={styles.statusSaveBtn}
-                  style={{
-                    flex: 1,
-                    background:
-                      newChannelKind === 'VOICE' ? '#a1ffcb' : '#ffffff',
-                  }}
-                >
-                  Voice
-                </button>
-              </div>
-              <button
-                type="submit"
-                className={styles.statusSaveBtn}
-                style={{
-                  minHeight: 40,
-                  background: '#191b19',
-                  color: '#a1ffcb',
-                }}
-                disabled={createChannelMutation.isPending}
-              >
-                {createChannelMutation.isPending
-                  ? 'Submitting...'
-                  : requiresChannelVote
-                    ? 'Propose Channel Vote'
-                    : 'Create Channel'}
-              </button>
-            </form>
-          )}
-
-          {textChannels.map((ch) => {
-            const isActive = ch.channelId === activeChannelId;
-            const unread = unreadMap[ch.channelId] || 0;
-            return (
-              <button
-                key={ch.channelId}
-                type="button"
-                className={`${styles.channelItem} ${
-                  isActive ? styles.channelItemActive : ''
-                }`}
-                onClick={() => handleSelectTextChannel(ch.channelId)}
-                aria-current={isActive ? 'page' : undefined}
-              >
-                <span className={styles.channelLabelGroup}>
-                  <Hash size={16} aria-hidden="true" />
-                  <span className={styles.channelName}>{ch.label}</span>
-                </span>
-                {unread > 0 && !isActive && (
-                  <span className={styles.unreadBadge}>{unread}</span>
+            <span className={styles.convoBody}>
+              <span className={styles.convoTopRow}>
+                <span className={styles.convoTitle}>Pod Group Chat</span>
+                {voicePeers.length > 0 && (
+                  <span className={styles.convoCallPill}>
+                    <Radio size={11} />
+                    <span>In Call ({voicePeers.length})</span>
+                  </span>
                 )}
-              </button>
-            );
-          })}
+              </span>
+
+              <span className={styles.convoBottomRow}>
+                <span className={styles.convoSnippet}>
+                  All {liveOccupancy}{' '}
+                  {liveOccupancy === 1 ? 'member' : 'members'} · Polls &amp; Votes
+                </span>
+                {groupUnread > 0 && !isGroupSelected && (
+                  <span
+                    className={styles.unreadBadge}
+                    aria-label={`${groupUnread} unread group messages`}
+                  >
+                    {groupUnread}
+                  </span>
+                )}
+              </span>
+            </span>
+          </button>
         </section>
 
-        {/* VOICE CHANNELS */}
-        <section aria-label="Voice channels">
+        {/* DIRECT MESSAGES / POD MEMBERS (PRIVATE 1:1 CHATS) */}
+        <section aria-label="Direct messages with pod members">
           <div className={styles.sectionHeader}>
-            <span>Voice Channels</span>
+            <span>Private 1:1 Chats · {orderedPeers.length}</span>
           </div>
 
-          {voiceChannels.map((vch) => {
-            const connectedHere =
-              voiceSession.status !== 'idle' &&
-              voiceSession.podId === pod.podId &&
-              voiceSession.voiceChannelId === vch.channelId;
-            const peers = getChannelVoicePeers(vch.channelId);
-
-            return (
-              <div key={vch.channelId}>
+          {orderedPeers.length > 1 && (
+            <div className={styles.memberSearchBox}>
+              <Search size={14} color="#686868" aria-hidden="true" />
+              <input
+                type="text"
+                value={memberFilter}
+                onChange={(e) => setMemberFilter(e.target.value)}
+                placeholder="Search members..."
+                aria-label="Search pod members"
+                className={styles.memberSearchInput}
+              />
+              {memberFilter && (
                 <button
                   type="button"
-                  className={`${styles.channelItem} ${
-                    connectedHere ? styles.channelItemVoiceActive : ''
-                  }`}
-                  onClick={() => joinVoice(pod.podId, vch.channelId, vch.label)}
-                  aria-label={`Join voice channel ${vch.label}`}
+                  className={styles.memberSearchClear}
+                  onClick={() => setMemberFilter('')}
+                  aria-label="Clear member search"
                 >
-                  <span className={styles.channelLabelGroup}>
-                    <Volume2 size={16} aria-hidden="true" />
-                    <span className={styles.channelName}>{vch.label}</span>
-                  </span>
-                  {peers.length > 0 && (
-                    <span className={styles.unreadBadge}>{peers.length}</span>
-                  )}
+                  <X size={13} />
                 </button>
+              )}
+            </div>
+          )}
 
-                {peers.length > 0 && (
-                  <div className={styles.voicePeersTree}>
-                    {peers.map((peer) => {
-                      const isSelf = peer.peerId === pod.myPeerId;
-                      const speaking = isSelf
-                        ? voiceSession.selfSpeaking || peer.speaking
-                        : Boolean(
-                            peer.speaking || remoteSpeakingMap[peer.peerId]
-                          );
-                      const peerVolPct = Math.round(
-                        (peerVolumes[peer.peerId] ?? 1) * 100
-                      );
+          {orderedPeers.length === 0 ? (
+            <div className={styles.emptyDmHint}>
+              No other members in #{pod.code} yet. Share an invite link or say
+              hello in Pod Group Chat!
+            </div>
+          ) : filteredPeers.length === 0 ? (
+            <div className={styles.emptyDmHint}>
+              No members matching “{memberFilter}”.
+            </div>
+          ) : (
+            <div className={styles.convoList}>
+              {filteredPeers.map((member) => {
+                const isSelected = activePeerId === member.peerId;
+                const dm = dmMap.get(member.peerId);
+                const dmKey = conversationKey(pod.podId, member.peerId);
+                const unread = unreadMap[dmKey] || 0;
+                const inCall =
+                  Boolean(member.inVoice) || voicePeerIdSet.has(member.peerId);
 
-                      return (
-                        <div key={peer.peerId}>
-                          <div className={styles.voicePeerRow}>
-                            <div className={styles.voicePeerIdentity}>
-                              <span
-                                className={`${styles.voiceAvatar} ${
-                                  speaking ? styles.voiceAvatarSpeaking : ''
-                                }`}
-                                style={{
-                                  background: safeAvatarColor(
-                                    peer.color,
-                                    peer.alias
-                                  ),
-                                }}
-                              >
-                                {aliasInitials(peer.alias)}
-                              </span>
-                              <span
-                                style={{
-                                  fontWeight: isSelf ? 700 : 500,
-                                  overflow: 'hidden',
-                                  textOverflow: 'ellipsis',
-                                  whiteSpace: 'nowrap',
-                                }}
-                              >
-                                {peer.alias}
-                                {isSelf ? ' (you)' : ''}
-                              </span>
-                            </div>
+                let snippet = 'Tap to chat privately';
+                if (dm) {
+                  const prefix =
+                    dm.lastSenderPeerId === pod.myPeerId
+                      ? 'You'
+                      : dm.peerAlias || member.alias;
+                  snippet = `${prefix}: ${dm.lastBody || 'Attachment'}`;
+                } else if (member.customStatus) {
+                  snippet = member.customStatus;
+                }
 
-                            <div
-                              style={{
-                                display: 'flex',
-                                alignItems: 'center',
-                                gap: 5,
-                              }}
-                            >
-                              {peer.muted && (
-                                <MicOff
-                                  size={13}
-                                  color="#b42318"
-                                  aria-label="Muted"
-                                />
-                              )}
-                              {peer.deafened && (
-                                <HeadphoneOff
-                                  size={13}
-                                  color="#b42318"
-                                  aria-label="Deafened"
-                                />
-                              )}
-                              {!isSelf && (
-                                <button
-                                  type="button"
-                                  className={styles.iconSmallBtn}
-                                  style={{ width: 26, height: 26 }}
-                                  onClick={() =>
-                                    setOpenVolumePeerId((cur) =>
-                                      cur === peer.peerId ? null : peer.peerId
-                                    )
-                                  }
-                                  aria-label={`Adjust volume for ${peer.alias}`}
-                                  title={`Peer volume (${peerVolPct}%)`}
-                                >
-                                  <Sliders size={13} />
-                                </button>
-                              )}
-                            </div>
-                          </div>
+                return (
+                  <button
+                    key={member.peerId}
+                    type="button"
+                    className={`${styles.convoItem} ${
+                      isSelected ? styles.convoItemActive : ''
+                    }`}
+                    onClick={() => selectConversation(member.peerId)}
+                    aria-current={isSelected ? 'page' : undefined}
+                    aria-label={`Private 1:1 chat with ${member.alias}${
+                      unread > 0 ? `, ${unread} unread` : ''
+                    }`}
+                  >
+                    <span className={styles.convoAvatarWrap}>
+                      <span
+                        className={styles.convoAvatar}
+                        style={{
+                          background: safeAvatarColor(
+                            member.color,
+                            member.alias
+                          ),
+                        }}
+                      >
+                        {aliasInitials(member.alias)}
+                      </span>
+                      <span
+                        className={`${styles.convoPresenceDot} ${
+                          member.online
+                            ? styles.convoPresenceOnline
+                            : styles.convoPresenceOffline
+                        }`}
+                        aria-hidden="true"
+                      />
+                      {inCall && (
+                        <span
+                          className={styles.convoMicBadge}
+                          title="In Pod Audio Call"
+                          aria-label="In Pod Audio Call"
+                        >
+                          <Mic size={10} />
+                        </span>
+                      )}
+                    </span>
 
-                          {!isSelf && openVolumePeerId === peer.peerId && (
-                            <div className={styles.volumePopover}>
-                              <div
-                                style={{
-                                  display: 'flex',
-                                  justifyContent: 'space-between',
-                                  marginBottom: 4,
-                                }}
-                              >
-                                <span>{peer.alias} Volume</span>
-                                <strong>{peerVolPct}%</strong>
-                              </div>
-                              <input
-                                type="range"
-                                min={0}
-                                max={150}
-                                step={5}
-                                value={peerVolPct}
-                                onChange={(e) =>
-                                  setPeerVolume(
-                                    peer.peerId,
-                                    Number(e.target.value) / 100
-                                  )
-                                }
-                                className={styles.volumeSlider}
-                                aria-label={`${peer.alias} volume percentage`}
-                              />
-                            </div>
+                    <span className={styles.convoBody}>
+                      <span className={styles.convoTopRow}>
+                        <span className={styles.convoNameWrap}>
+                          <span className={styles.convoTitle}>
+                            {member.alias}
+                          </span>
+                          {member.role === 'OWNER' && (
+                            <span className={styles.rolePillOwner}>OWNER</span>
                           )}
-                        </div>
-                      );
-                    })}
-                  </div>
-                )}
-              </div>
-            );
-          })}
+                          {member.role === 'ADMIN' && (
+                            <span className={styles.rolePillAdmin}>ADMIN</span>
+                          )}
+                        </span>
+                        {dm?.lastCreatedAt && (
+                          <span className={styles.convoTime}>
+                            {formatShortTime(dm.lastCreatedAt)}
+                          </span>
+                        )}
+                      </span>
+
+                      <span className={styles.convoBottomRow}>
+                        <span
+                          className={`${styles.convoSnippet} ${
+                            unread > 0 && !isSelected
+                              ? styles.convoSnippetUnread
+                              : !dm && !member.customStatus
+                                ? styles.convoSnippetMuted
+                                : ''
+                          }`}
+                        >
+                          {snippet}
+                        </span>
+                        {unread > 0 && !isSelected && (
+                          <span className={styles.unreadBadge}>{unread}</span>
+                        )}
+                      </span>
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+          )}
         </section>
       </div>
-
-      {/* DOCKED VOICE CONNECTION BAR */}
-      {voiceSession.status !== 'idle' && (
-        <div
-          className={styles.voiceDock}
-          role="region"
-          aria-label="Voice connection controls"
-        >
-          <div className={styles.voiceDockTop}>
-            <div>
-              <div className={styles.voiceDockStatus}>
-                <Radio size={14} />
-                <span>
-                  {voiceSession.status === 'connecting'
-                    ? 'Connecting Voice...'
-                    : `Voice Connected · ${voiceSession.voiceChannelLabel}`}
-                </span>
-              </div>
-              <div className={styles.voiceDockSub}>
-                WebRTC P2P Opus Mesh · #{pod.code}
-              </div>
-            </div>
-          </div>
-
-          {voiceSession.fallbackBanner && (
-            <div className={styles.synthBanner} role="status">
-              {voiceSession.fallbackBanner}
-            </div>
-          )}
-
-          <div className={styles.voiceDockControls}>
-            <button
-              type="button"
-              className={`${styles.voiceCtrlBtn} ${
-                voiceSession.muted ? styles.voiceCtrlBtnActive : ''
-              }`}
-              onClick={toggleMute}
-              aria-pressed={voiceSession.muted}
-              aria-label={
-                voiceSession.muted ? 'Unmute microphone' : 'Mute microphone'
-              }
-            >
-              {voiceSession.muted ? <MicOff size={16} /> : <Mic size={16} />}
-              <span>{voiceSession.muted ? 'Unmute' : 'Mute'}</span>
-            </button>
-
-            <button
-              type="button"
-              className={`${styles.voiceCtrlBtn} ${
-                voiceSession.deafened ? styles.voiceCtrlBtnActive : ''
-              }`}
-              onClick={toggleDeafen}
-              aria-pressed={voiceSession.deafened}
-              aria-label={
-                voiceSession.deafened ? 'Undeafen audio' : 'Deafen audio'
-              }
-            >
-              {voiceSession.deafened ? (
-                <HeadphoneOff size={16} />
-              ) : (
-                <Headphones size={16} />
-              )}
-              <span>{voiceSession.deafened ? 'Deaf' : 'Deafen'}</span>
-            </button>
-
-            <button
-              type="button"
-              className={`${styles.voiceCtrlBtn} ${
-                voiceSession.testToneActive ? styles.voiceCtrlBtnActive : ''
-              }`}
-              onClick={toggleTestTone}
-              aria-pressed={voiceSession.testToneActive}
-              aria-label="Toggle 240Hz/360Hz synth voice test tone"
-            >
-              <AudioLines size={16} />
-              <span>Test Tone</span>
-            </button>
-
-            <button
-              type="button"
-              className={`${styles.voiceCtrlBtn} ${styles.voiceCtrlBtnDanger}`}
-              onClick={leaveVoice}
-              aria-label="Disconnect from voice channel"
-            >
-              <PhoneOff size={16} />
-              <span>Leave</span>
-            </button>
-          </div>
-        </div>
-      )}
     </aside>
   );
 }

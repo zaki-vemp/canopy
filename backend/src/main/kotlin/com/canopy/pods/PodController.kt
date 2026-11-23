@@ -47,16 +47,6 @@ class PodController(
         return PodsListResponse(pods = blindMatchService.listUserPods(principal))
     }
 
-    @PostMapping("/pods/{podId}/channels")
-    @ResponseStatus(HttpStatus.CREATED)
-    fun createChannel(
-        @PathVariable podId: String,
-        @RequestBody req: CreateChannelRequest
-    ): CreateChannelResponse {
-        val principal = requirePrincipal()
-        return CreateChannelResponse(channel = blindMatchService.createChannel(principal, podId, req))
-    }
-
     @PatchMapping("/pods/{podId}/status")
     fun updatePodStatus(
         @PathVariable podId: String,
@@ -195,14 +185,5 @@ class PodController(
     ): PodOnlyResponse {
         val principal = requirePrincipal()
         return PodOnlyResponse(pod = blindMatchService.adminUpdateRole(principal, podId, req))
-    }
-
-    @DeleteMapping("/pods/{podId}/channels/{channelId}")
-    fun deletePodChannel(
-        @PathVariable podId: String,
-        @PathVariable channelId: String
-    ): PodOnlyResponse {
-        val principal = requirePrincipal()
-        return PodOnlyResponse(pod = blindMatchService.deleteChannel(principal, podId, channelId))
     }
 }

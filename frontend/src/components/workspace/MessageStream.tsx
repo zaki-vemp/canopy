@@ -4,39 +4,49 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useInfiniteQuery } from '@tanstack/react-query';
 import { useVirtualizer } from '@tanstack/react-virtual';
 import { useAtom } from 'jotai';
-import { ArrowDown, Hash, Sparkles } from 'lucide-react';
+import { ArrowDown, Lock, Sparkles, Users } from 'lucide-react';
 import { apiFetch } from '@/lib/api';
 import { highlightedMessageIdAtom } from '@/state/workspaceAtoms';
 import { MessageCard } from '@/components/workspace/MessageCard';
-import type {
-  MessagesPage,
-  PodChannel,
-  PodDetail,
-  RichMessage,
+import { aliasInitials, safeAvatarColor } from '@/components/workspace/markdown';
+import {
+  conversationKey,
+  messageQueryKey,
+  type MessagesPage,
+  type PodDetail,
+  type PodMember,
+  type RichMessage,
 } from '@/types/canopy';
 import styles from '@/app/app/workspace.module.css';
 
 interface MessageStreamProps {
   pod: PodDetail;
-  channel: PodChannel;
+  activePeer: PodMember | null;
   knownAliases: string[];
 }
 
 export function MessageStream({
   pod,
-  channel,
+  activePeer,
   knownAliases,
 }: MessageStreamProps) {
   const viewportRef = useRef<HTMLDivElement | null>(null);
   const [highlightedId, setHighlightedId] = useAtom(highlightedMessageIdAtom);
   const [nearBottom, setNearBottom] = useState(true);
 
+  const activePeerId = activePeer?.peerId ?? null;
+  const convoKey = conversationKey(pod.podId, activePeerId);
+
   const messagesQuery = useInfiniteQuery<MessagesPage, Error>({
-    queryKey: ['messages', pod.podId, channel.channelId],
+    queryKey: messageQueryKey(pod.podId, activePeerId),
     initialPageParam: 0,
     queryFn: ({ pageParam }) =>
       apiFetch<MessagesPage>(
-        `/api/pods/${pod.podId}/channels/${channel.channelId}/messages?beforeId=${pageParam}&limit=40`
+        activePeerId
+          ? `/api/pods/${pod.podId}/dms/${encodeURIComponent(
+              activePeerId
+            )}/messages?beforeId=${pageParam}&limit=40`
+          : `/api/pods/${pod.podId}/messages?beforeId=${pageParam}&limit=40`
       ),
     getNextPageParam: (lastPage) =>
       lastPage.nextBeforeId && lastPage.nextBeforeId > 0
@@ -67,20 +77,20 @@ export function MessageStream({
     overscan: 8,
   });
 
-  const initialScrolledChannelRef = useRef<string | null>(null);
+  const initialScrolledConvoRef = useRef<string | null>(null);
   const prevLastMsgIdRef = useRef<number | null>(null);
 
   useEffect(() => {
     prevLastMsgIdRef.current = null;
     setNearBottom(true);
-  }, [channel.channelId]);
+  }, [convoKey]);
 
   useEffect(() => {
     if (messages.length === 0) return;
     const lastMsg = messages[messages.length - 1];
 
-    if (initialScrolledChannelRef.current !== channel.channelId) {
-      initialScrolledChannelRef.current = channel.channelId;
+    if (initialScrolledConvoRef.current !== convoKey) {
+      initialScrolledConvoRef.current = convoKey;
       prevLastMsgIdRef.current = lastMsg.id;
       requestAnimationFrame(() => {
         virtualizer.scrollToIndex(messages.length - 1, { align: 'end' });
@@ -96,7 +106,7 @@ export function MessageStream({
         });
       }
     }
-  }, [channel.channelId, messages, nearBottom, pod.myPeerId, virtualizer]);
+  }, [convoKey, messages, nearBottom, pod.myPeerId, virtualizer]);
 
   useEffect(() => {
     if (!highlightedId || messages.length === 0) return;
@@ -116,6 +126,9 @@ export function MessageStream({
   };
 
   const virtualItems = virtualizer.getVirtualItems();
+  const streamTitle = activePeer
+    ? `Private 1:1 chat with ${activePeer.alias}`
+    : `Pod Group Chat in ${pod.title || `#${pod.code}`}`;
 
   return (
     <div
@@ -124,7 +137,7 @@ export function MessageStream({
       className={styles.streamViewport}
       role="log"
       aria-live="polite"
-      aria-label={`Messages in #${channel.label}`}
+      aria-label={streamTitle}
     >
       {messagesQuery.hasNextPage && (
         <div className={styles.loadOlderWrap}>
@@ -144,50 +157,114 @@ export function MessageStream({
       {messagesQuery.isLoading ? (
         <div className={styles.emptyState}>
           <p style={{ color: '#686868', fontSize: 14 }}>
-            Loading #{channel.label}...
+            {activePeer
+              ? `Loading private chat with ${activePeer.alias}...`
+              : `Loading Pod Group Chat...`}
           </p>
         </div>
       ) : messages.length === 0 ? (
-        <div className={styles.emptyState}>
-          <div
-            style={{
-              width: 52,
-              height: 52,
-              borderRadius: 14,
-              background: '#eafbef',
-              color: '#17522c',
-              display: 'inline-flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-            }}
-          >
-            <Hash size={24} />
+        activePeer ? (
+          <div className={styles.emptyState}>
+            <div style={{ position: 'relative', display: 'inline-flex' }}>
+              <span
+                className={styles.convoAvatar}
+                style={{
+                  width: 56,
+                  height: 56,
+                  fontSize: 18,
+                  background: safeAvatarColor(activePeer.color, activePeer.alias),
+                }}
+              >
+                {aliasInitials(activePeer.alias)}
+              </span>
+              <span
+                style={{
+                  position: 'absolute',
+                  right: -4,
+                  bottom: -4,
+                  width: 24,
+                  height: 24,
+                  borderRadius: 999,
+                  background: '#a1ffcb',
+                  color: '#144223',
+                  border: '2px solid #ffffff',
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                }}
+              >
+                <Lock size={12} />
+              </span>
+            </div>
+            <h3 style={{ margin: 0, fontSize: 18 }}>
+              Private 1:1 Chat with {activePeer.alias}
+            </h3>
+            <p
+              style={{
+                margin: 0,
+                maxWidth: 420,
+                color: '#686868',
+                fontSize: 14,
+                lineHeight: 1.5,
+              }}
+            >
+              Messages, voice notes, and files here are visible{' '}
+              <strong>only</strong> to you ({pod.myAlias}) and{' '}
+              <strong>{activePeer.alias}</strong>. Real names, emails, genders,
+              and nationalities stay 100% hidden.
+            </p>
           </div>
-          <h3 style={{ margin: 0, fontSize: 18 }}>
-            Welcome to #{channel.label}
-          </h3>
-          <p style={{ margin: 0, maxWidth: 420, color: '#686868', fontSize: 14 }}>
-            {channel.topic ||
-              `Everyone in #${pod.code} appears under a room-scoped blind alias. Say hi, run /icebreaker, or start a /poll!`}
-          </p>
-          <div
-            style={{
-              display: 'inline-flex',
-              alignItems: 'center',
-              gap: 6,
-              fontSize: 12,
-              fontFamily: 'var(--m-font-mono)',
-              color: '#17522c',
-              background: '#f2fbf6',
-              padding: '6px 12px',
-              borderRadius: 999,
-              border: '1px solid rgba(31,107,58,0.2)',
-            }}
-          >
-            <Sparkles size={13} />
-            <span>Try typing /icebreaker or /poll below</span>
+        ) : (
+          <div className={styles.emptyState}>
+            <div
+              style={{
+                width: 52,
+                height: 52,
+                borderRadius: 14,
+                background: '#eafbef',
+                color: '#17522c',
+                display: 'inline-flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                border: '1px solid rgba(31,107,58,0.24)',
+              }}
+            >
+              <Users size={24} />
+            </div>
+            <h3 style={{ margin: 0, fontSize: 18 }}>
+              Pod Group Chat · {pod.title || `#${pod.code}`}
+            </h3>
+            <p
+              style={{
+                margin: 0,
+                maxWidth: 440,
+                color: '#686868',
+                fontSize: 14,
+                lineHeight: 1.5,
+              }}
+            >
+              {pod.description ||
+                `Everyone in #${pod.code} chats under a peer-blind room alias. Say hi, share a voice note, run a /poll, or tap any member to message privately!`}
+            </p>
+            <div
+              style={{
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: 6,
+                fontSize: 12,
+                fontFamily: 'var(--m-font-mono)',
+                color: '#17522c',
+                background: '#ffffff',
+                padding: '6px 12px',
+                borderRadius: 999,
+                border: '1px solid rgba(31,107,58,0.22)',
+              }}
+            >
+              <Sparkles size={13} />
+              <span>Try /icebreaker, /poll, or /propose below</span>
+            </div>
           </div>
-        </div>
+        )
       ) : (
         <div
           style={{

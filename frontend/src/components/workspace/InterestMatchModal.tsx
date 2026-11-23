@@ -30,7 +30,7 @@ import {
   interestModalTabAtom,
   inviteModalPodIdAtom,
   presenceByPodAtom,
-  voiceRosterByPodAtom,
+  voicePeersByPodAtom,
 } from '@/state/workspaceAtoms';
 import { useVoiceActions } from '@/state/voiceEngine';
 import { safeAvatarColor } from '@/components/workspace/markdown';
@@ -79,7 +79,7 @@ export function InterestMatchModal({
   const authRevision = useAtomValue(authRevisionAtom);
   const bumpAuthRevision = useSetAtom(authRevisionAtom);
   const presenceByPod = useAtomValue(presenceByPodAtom);
-  const voiceRosterByPod = useAtomValue(voiceRosterByPodAtom);
+  const voicePeersByPod = useAtomValue(voicePeersByPodAtom);
   const { session: voiceSession, leaveVoice } = useVoiceActions();
   const queryClient = useQueryClient();
 
@@ -449,25 +449,19 @@ export function InterestMatchModal({
   };
 
   const getPodVoiceCount = (pod: PodDetail): number => {
-    const roster = voiceRosterByPod[pod.podId];
-    if (roster) {
-      let total = 0;
-      for (const peers of Object.values(roster)) {
-        total += peers.length;
-      }
+    const peers = voicePeersByPod[pod.podId];
+    if (peers) {
+      let total = peers.length;
       if (
         voiceSession.status === 'connected' &&
         voiceSession.podId === pod.podId &&
-        voiceSession.voiceChannelId &&
-        !(roster[voiceSession.voiceChannelId] || []).some(
-          (p) => p.peerId === pod.myPeerId
-        )
+        !peers.some((p) => p.peerId === pod.myPeerId)
       ) {
         total += 1;
       }
       return total;
     }
-    return pod.members.filter((m) => Boolean(m.voiceChannelId)).length;
+    return pod.members.filter((m) => Boolean(m.inVoice)).length;
   };
 
   const getPodLiveMemberCount = (pod: PodDetail): number => {
@@ -1383,8 +1377,8 @@ export function InterestMatchModal({
                     <strong>Publicize in Featured Directory</strong> anytime
                   </li>
                   <li>
-                    Instant Owner &amp; Admin tools (Kick, Promote Admins, add
-                    or delete channels without waiting on votes)
+                    Instant Owner &amp; Admin tools (Kick, Promote Admins, and
+                    edit group settings without waiting on votes)
                   </li>
                 </ul>
 

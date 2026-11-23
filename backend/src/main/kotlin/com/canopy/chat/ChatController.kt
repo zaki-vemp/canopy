@@ -22,35 +22,52 @@ class ChatController(
     private val podGovernanceService: PodGovernanceService
 ) {
 
-    @GetMapping("/pods/{podId}/channels/{channelId}/messages")
-    fun listChannelMessages(
+    @GetMapping("/pods/{podId}/messages")
+    fun listPodMessages(
         @PathVariable podId: String,
-        @PathVariable channelId: String,
         @RequestParam(defaultValue = "0") beforeId: Long,
         @RequestParam(defaultValue = "40") limit: Int
     ): MessagesPageResponse {
         val principal = requirePrincipal()
-        return richChatService.listChannelMessages(principal, podId, channelId, beforeId, limit)
+        return richChatService.listPodMessages(principal, podId, beforeId, limit)
     }
 
-    @GetMapping("/pods/{podId}/channels/{channelId}/threads/{parentMessageId}")
-    fun getThread(
+    @PostMapping("/pods/{podId}/messages")
+    fun sendPodMessage(
         @PathVariable podId: String,
-        @PathVariable channelId: String,
-        @PathVariable parentMessageId: Long
-    ): ThreadResponse {
-        val principal = requirePrincipal()
-        return richChatService.getThread(principal, podId, channelId, parentMessageId)
-    }
-
-    @PostMapping("/pods/{podId}/channels/{channelId}/messages")
-    fun sendMessage(
-        @PathVariable podId: String,
-        @PathVariable channelId: String,
         @RequestBody req: SendMessageRequest
     ): ResponseEntity<SendMessageResponse> {
         val principal = requirePrincipal()
-        val res = richChatService.sendMessage(principal, podId, channelId, req)
+        val res = richChatService.sendPodMessage(principal, podId, req)
+        val status = if (res.commandHandled != null && res.message == null) HttpStatus.OK else HttpStatus.CREATED
+        return ResponseEntity.status(status).body(res)
+    }
+
+    @GetMapping("/pods/{podId}/dms")
+    fun listPodDms(@PathVariable podId: String): DmConversationsResponse {
+        val principal = requirePrincipal()
+        return DmConversationsResponse(conversations = richChatService.listDmConversations(principal, podId))
+    }
+
+    @GetMapping("/pods/{podId}/dms/{peerId}/messages")
+    fun listDmMessages(
+        @PathVariable podId: String,
+        @PathVariable peerId: String,
+        @RequestParam(defaultValue = "0") beforeId: Long,
+        @RequestParam(defaultValue = "40") limit: Int
+    ): MessagesPageResponse {
+        val principal = requirePrincipal()
+        return richChatService.listDmMessages(principal, podId, peerId, beforeId, limit)
+    }
+
+    @PostMapping("/pods/{podId}/dms/{peerId}/messages")
+    fun sendDmMessage(
+        @PathVariable podId: String,
+        @PathVariable peerId: String,
+        @RequestBody req: SendMessageRequest
+    ): ResponseEntity<SendMessageResponse> {
+        val principal = requirePrincipal()
+        val res = richChatService.sendDmMessage(principal, podId, peerId, req)
         val status = if (res.commandHandled != null && res.message == null) HttpStatus.OK else HttpStatus.CREATED
         return ResponseEntity.status(status).body(res)
     }

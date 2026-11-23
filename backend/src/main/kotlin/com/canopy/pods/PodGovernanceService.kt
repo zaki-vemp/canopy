@@ -34,8 +34,6 @@ class PodGovernanceService(
     companion object {
         private val SUPPORTED_KINDS = setOf(
             "KICK_MEMBER",
-            "ADD_CHANNEL",
-            "REMOVE_CHANNEL",
             "RENAME_POD",
             "UPDATE_TOPIC",
             "CHANGE_CAPACITY",
@@ -48,14 +46,11 @@ class PodGovernanceService(
         val podInternalId: Long,
         val podIdHex: String,
         val announcementMessageId: Long = 0L,
-        val announcementChannelHex: String? = null,
         val announcementCreated: Boolean = false,
         val resolvedTransitioned: Boolean = false,
-        val createdChannel: ChannelDto? = null,
-        val deletedChannelHex: String? = null,
-        val kickedMember: Pair<String, String>? = null, // (peerId, alias)
+        val kickedMember: Pair<String, String>? = null,
         val pinnedMessageId: Long? = null,
-        val systemMessage: Pair<String, RichMessageDto>? = null
+        val systemMessage: RichMessageDto? = null
     )
 
     private data class ValidatedProposalSpec(
@@ -152,33 +147,21 @@ class PodGovernanceService(
                     .param("alias", pod.alias)
                     .update()
 
-                val generalCh = jdbcClient.sql(
-                    """
-                    SELECT id, public_id
-                    FROM pod_channels
-                    WHERE pod_id = :podId AND kind = 1
-                    ORDER BY CASE WHEN slug = 'general' THEN 0 ELSE 1 END ASC, position ASC, id ASC
-                    LIMIT 1
-                    """.trimIndent()
-                )
-                    .param("podId", pod.podInternalId)
-                    .query { rs, _ -> rs.getLong("id") to UuidV7.toHex(rs.getBytes("public_id")) }
-                    .single()
-
                 val msgKh = GeneratedKeyHolder()
                 jdbcClient.sql(
                     """
                     INSERT INTO messages (
-                        pod_id, channel_id, sender_user_id, sender_alias, sender_color,
-                        parent_message_id, quote_message_id, msg_type, body, created_at
+                        pod_id, sender_user_id, sender_alias, sender_color,
+                        recipient_user_id, recipient_alias, dm_user_low_id, dm_user_high_id,
+                        quote_message_id, msg_type, body, created_at
                     ) VALUES (
-                        :podId, :channelId, :userId, :alias, :color,
-                        0, 0, 6, :body, UTC_TIMESTAMP()
+                        :podId, :userId, :alias, :color,
+                        0, '', 0, 0,
+                        0, 6, :body, UTC_TIMESTAMP()
                     )
                     """.trimIndent()
                 )
                     .param("podId", pod.podInternalId)
-                    .param("channelId", generalCh.first)
                     .param("userId", principal.userId())
                     .param("alias", pod.alias)
                     .param("color", pod.color)
@@ -201,7 +184,6 @@ class PodGovernanceService(
 
                 createdPropId to evalEffects.copy(
                     announcementMessageId = announcementMsgId,
-                    announcementChannelHex = generalCh.second,
                     announcementCreated = true
                 )
             }!!
@@ -409,6 +391,8 @@ class PodGovernanceService(
             val podIdHex: String,
             val governanceMode: String,
             val memberCount: Int,
+            val dmUserLowId: Long,
+            val dmUserHighId: Long,
             val isDeleted: Boolean,
             val myRole: String?
         )
@@ -419,6 +403,8 @@ class PodGovernanceService(
                    p.public_id AS pod_public_id,
                    p.governance_mode,
                    p.member_count,
+                   m.dm_user_low_id,
+                   m.dm_user_high_id,
                    m.is_deleted,
                    pm.role AS my_role
             FROM messages m
@@ -436,6 +422,8 @@ class PodGovernanceService(
                     podIdHex = UuidV7.toHex(rs.getBytes("pod_public_id")),
                     governanceMode = rs.getString("governance_mode") ?: "DEMOCRATIC",
                     memberCount = rs.getInt("member_count"),
+                    dmUserLowId = rs.getLong("dm_user_low_id"),
+                    dmUserHighId = rs.getLong("dm_user_high_id"),
                     isDeleted = rs.getInt("is_deleted") != 0,
                     myRole = rs.getString("my_role")
                 )
@@ -444,6 +432,17 @@ class PodGovernanceService(
             .orElseThrow { ResponseStatusException(HttpStatus.NOT_FOUND, "Message not found") }
 
         val role = ctx.myRole ?: throw ResponseStatusException(HttpStatus.FORBIDDEN, "Not a member of this pod")
+
+        if (ctx.dmUserLowId > 0L) {
+            if (principal.userId() != ctx.dmUserLowId && principal.userId() != ctx.dmUserHighId) {
+                throw ResponseStatusException(HttpStatus.FORBIDDEN, "Private message restricted to participants")
+            }
+            if (ctx.isDeleted) {
+                throw ResponseStatusException(HttpStatus.BAD_REQUEST, "Cannot pin a deleted message")
+            }
+            return SingleMessageResponse(message = richChatService.togglePin(principal, messageId))
+        }
+
         if (ctx.isDeleted) {
             throw ResponseStatusException(HttpStatus.BAD_REQUEST, "Cannot pin a deleted message")
         }
@@ -635,7 +634,7 @@ class PodGovernanceService(
             """
             UPDATE pod_proposals
             SET status = :status,
-                yes_count = :yesCount,
+                 yes_count = :yesCount,
                 no_count = :noCount,
                 eligible_count = :eligibleCount,
                 resolved_at = UTC_TIMESTAMP()
@@ -650,7 +649,7 @@ class PodGovernanceService(
             .update()
 
         if (outcomeStatus == "REJECTED") {
-            val sysPair = blindMatchService.insertSystemMessageAndBuildDto(
+            val sysMsg = blindMatchService.insertSystemMessageAndBuildDto(
                 podInternalId,
                 podIdHex,
                 "Vote did not pass ($yesCount Yes – $noCount No): ${prop.title}"
@@ -660,11 +659,10 @@ class PodGovernanceService(
                 podIdHex = podIdHex,
                 announcementMessageId = prop.announcementMessageId,
                 resolvedTransitioned = true,
-                systemMessage = sysPair
+                systemMessage = sysMsg
             )
         }
 
-        // PASSED -> execute democratic action!
         return executePassedProposalActionTx(
             prop = prop,
             podInternalId = podInternalId,
@@ -686,7 +684,7 @@ class PodGovernanceService(
         val payload = runCatching { objectMapper.readTree(prop.payloadJson) }.getOrNull()
         val tally = "Vote passed ($yesCount Yes – $noCount No)"
 
-        when (prop.kind) {
+        return when (prop.kind) {
             "KICK_MEMBER" -> {
                 val targetUserId = prop.targetUserId
                 val targetUserPub = jdbcClient.sql("SELECT public_id FROM users WHERE id = :id LIMIT 1")
@@ -734,60 +732,12 @@ class PodGovernanceService(
                     podIdHex,
                     "$tally: ${prop.targetAlias} was removed from the pod"
                 )
-                return ExecutionEffects(
+                ExecutionEffects(
                     podInternalId = podInternalId,
                     podIdHex = podIdHex,
                     announcementMessageId = prop.announcementMessageId,
                     resolvedTransitioned = true,
                     kickedMember = if (deleted > 0 && targetPeerId.isNotBlank()) targetPeerId to prop.targetAlias else null,
-                    systemMessage = sys
-                )
-            }
-
-            "ADD_CHANNEL" -> {
-                val label = payload?.path("label")?.asText("") ?: "new-channel"
-                val topic = payload?.path("topic")?.asText("") ?: ""
-                val channelKind = payload?.path("channelKind")?.asText("TEXT") ?: "TEXT"
-                val createdCh = blindMatchService.insertChannelTx(podInternalId, label, topic, channelKind)
-                val disp = if (createdCh.kind == "VOICE") createdCh.label else "#${createdCh.slug}"
-                val sys = blindMatchService.insertSystemMessageAndBuildDto(
-                    podInternalId,
-                    podIdHex,
-                    "$tally: added channel $disp"
-                )
-                return ExecutionEffects(
-                    podInternalId = podInternalId,
-                    podIdHex = podIdHex,
-                    announcementMessageId = prop.announcementMessageId,
-                    resolvedTransitioned = true,
-                    createdChannel = createdCh,
-                    systemMessage = sys
-                )
-            }
-
-            "REMOVE_CHANNEL" -> {
-                val chHexRaw = payload?.path("channelId")?.asText("") ?: ""
-                val chBytes = runCatching { UuidV7.fromHex(chHexRaw) }.getOrNull()
-                var deletedHex: String? = null
-                var displayLabel = payload?.path("label")?.asText("")?.takeIf { it.isNotBlank() } ?: "channel"
-                if (chBytes != null) {
-                    val res = runCatching { blindMatchService.deleteChannelTx(podInternalId, chBytes) }.getOrNull()
-                    if (res != null) {
-                        deletedHex = res.first
-                        displayLabel = res.second
-                    }
-                }
-                val sys = blindMatchService.insertSystemMessageAndBuildDto(
-                    podInternalId,
-                    podIdHex,
-                    "$tally: removed channel $displayLabel"
-                )
-                return ExecutionEffects(
-                    podInternalId = podInternalId,
-                    podIdHex = podIdHex,
-                    announcementMessageId = prop.announcementMessageId,
-                    resolvedTransitioned = true,
-                    deletedChannelHex = deletedHex,
                     systemMessage = sys
                 )
             }
@@ -814,7 +764,7 @@ class PodGovernanceService(
                     podIdHex,
                     "$tally: pod renamed to $newTitle"
                 )
-                return ExecutionEffects(
+                ExecutionEffects(
                     podInternalId = podInternalId,
                     podIdHex = podIdHex,
                     announcementMessageId = prop.announcementMessageId,
@@ -824,23 +774,17 @@ class PodGovernanceService(
             }
 
             "UPDATE_TOPIC" -> {
-                val chHexRaw = payload?.path("channelId")?.asText("") ?: ""
-                val slug = payload?.path("slug")?.asText("channel") ?: "channel"
-                val newTopic = (payload?.path("topic")?.asText("") ?: "").trim().take(160)
-                val chBytes = runCatching { UuidV7.fromHex(chHexRaw) }.getOrNull()
-                if (chBytes != null) {
-                    jdbcClient.sql("UPDATE pod_channels SET topic = :topic WHERE pod_id = :podId AND public_id = :pub")
-                        .param("topic", newTopic)
-                        .param("podId", podInternalId)
-                        .param("pub", chBytes)
-                        .update()
-                }
+                val newTopic = (payload?.path("topic")?.asText("") ?: "").trim().take(280)
+                jdbcClient.sql("UPDATE pods SET description = :desc WHERE id = :id")
+                    .param("desc", newTopic)
+                    .param("id", podInternalId)
+                    .update()
                 val sys = blindMatchService.insertSystemMessageAndBuildDto(
                     podInternalId,
                     podIdHex,
-                    "$tally: updated #$slug topic"
+                    "$tally: updated pod topic"
                 )
-                return ExecutionEffects(
+                ExecutionEffects(
                     podInternalId = podInternalId,
                     podIdHex = podIdHex,
                     announcementMessageId = prop.announcementMessageId,
@@ -869,7 +813,7 @@ class PodGovernanceService(
                     podIdHex,
                     "$tally: pod capacity updated to $newMax members"
                 )
-                return ExecutionEffects(
+                ExecutionEffects(
                     podInternalId = podInternalId,
                     podIdHex = podIdHex,
                     announcementMessageId = prop.announcementMessageId,
@@ -896,7 +840,7 @@ class PodGovernanceService(
                     podIdHex,
                     "$tally: pod ${if (locked) "locked" else "unlocked"}"
                 )
-                return ExecutionEffects(
+                ExecutionEffects(
                     podInternalId = podInternalId,
                     podIdHex = podIdHex,
                     announcementMessageId = prop.announcementMessageId,
@@ -913,7 +857,7 @@ class PodGovernanceService(
                         """
                         UPDATE messages
                         SET is_pinned = CASE WHEN is_pinned = 1 THEN 0 ELSE 1 END
-                        WHERE id = :msgId AND pod_id = :podId AND is_deleted = 0
+                        WHERE id = :msgId AND pod_id = :podId AND dm_user_low_id = 0 AND is_deleted = 0
                         """.trimIndent()
                     )
                         .param("msgId", msgId)
@@ -931,7 +875,7 @@ class PodGovernanceService(
                     podIdHex,
                     "$tally: ${if (nowPinned) "pinned" else "unpinned"} message #$msgId"
                 )
-                return ExecutionEffects(
+                ExecutionEffects(
                     podInternalId = podInternalId,
                     podIdHex = podIdHex,
                     announcementMessageId = prop.announcementMessageId,
@@ -941,14 +885,12 @@ class PodGovernanceService(
                 )
             }
 
-            else -> {
-                return ExecutionEffects(
-                    podInternalId = podInternalId,
-                    podIdHex = podIdHex,
-                    announcementMessageId = prop.announcementMessageId,
-                    resolvedTransitioned = true
-                )
-            }
+            else -> ExecutionEffects(
+                podInternalId = podInternalId,
+                podIdHex = podIdHex,
+                announcementMessageId = prop.announcementMessageId,
+                resolvedTransitioned = true
+            )
         }
     }
 
@@ -1011,87 +953,12 @@ class PodGovernanceService(
                 )
             }
 
-            "ADD_CHANNEL" -> {
-                val rawLabel = (req.label ?: "").trim()
-                if (rawLabel.isEmpty()) {
-                    throw ResponseStatusException(HttpStatus.BAD_REQUEST, "Channel label is required")
-                }
-                val chKind = (req.channelKind ?: "TEXT").trim().uppercase()
-                if (chKind !in setOf("TEXT", "VOICE")) {
-                    throw ResponseStatusException(HttpStatus.BAD_REQUEST, "channelKind must be TEXT or VOICE")
-                }
-                val cleanTopic = (req.topic ?: "").trim().take(160)
-                val baseSlug = blindMatchService.normalizeSlug(rawLabel).take(42)
-                    .ifEmpty { if (chKind == "VOICE") "voice-room" else "channel" }
-                val title = if (chKind == "VOICE") {
-                    "Add voice channel ${rawLabel.take(64)}"
-                } else {
-                    "Add channel #$baseSlug"
-                }
-                val payload = objectMapper.writeValueAsString(
-                    mapOf(
-                        "reason" to cleanReason,
-                        "label" to rawLabel.take(64),
-                        "topic" to cleanTopic,
-                        "channelKind" to chKind
-                    )
-                )
-                ValidatedProposalSpec(kind = kind, title = title.take(180), payloadJson = payload)
-            }
-
-            "REMOVE_CHANNEL" -> {
-                val chHexRaw = (req.channelId ?: "").trim()
-                val chBytes = parsePublicIdOrBadRequest(chHexRaw, "channelId")
-                val ch = jdbcClient.sql(
-                    """
-                    SELECT slug, label, kind
-                    FROM pod_channels
-                    WHERE pod_id = :podId AND public_id = :pub
-                    LIMIT 1
-                    """.trimIndent()
-                )
-                    .param("podId", pod.podInternalId)
-                    .param("pub", chBytes)
-                    .query { rs, _ ->
-                        Triple(rs.getString("slug"), rs.getString("label"), rs.getInt("kind"))
-                    }
-                    .optional()
-                    .orElseThrow { ResponseStatusException(HttpStatus.NOT_FOUND, "Channel not found") }
-
-                if (ch.first == "general") {
-                    throw ResponseStatusException(HttpStatus.BAD_REQUEST, "Cannot remove #general")
-                }
-                if (ch.third == 1) {
-                    val textCnt = jdbcClient.sql("SELECT COUNT(*) FROM pod_channels WHERE pod_id = :podId AND kind = 1")
-                        .param("podId", pod.podInternalId)
-                        .query { rs, _ -> rs.getInt(1) }
-                        .single()
-                    if (textCnt <= 1) {
-                        throw ResponseStatusException(HttpStatus.BAD_REQUEST, "Cannot remove the last text channel")
-                    }
-                }
-                val disp = if (ch.third == 2) ch.second else "#${ch.first}"
-                val payload = objectMapper.writeValueAsString(
-                    mapOf(
-                        "reason" to cleanReason,
-                        "channelId" to UuidV7.toHex(chBytes),
-                        "slug" to ch.first,
-                        "label" to disp
-                    )
-                )
-                ValidatedProposalSpec(
-                    kind = kind,
-                    title = "Remove channel $disp".take(180),
-                    payloadJson = payload
-                )
-            }
-
             "RENAME_POD" -> {
                 val newTitle = (req.label ?: "").trim().take(80)
                 if (newTitle.isEmpty()) {
                     throw ResponseStatusException(HttpStatus.BAD_REQUEST, "New pod title is required")
                 }
-                val newDesc = (req.topic ?: "").trim().take(280)
+                val newDesc = (req.topic ?: req.description ?: "").trim().take(280)
                 val payload = objectMapper.writeValueAsString(
                     mapOf("reason" to cleanReason, "label" to newTitle, "topic" to newDesc)
                 )
@@ -1103,29 +970,20 @@ class PodGovernanceService(
             }
 
             "UPDATE_TOPIC" -> {
-                val chHexRaw = (req.channelId ?: "").trim()
-                val chBytes = parsePublicIdOrBadRequest(chHexRaw, "channelId")
-                val slug = jdbcClient.sql(
-                    "SELECT slug FROM pod_channels WHERE pod_id = :podId AND public_id = :pub LIMIT 1"
-                )
-                    .param("podId", pod.podInternalId)
-                    .param("pub", chBytes)
-                    .query(String::class.java)
-                    .optional()
-                    .orElseThrow { ResponseStatusException(HttpStatus.NOT_FOUND, "Channel not found") }
-
-                val newTopic = (req.topic ?: "").trim().take(160)
+                val rawTopic = req.topic ?: req.description
+                    ?: throw ResponseStatusException(HttpStatus.BAD_REQUEST, "topic is required")
+                val newTopic = rawTopic.trim().take(280)
                 val payload = objectMapper.writeValueAsString(
-                    mapOf(
-                        "reason" to cleanReason,
-                        "channelId" to UuidV7.toHex(chBytes),
-                        "slug" to slug,
-                        "topic" to newTopic
-                    )
+                    mapOf("reason" to cleanReason, "topic" to newTopic)
                 )
+                val title = if (newTopic.isEmpty()) {
+                    "Clear pod topic"
+                } else {
+                    "Update pod topic to \"${newTopic.take(80)}\""
+                }
                 ValidatedProposalSpec(
                     kind = kind,
-                    title = "Update #$slug topic".take(180),
+                    title = title.take(180),
                     payloadJson = payload
                 )
             }
@@ -1167,13 +1025,21 @@ class PodGovernanceService(
                     )
                 }
                 val isPinned = jdbcClient.sql(
-                    "SELECT is_pinned FROM messages WHERE id = :id AND pod_id = :podId AND is_deleted = 0 LIMIT 1"
+                    """
+                    SELECT is_pinned
+                    FROM messages
+                    WHERE id = :id
+                      AND pod_id = :podId
+                      AND dm_user_low_id = 0
+                      AND is_deleted = 0
+                    LIMIT 1
+                    """.trimIndent()
                 )
                     .param("id", msgId)
                     .param("podId", pod.podInternalId)
                     .query { rs, _ -> rs.getInt("is_pinned") != 0 }
                     .optional()
-                    .orElseThrow { ResponseStatusException(HttpStatus.NOT_FOUND, "Message not found in pod") }
+                    .orElseThrow { ResponseStatusException(HttpStatus.NOT_FOUND, "Group message not found in pod") }
 
                 val payload = objectMapper.writeValueAsString(
                     mapOf("reason" to cleanReason, "messageId" to msgId)
@@ -1198,35 +1064,20 @@ class PodGovernanceService(
             runCatching {
                 val msg = richChatService.fetchSingleHydratedMessage(effects.announcementMessageId, callerUserId)
                 if (effects.announcementCreated) {
-                    podRealtimeHub.broadcastFrame(
-                        effects.podIdHex,
-                        WsServerFrame.MessageCreatedOut(channelId = msg.channelId, message = msg)
-                    )
+                    podRealtimeHub.broadcastToPod(effects.podIdHex, WsServerFrame.MessageCreatedOut(message = msg))
                 } else {
-                    podRealtimeHub.broadcastFrame(
-                        effects.podIdHex,
-                        WsServerFrame.MessageUpdatedOut(channelId = msg.channelId, message = msg)
-                    )
+                    podRealtimeHub.broadcastToPod(effects.podIdHex, WsServerFrame.MessageUpdatedOut(message = msg))
                 }
             }
         }
 
-        podRealtimeHub.broadcastFrame(
+        podRealtimeHub.broadcastToPod(
             effects.podIdHex,
             WsServerFrame.ProposalUpdatedOut(proposal = proposalDto)
         )
 
-        effects.createdChannel?.let { ch ->
-            podRealtimeHub.broadcastFrame(effects.podIdHex, WsServerFrame.ChannelCreatedOut(channel = ch))
-        }
-
-        effects.deletedChannelHex?.let { chHex ->
-            podRealtimeHub.evictVoiceChannel(effects.podIdHex, chHex)
-            podRealtimeHub.broadcastFrame(effects.podIdHex, WsServerFrame.ChannelDeletedOut(channelId = chHex))
-        }
-
         effects.kickedMember?.let { (peerId, alias) ->
-            podRealtimeHub.broadcastFrame(
+            podRealtimeHub.broadcastToPod(
                 effects.podIdHex,
                 WsServerFrame.MemberKickedOut(peerId = peerId, alias = alias)
             )
@@ -1236,18 +1087,12 @@ class PodGovernanceService(
         effects.pinnedMessageId?.let { mid ->
             runCatching {
                 val pinnedMsg = richChatService.fetchSingleHydratedMessage(mid, callerUserId)
-                podRealtimeHub.broadcastFrame(
-                    effects.podIdHex,
-                    WsServerFrame.PinUpdatedOut(channelId = pinnedMsg.channelId, message = pinnedMsg)
-                )
+                podRealtimeHub.broadcastToPod(effects.podIdHex, WsServerFrame.PinUpdatedOut(message = pinnedMsg))
             }
         }
 
-        effects.systemMessage?.let { (chHex, sysMsg) ->
-            podRealtimeHub.broadcastFrame(
-                effects.podIdHex,
-                WsServerFrame.MessageCreatedOut(channelId = chHex, message = sysMsg)
-            )
+        effects.systemMessage?.let { sysMsg ->
+            podRealtimeHub.broadcastToPod(effects.podIdHex, WsServerFrame.MessageCreatedOut(message = sysMsg))
         }
     }
 }

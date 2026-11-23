@@ -5,9 +5,9 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useAtom, useAtomValue, useSetAtom } from 'jotai';
 import {
   Gavel,
+  MessageCircle,
   Plus,
   Scale,
-  Send,
   Settings,
   Shield,
   UserMinus,
@@ -16,75 +16,64 @@ import {
 } from 'lucide-react';
 import { apiFetch } from '@/lib/api';
 import {
-  activeChannelIdMapAtom,
+  activeDmPeerByPodAtom,
   activePodIdAtom,
-  activeThreadMessageIdAtom,
   adminSettingsPodIdAtom,
   highlightedMessageIdAtom,
   presenceByPodAtom,
   proposeSheetOpenAtom,
   rightPanelAtom,
-  voiceRosterByPodAtom,
+  unreadByConvoAtom,
+  voicePeersByPodAtom,
 } from '@/state/workspaceAtoms';
 import {
   personalizeProposal,
   syncProposalIntoCaches,
-  upsertThreadReplyInCache,
 } from '@/state/wsPodClient';
 import {
   MessageCard,
   PodProposalVoteCard,
 } from '@/components/workspace/MessageCard';
 import { aliasInitials, safeAvatarColor } from '@/components/workspace/markdown';
-import type {
-  ChannelKind,
-  CreateProposalRequest,
-  PodChannel,
-  PodDetail,
-  PodMember,
-  PodProposalDto,
-  PostMessageResponse,
-  ProposalKind,
-  RichMessage,
-  RightPanelMode,
-  ThreadPayload,
+import {
+  conversationKey,
+  resolveMessagePeerId,
+  type CreateProposalRequest,
+  type PodDetail,
+  type PodMember,
+  type PodProposalDto,
+  type ProposalKind,
+  type RichMessage,
+  type RightPanelMode,
 } from '@/types/canopy';
 import styles from '@/app/app/workspace.module.css';
 
 interface RightDrawerProps {
   pod: PodDetail | null;
   allPods: PodDetail[];
-  channel: PodChannel | null;
   members: PodMember[];
 }
 
 const PROPOSAL_KIND_OPTIONS: Array<{ value: ProposalKind; label: string }> = [
-  { value: 'ADD_CHANNEL', label: 'Add Channel (Text or Voice)' },
-  { value: 'REMOVE_CHANNEL', label: 'Remove Channel' },
   { value: 'RENAME_POD', label: 'Rename Pod / Set Description' },
-  { value: 'UPDATE_TOPIC', label: 'Update Channel Topic' },
+  { value: 'UPDATE_TOPIC', label: 'Update Pod Topic / Description' },
   { value: 'CHANGE_CAPACITY', label: 'Change Pod Capacity (10 / 25 / 50)' },
   { value: 'TOGGLE_LOCK', label: 'Lock / Unlock Random Matching' },
+  { value: 'KICK_MEMBER', label: 'Vote to Kick Member' },
+  { value: 'PIN_MESSAGE', label: 'Pin / Unpin Group Message (#id)' },
 ];
 
-export function RightDrawer({
-  pod,
-  allPods,
-  channel,
-  members,
-}: RightDrawerProps) {
+export function RightDrawer({ pod, allPods, members }: RightDrawerProps) {
   const queryClient = useQueryClient();
   const [mode, setMode] = useAtom(rightPanelAtom);
-  const [threadParentId, setThreadParentId] = useAtom(activeThreadMessageIdAtom);
   const setActivePodId = useSetAtom(activePodIdAtom);
-  const [channelMap, setChannelMap] = useAtom(activeChannelIdMapAtom);
+  const [dmPeerMap, setDmPeerMap] = useAtom(activeDmPeerByPodAtom);
+  const setUnreadMap = useSetAtom(unreadByConvoAtom);
   const setHighlightedId = useSetAtom(highlightedMessageIdAtom);
   const setAdminSettingsPodId = useSetAtom(adminSettingsPodIdAtom);
   const setPresenceByPod = useSetAtom(presenceByPodAtom);
   const [proposeOpen, setProposeOpen] = useAtom(proposeSheetOpenAtom);
-  const voiceRosterByPod = useAtomValue(voiceRosterByPodAtom);
-
-  const [threadDraft, setThreadDraft] = useState('');
+  const voicePeersByPod = useAtomValue(voicePeersByPodAtom);
 
   // Roster vote-kick / admin action state
   const [kickPromptPeerId, setKickPromptPeerId] = useState<string | null>(null);
@@ -92,11 +81,11 @@ export function RightDrawer({
   const [rosterActionErr, setRosterActionErr] = useState<string | null>(null);
 
   // New proposal form state
-  const [propKind, setPropKind] = useState<ProposalKind>('ADD_CHANNEL');
+  const [propKind, setPropKind] = useState<ProposalKind>('RENAME_POD');
   const [propLabel, setPropLabel] = useState('');
   const [propTopic, setPropTopic] = useState('');
-  const [propChannelKind, setPropChannelKind] = useState<ChannelKind>('TEXT');
-  const [propTargetChannelId, setPropTargetChannelId] = useState('');
+  const [propTargetPeerId, setPropTargetPeerId] = useState('');
+  const [propMessageId, setPropMessageId] = useState('');
   const [propCapacity, setPropCapacity] = useState<10 | 25 | 50>(25);
   const [propLocked, setPropLocked] = useState<boolean>(true);
   const [propReason, setPropReason] = useState('');
@@ -110,40 +99,32 @@ export function RightDrawer({
     setPropError(null);
     if (pod) {
       setPropLocked(Boolean(pod.allowRandomMatch));
-      const removable = pod.channels.find((c) => c.slug !== 'general');
-      setPropTargetChannelId(
-        removable?.channelId || pod.channels[0]?.channelId || ''
-      );
-      if (pod.title) setPropLabel(pod.title);
-      else setPropLabel('');
+      setPropLabel(pod.title || '');
       setPropTopic(pod.description || '');
+      const firstOther = members.find((m) => m.peerId !== pod.myPeerId);
+      setPropTargetPeerId(firstOther?.peerId || '');
     }
   }, [pod?.podId]);
 
   useEffect(() => {
     if (!pod) return;
-    if (propKind === 'REMOVE_CHANNEL') {
-      const removable = pod.channels.filter((c) => c.slug !== 'general');
-      if (
-        removable.length > 0 &&
-        !removable.some((c) => c.channelId === propTargetChannelId)
-      ) {
-        setPropTargetChannelId(removable[0].channelId);
-      }
-    } else if (propKind === 'UPDATE_TOPIC') {
-      if (!pod.channels.some((c) => c.channelId === propTargetChannelId)) {
-        setPropTargetChannelId(pod.channels[0]?.channelId || '');
-      }
-    } else if (propKind === 'RENAME_POD') {
+    if (propKind === 'RENAME_POD') {
       setPropLabel(pod.title || '');
       setPropTopic(pod.description || '');
-    } else if (propKind === 'ADD_CHANNEL') {
-      setPropLabel('');
-      setPropTopic('');
+    } else if (propKind === 'UPDATE_TOPIC') {
+      setPropTopic(pod.description || '');
     } else if (propKind === 'TOGGLE_LOCK') {
       setPropLocked(Boolean(pod.allowRandomMatch));
+    } else if (propKind === 'KICK_MEMBER') {
+      const otherPeers = members.filter((m) => m.peerId !== pod.myPeerId);
+      if (
+        otherPeers.length > 0 &&
+        !otherPeers.some((m) => m.peerId === propTargetPeerId)
+      ) {
+        setPropTargetPeerId(otherPeers[0].peerId);
+      }
     }
-  }, [pod, propKind]);
+  }, [members, pod, propKind, propTargetPeerId]);
 
   const proposalsQuery = useQuery<{ proposals: PodProposalDto[] }>({
     queryKey: ['proposals', pod?.podId || ''],
@@ -160,22 +141,6 @@ export function RightDrawer({
     enabled: Boolean(mode === 'votes' && pod),
   });
 
-  const threadQuery = useQuery<ThreadPayload>({
-    queryKey: [
-      'thread',
-      pod?.podId || '',
-      channel?.channelId || '',
-      threadParentId || 0,
-    ],
-    queryFn: () =>
-      apiFetch<ThreadPayload>(
-        `/api/pods/${pod!.podId}/channels/${channel!.channelId}/threads/${threadParentId}`
-      ),
-    enabled: Boolean(
-      mode === 'thread' && pod && channel && threadParentId && threadParentId > 0
-    ),
-  });
-
   const pinsQuery = useQuery<{ messages: RichMessage[] }>({
     queryKey: ['pins', pod?.podId || ''],
     queryFn: () =>
@@ -187,36 +152,6 @@ export function RightDrawer({
     queryKey: ['bookmarks'],
     queryFn: () => apiFetch<{ messages: RichMessage[] }>('/api/bookmarks'),
     enabled: mode === 'bookmarks',
-  });
-
-  const threadReplyMutation = useMutation({
-    mutationFn: async (body: string) => {
-      if (!pod || !channel || !threadParentId) return null;
-      return apiFetch<PostMessageResponse>(
-        `/api/pods/${pod.podId}/channels/${channel.channelId}/messages`,
-        {
-          method: 'POST',
-          body: JSON.stringify({
-            body,
-            parentMessageId: threadParentId,
-            quoteMessageId: 0,
-            attachmentIds: [],
-          }),
-        }
-      );
-    },
-    onSuccess: (res) => {
-      setThreadDraft('');
-      if (res?.message && pod && channel && threadParentId) {
-        upsertThreadReplyInCache(
-          queryClient,
-          pod.podId,
-          channel.channelId,
-          threadParentId,
-          res.message
-        );
-      }
-    },
   });
 
   const submitProposalMutation = useMutation({
@@ -237,10 +172,13 @@ export function RightDrawer({
       setKickPromptPeerId(null);
       setKickReason('');
       setPropReason('');
+      setPropMessageId('');
       setProposeOpen(false);
       syncProposalIntoCaches(queryClient, pod.podId, res.proposal, res.pod);
       queryClient.invalidateQueries({ queryKey: ['proposals', pod.podId] });
-      queryClient.invalidateQueries({ queryKey: ['messages', pod.podId] });
+      queryClient.invalidateQueries({
+        queryKey: ['messages', pod.podId, 'group'],
+      });
       queryClient.invalidateQueries({ queryKey: ['pods'] });
       setMode('votes');
     },
@@ -268,7 +206,17 @@ export function RightDrawer({
         old
           ? {
               pods: old.pods.map((p) =>
-                p.podId === res.pod.podId ? res.pod : p
+                p.podId === res.pod.podId
+                  ? {
+                      ...p,
+                      ...res.pod,
+                      dmConversations:
+                        res.pod.dmConversations &&
+                        res.pod.dmConversations.length > 0
+                          ? res.pod.dmConversations
+                          : p.dmConversations,
+                    }
+                  : p
               ),
             }
           : { pods: [res.pod] }
@@ -317,7 +265,17 @@ export function RightDrawer({
         old
           ? {
               pods: old.pods.map((p) =>
-                p.podId === res.pod.podId ? res.pod : p
+                p.podId === res.pod.podId
+                  ? {
+                      ...p,
+                      ...res.pod,
+                      dmConversations:
+                        res.pod.dmConversations &&
+                        res.pod.dmConversations.length > 0
+                          ? res.pod.dmConversations
+                          : p.dmConversations,
+                    }
+                  : p
               ),
             }
           : { pods: [res.pod] }
@@ -346,42 +304,45 @@ export function RightDrawer({
 
   const knownAliases = members.map((m) => m.alias);
 
-  const podRoster = pod ? voiceRosterByPod[pod.podId] || {} : {};
-  const peerVoiceChannelLabel = new Map<string, string>();
-  if (pod) {
-    for (const [vchId, peers] of Object.entries(podRoster)) {
-      const chObj = pod.channels.find((c) => c.channelId === vchId);
-      const label = chObj?.label || 'Voice';
-      for (const p of peers) {
-        peerVoiceChannelLabel.set(p.peerId, label);
-      }
-    }
-  }
+  const voicePeerIds = new Set(
+    (pod ? voicePeersByPod[pod.podId] || [] : []).map((p) => p.peerId)
+  );
 
   const inVoiceMembers = members.filter(
-    (m) => peerVoiceChannelLabel.has(m.peerId) || Boolean(m.voiceChannelId)
+    (m) => voicePeerIds.has(m.peerId) || Boolean(m.inVoice)
   );
   const onlineMembers = members.filter(
-    (m) =>
-      m.online &&
-      !peerVoiceChannelLabel.has(m.peerId) &&
-      !m.voiceChannelId
+    (m) => m.online && !voicePeerIds.has(m.peerId) && !m.inVoice
   );
   const offlineMembers = members.filter(
-    (m) =>
-      !m.online &&
-      !peerVoiceChannelLabel.has(m.peerId) &&
-      !m.voiceChannelId
+    (m) => !m.online && !voicePeerIds.has(m.peerId) && !m.inVoice
   );
 
-  const jumpToMessage = (msg: RichMessage) => {
-    setActivePodId(msg.podId);
-    setChannelMap({ ...channelMap, [msg.podId]: msg.channelId });
-    if (msg.parentMessageId > 0) {
-      setThreadParentId(msg.parentMessageId);
-    } else {
-      setHighlightedId(msg.id);
+  const openMemberDm = (targetPodId: string, peerId: string | null) => {
+    setActivePodId(targetPodId);
+    setDmPeerMap({ ...dmPeerMap, [targetPodId]: peerId });
+    const key = conversationKey(targetPodId, peerId);
+    setUnreadMap((prev) => {
+      if (!(key in prev)) return prev;
+      const copy = { ...prev };
+      delete copy[key];
+      return copy;
+    });
+    if (typeof window !== 'undefined' && window.innerWidth <= 900) {
+      setMode(null);
     }
+  };
+
+  const jumpToMessage = (msg: RichMessage) => {
+    const msgPod = allPods.find((p) => p.podId === msg.podId) || pod;
+    const myPeerId = msgPod?.myPeerId || '';
+    const otherPeerId = resolveMessagePeerId(
+      msg.senderPeerId,
+      msg.recipientPeerId,
+      myPeerId
+    );
+    openMemberDm(msg.podId, otherPeerId);
+    setHighlightedId(msg.id);
   };
 
   const allProposals = proposalsQuery.data?.proposals || [];
@@ -396,6 +357,10 @@ export function RightDrawer({
   const canAdminManage =
     isAdminPod && (pod?.myRole === 'OWNER' || pod?.myRole === 'ADMIN');
 
+  const otherPeers = pod
+    ? members.filter((m) => m.peerId !== pod.myPeerId)
+    : [];
+
   const handleProposeSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     if (!pod) return;
@@ -407,21 +372,7 @@ export function RightDrawer({
       expiresInMinutes: propExpiresMins,
     };
 
-    if (propKind === 'ADD_CHANNEL') {
-      if (!propLabel.trim()) {
-        setPropError('Enter a name for the proposed channel.');
-        return;
-      }
-      base.label = propLabel.trim();
-      base.topic = propTopic.trim();
-      base.channelKind = propChannelKind;
-    } else if (propKind === 'REMOVE_CHANNEL') {
-      if (!propTargetChannelId) {
-        setPropError('Pick a non-#general channel to remove.');
-        return;
-      }
-      base.channelId = propTargetChannelId;
-    } else if (propKind === 'RENAME_POD') {
+    if (propKind === 'RENAME_POD') {
       if (!propLabel.trim() && !propTopic.trim()) {
         setPropError('Enter a pod title or description.');
         return;
@@ -431,16 +382,31 @@ export function RightDrawer({
       base.topic = propTopic.trim();
       base.description = propTopic.trim();
     } else if (propKind === 'UPDATE_TOPIC') {
-      if (!propTargetChannelId) {
-        setPropError('Pick a channel to update.');
+      if (!propTopic.trim()) {
+        setPropError('Enter a new pod topic or description.');
         return;
       }
-      base.channelId = propTargetChannelId;
       base.topic = propTopic.trim();
+      base.description = propTopic.trim();
     } else if (propKind === 'CHANGE_CAPACITY') {
       base.maxMembers = propCapacity;
     } else if (propKind === 'TOGGLE_LOCK') {
       base.locked = propLocked;
+    } else if (propKind === 'KICK_MEMBER') {
+      if (!propTargetPeerId) {
+        setPropError('Select a member to propose kicking.');
+        return;
+      }
+      base.targetPeerId = propTargetPeerId;
+    } else if (propKind === 'PIN_MESSAGE') {
+      const parsedId = Number(propMessageId.trim());
+      if (!Number.isInteger(parsedId) || parsedId <= 0) {
+        setPropError(
+          'Enter a valid Group Chat message ID (or click the Pin icon directly on any message).'
+        );
+        return;
+      }
+      base.messageId = parsedId;
     }
 
     submitProposalMutation.mutate(base);
@@ -461,62 +427,74 @@ export function RightDrawer({
     if (!pod || m.peerId === pod.myPeerId) return null;
     const targetRole = m.role || 'MEMBER';
 
-    if (isAdminPod) {
-      if (!canAdminManage || targetRole === 'OWNER') return null;
-      return (
-        <div className={styles.rosterMemberActions}>
-          {pod.myRole === 'OWNER' && (
-            <button
-              type="button"
-              className={styles.rosterSmallBtn}
-              disabled={adminRoleMutation.isPending}
-              onClick={() =>
-                adminRoleMutation.mutate({
-                  targetPeerId: m.peerId,
-                  role: targetRole === 'ADMIN' ? 'MEMBER' : 'ADMIN',
-                })
-              }
-              title={
-                targetRole === 'ADMIN'
-                  ? `Remove Admin from ${m.alias}`
-                  : `Promote ${m.alias} to Admin`
-              }
-            >
-              <Shield size={11} />
-              <span>
-                {targetRole === 'ADMIN' ? 'Remove Admin' : 'Make Admin'}
-              </span>
-            </button>
-          )}
-          <button
-            type="button"
-            className={styles.rosterDangerBtn}
-            disabled={adminKickMutation.isPending}
-            onClick={() => adminKickMutation.mutate(m.peerId)}
-            title={`Kick ${m.alias} from group`}
-          >
-            <UserMinus size={11} />
-            <span>Kick</span>
-          </button>
-        </div>
-      );
-    }
-
-    // Democratic Pod: Vote Kick button
     return (
       <div className={styles.rosterMemberActions}>
         <button
           type="button"
-          className={styles.rosterSmallBtn}
-          onClick={() => {
-            setKickPromptPeerId((cur) => (cur === m.peerId ? null : m.peerId));
-            setKickReason('');
-          }}
-          title={`Start a YES/NO vote to kick ${m.alias}`}
+          className={styles.rosterPrimaryDmBtn}
+          onClick={() => openMemberDm(pod.podId, m.peerId)}
+          title={`Open private 1:1 chat with ${m.alias}`}
+          aria-label={`Message ${m.alias} privately`}
         >
-          <Gavel size={11} />
-          <span>Vote Kick</span>
+          <MessageCircle size={12} />
+          <span>Message</span>
         </button>
+
+        {isAdminPod ? (
+          canAdminManage &&
+          targetRole !== 'OWNER' && (
+            <>
+              {pod.myRole === 'OWNER' && (
+                <button
+                  type="button"
+                  className={styles.rosterSmallBtn}
+                  disabled={adminRoleMutation.isPending}
+                  onClick={() =>
+                    adminRoleMutation.mutate({
+                      targetPeerId: m.peerId,
+                      role: targetRole === 'ADMIN' ? 'MEMBER' : 'ADMIN',
+                    })
+                  }
+                  title={
+                    targetRole === 'ADMIN'
+                      ? `Remove Admin from ${m.alias}`
+                      : `Promote ${m.alias} to Admin`
+                  }
+                >
+                  <Shield size={11} />
+                  <span>
+                    {targetRole === 'ADMIN' ? 'Remove Admin' : 'Make Admin'}
+                  </span>
+                </button>
+              )}
+              <button
+                type="button"
+                className={styles.rosterDangerBtn}
+                disabled={adminKickMutation.isPending}
+                onClick={() => adminKickMutation.mutate(m.peerId)}
+                title={`Kick ${m.alias} from group`}
+              >
+                <UserMinus size={11} />
+                <span>Kick</span>
+              </button>
+            </>
+          )
+        ) : (
+          <button
+            type="button"
+            className={styles.rosterSmallBtn}
+            onClick={() => {
+              setKickPromptPeerId((cur) =>
+                cur === m.peerId ? null : m.peerId
+              );
+              setKickReason('');
+            }}
+            title={`Start a YES/NO vote to kick ${m.alias}`}
+          >
+            <Gavel size={11} />
+            <span>Vote Kick</span>
+          </button>
+        )}
       </div>
     );
   };
@@ -582,7 +560,7 @@ export function RightDrawer({
     <div key={m.peerId}>
       <div
         className={styles.rosterMember}
-        style={opts.offline ? { opacity: 0.68 } : undefined}
+        style={opts.offline ? { opacity: 0.72 } : undefined}
       >
         <div style={{ position: 'relative', flexShrink: 0 }}>
           <span
@@ -590,9 +568,10 @@ export function RightDrawer({
               opts.inVoice ? styles.voiceAvatarSpeaking : ''
             }`}
             style={{
-              width: 34,
-              height: 34,
+              width: 36,
+              height: 36,
               fontSize: 12,
+              borderRadius: '50%',
               background: safeAvatarColor(m.color, m.alias),
             }}
           >
@@ -602,12 +581,12 @@ export function RightDrawer({
             <span
               style={{
                 position: 'absolute',
-                right: -2,
-                bottom: -2,
+                right: -1,
+                bottom: -1,
                 width: 11,
                 height: 11,
                 borderRadius: 999,
-                background: '#a1ffcb',
+                background: '#22c55e',
                 border: '2px solid #f8f9f8',
               }}
             />
@@ -643,7 +622,7 @@ export function RightDrawer({
               }}
             >
               <Volume2 size={12} />
-              <span>{peerVoiceChannelLabel.get(m.peerId) || 'In Voice'}</span>
+              <span>In Pod Audio Call</span>
             </div>
           ) : (
             m.customStatus && (
@@ -668,20 +647,15 @@ export function RightDrawer({
     </div>
   );
 
-  const removableChannels = pod
-    ? pod.channels.filter((c) => c.slug !== 'general')
-    : [];
-
   return (
     <aside className={styles.rightDrawer} aria-label="Workspace right panel">
       <div className={styles.drawerHeader}>
         <strong style={{ fontSize: 14.5 }}>
           {effectiveMode === 'members' &&
-            `Pod Roster (${members.length}/${pod?.maxMembers || 25})`}
+            `Pod Members (${members.length}/${pod?.maxMembers || 25})`}
           {effectiveMode === 'votes' && `Pod Votes (${openBadgeCount} open)`}
-          {effectiveMode === 'thread' && 'Thread'}
           {effectiveMode === 'pins' && 'Pinned Messages'}
-          {effectiveMode === 'bookmarks' && 'Saved Bookmarks'}
+          {effectiveMode === 'bookmarks' && 'Saved Messages'}
         </strong>
         <button
           type="button"
@@ -703,7 +677,7 @@ export function RightDrawer({
           }`}
           onClick={() => setMode('members')}
         >
-          Roster
+          Members
         </button>
         <button
           type="button"
@@ -718,17 +692,6 @@ export function RightDrawer({
           {openBadgeCount > 0 && (
             <span className={styles.drawerTabCount}>{openBadgeCount}</span>
           )}
-        </button>
-        <button
-          type="button"
-          role="tab"
-          aria-selected={effectiveMode === 'thread'}
-          className={`${styles.drawerTabBtn} ${
-            effectiveMode === 'thread' ? styles.drawerTabBtnActive : ''
-          }`}
-          onClick={() => setMode('thread')}
-        >
-          Thread
         </button>
         <button
           type="button"
@@ -758,7 +721,7 @@ export function RightDrawer({
       {effectiveMode === 'members' && (
         <>
           <div className={styles.blindNotice}>
-            Blind room: names, genders &amp; nationalities hidden
+            Peer-blind pod: real names, genders &amp; nationalities hidden
           </div>
           <div className={styles.drawerBody}>
             {rosterActionErr && (
@@ -786,7 +749,7 @@ export function RightDrawer({
                 {inVoiceMembers.length > 0 && (
                   <div style={{ marginBottom: 14 }}>
                     <div className={styles.sectionHeader}>
-                      <span>In Voice — {inVoiceMembers.length}</span>
+                      <span>In Call — {inVoiceMembers.length}</span>
                     </div>
                     {inVoiceMembers.map((m) =>
                       renderRosterRow(m, { inVoice: true })
@@ -830,11 +793,12 @@ export function RightDrawer({
                 {isAdminPod ? (
                   <>
                     <div className={styles.votesIntroTitle}>
-                      👑 Custom Group ({pod.isPublicized ? 'Publicized' : 'Private'})
+                      Canopy Pro Group (
+                      {pod.isPublicized ? 'Publicized' : 'Private'})
                     </div>
                     <p className={styles.votesIntroText}>
                       This group uses Canopy Pro Admin moderation. Owners and
-                      Admins manage channels, settings, and kicks directly.
+                      Admins manage group settings, roles, and kicks directly.
                     </p>
                     {canAdminManage && (
                       <button
@@ -867,7 +831,9 @@ export function RightDrawer({
                     >
                       <Plus size={15} />
                       <span>
-                        {proposeOpen ? 'Close Proposal Sheet' : '+ Propose Pod Change'}
+                        {proposeOpen
+                          ? 'Close Proposal Sheet'
+                          : '+ Propose Pod Change'}
                       </span>
                     </button>
                   </>
@@ -932,87 +898,6 @@ export function RightDrawer({
                     </select>
                   </label>
 
-                  {propKind === 'ADD_CHANNEL' && (
-                    <>
-                      <div style={{ display: 'flex', gap: 6 }}>
-                        <button
-                          type="button"
-                          onClick={() => setPropChannelKind('TEXT')}
-                          className={`${styles.podOptionPill} ${
-                            propChannelKind === 'TEXT'
-                              ? styles.podOptionPillActive
-                              : ''
-                          }`}
-                          style={{ flex: 1, minHeight: 40 }}
-                        >
-                          # Text Channel
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => setPropChannelKind('VOICE')}
-                          className={`${styles.podOptionPill} ${
-                            propChannelKind === 'VOICE'
-                              ? styles.podOptionPillActive
-                              : ''
-                          }`}
-                          style={{ flex: 1, minHeight: 40 }}
-                        >
-                          🔊 Voice Channel
-                        </button>
-                      </div>
-                      <input
-                        type="text"
-                        value={propLabel}
-                        onChange={(e) => setPropLabel(e.target.value)}
-                        placeholder="Channel name (e.g. strategy-notes)"
-                        maxLength={48}
-                        required
-                        className={styles.statusInput}
-                        style={{ height: 42 }}
-                        aria-label="Proposed channel name"
-                      />
-                      <input
-                        type="text"
-                        value={propTopic}
-                        onChange={(e) => setPropTopic(e.target.value)}
-                        placeholder="Channel topic (optional)"
-                        maxLength={140}
-                        className={styles.statusInput}
-                        style={{ height: 42 }}
-                        aria-label="Proposed channel topic"
-                      />
-                    </>
-                  )}
-
-                  {propKind === 'REMOVE_CHANNEL' && (
-                    <label className={styles.inviteFieldGroup}>
-                      <span className={styles.podOptionLabel}>
-                        Channel to Remove (#general protected)
-                      </span>
-                      {removableChannels.length === 0 ? (
-                        <p style={{ margin: 0, fontSize: 12, color: '#686868' }}>
-                          Only #general exists right now.
-                        </p>
-                      ) : (
-                        <select
-                          className={styles.inviteSelect}
-                          value={propTargetChannelId}
-                          onChange={(e) =>
-                            setPropTargetChannelId(e.target.value)
-                          }
-                          aria-label="Channel to remove"
-                        >
-                          {removableChannels.map((ch) => (
-                            <option key={ch.channelId} value={ch.channelId}>
-                              {ch.kind === 'VOICE' ? '🔊 ' : '#'}
-                              {ch.label}
-                            </option>
-                          ))}
-                        </select>
-                      )}
-                    </label>
-                  )}
-
                   {propKind === 'RENAME_POD' && (
                     <>
                       <input
@@ -1039,37 +924,17 @@ export function RightDrawer({
                   )}
 
                   {propKind === 'UPDATE_TOPIC' && (
-                    <>
-                      <label className={styles.inviteFieldGroup}>
-                        <span className={styles.podOptionLabel}>Channel</span>
-                        <select
-                          className={styles.inviteSelect}
-                          value={propTargetChannelId}
-                          onChange={(e) =>
-                            setPropTargetChannelId(e.target.value)
-                          }
-                          aria-label="Channel for topic update"
-                        >
-                          {pod.channels.map((ch) => (
-                            <option key={ch.channelId} value={ch.channelId}>
-                              {ch.kind === 'VOICE' ? '🔊 ' : '#'}
-                              {ch.label}
-                            </option>
-                          ))}
-                        </select>
-                      </label>
-                      <input
-                        type="text"
-                        value={propTopic}
-                        onChange={(e) => setPropTopic(e.target.value)}
-                        placeholder="New channel topic..."
-                        maxLength={140}
-                        required
-                        className={styles.statusInput}
-                        style={{ height: 42 }}
-                        aria-label="New channel topic"
-                      />
-                    </>
+                    <input
+                      type="text"
+                      value={propTopic}
+                      onChange={(e) => setPropTopic(e.target.value)}
+                      placeholder="New pod topic / description..."
+                      maxLength={200}
+                      required
+                      className={styles.statusInput}
+                      style={{ height: 42 }}
+                      aria-label="New pod topic"
+                    />
                   )}
 
                   {propKind === 'CHANGE_CAPACITY' && (
@@ -1104,7 +969,11 @@ export function RightDrawer({
                   {propKind === 'TOGGLE_LOCK' && (
                     <div className={styles.inviteFieldGroup}>
                       <span className={styles.podOptionLabel}>
-                        Random Matching ({pod.allowRandomMatch ? 'Currently Unlocked' : 'Currently Locked'})
+                        Random Matching (
+                        {pod.allowRandomMatch
+                          ? 'Currently Unlocked'
+                          : 'Currently Locked'}
+                        )
                       </span>
                       <div style={{ display: 'flex', gap: 6 }}>
                         <button
@@ -1129,6 +998,46 @@ export function RightDrawer({
                         </button>
                       </div>
                     </div>
+                  )}
+
+                  {propKind === 'KICK_MEMBER' && (
+                    <label className={styles.inviteFieldGroup}>
+                      <span className={styles.podOptionLabel}>
+                        Member to Vote Kick
+                      </span>
+                      {otherPeers.length === 0 ? (
+                        <p style={{ margin: 0, fontSize: 12, color: '#686868' }}>
+                          No other members in this pod yet.
+                        </p>
+                      ) : (
+                        <select
+                          className={styles.inviteSelect}
+                          value={propTargetPeerId}
+                          onChange={(e) => setPropTargetPeerId(e.target.value)}
+                          aria-label="Member to vote kick"
+                        >
+                          {otherPeers.map((m) => (
+                            <option key={m.peerId} value={m.peerId}>
+                              {m.alias}
+                            </option>
+                          ))}
+                        </select>
+                      )}
+                    </label>
+                  )}
+
+                  {propKind === 'PIN_MESSAGE' && (
+                    <input
+                      type="number"
+                      min={1}
+                      value={propMessageId}
+                      onChange={(e) => setPropMessageId(e.target.value)}
+                      placeholder="Group message ID (or click Pin on any message)"
+                      required
+                      className={styles.statusInput}
+                      style={{ height: 42 }}
+                      aria-label="Group message ID to pin"
+                    />
                   )}
 
                   <input
@@ -1248,97 +1157,6 @@ export function RightDrawer({
         </div>
       )}
 
-      {/* SLACK THREAD DRAWER */}
-      {effectiveMode === 'thread' && (
-        <>
-          <div className={styles.drawerBody}>
-            {!threadParentId || !pod || !channel ? (
-              <p style={{ fontSize: 13, color: '#686868' }}>
-                Click “Reply in Thread” on any channel message to open a focused
-                Slack thread.
-              </p>
-            ) : threadQuery.isLoading ? (
-              <p style={{ fontSize: 13, color: '#686868' }}>Loading thread...</p>
-            ) : !threadQuery.data ? (
-              <p style={{ fontSize: 13, color: '#686868' }}>
-                Thread could not be loaded.
-              </p>
-            ) : (
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-                <div
-                  style={{
-                    paddingBottom: 8,
-                    borderBottom: '1px solid rgba(35,35,35,0.1)',
-                  }}
-                >
-                  <MessageCard
-                    message={threadQuery.data.parent}
-                    myPeerId={pod.myPeerId}
-                    knownAliases={knownAliases}
-                    compact
-                    allowThreadOpen={false}
-                  />
-                </div>
-
-                <div className={styles.sectionHeader}>
-                  <span>
-                    {threadQuery.data.replies.length}{' '}
-                    {threadQuery.data.replies.length === 1 ? 'Reply' : 'Replies'}
-                  </span>
-                </div>
-
-                {threadQuery.data.replies.map((reply) => (
-                  <MessageCard
-                    key={reply.id}
-                    message={reply}
-                    myPeerId={pod.myPeerId}
-                    knownAliases={knownAliases}
-                    compact
-                    allowThreadOpen={false}
-                  />
-                ))}
-              </div>
-            )}
-          </div>
-
-          {threadParentId && pod && channel && (
-            <form
-              onSubmit={(e) => {
-                e.preventDefault();
-                if (threadDraft.trim() && !threadReplyMutation.isPending) {
-                  threadReplyMutation.mutate(threadDraft.trim());
-                }
-              }}
-              style={{
-                padding: 10,
-                borderTop: '1px solid rgba(35,35,35,0.1)',
-                background: '#ffffff',
-                display: 'flex',
-                gap: 6,
-              }}
-            >
-              <input
-                type="text"
-                value={threadDraft}
-                onChange={(e) => setThreadDraft(e.target.value)}
-                placeholder="Reply in thread..."
-                className={styles.statusInput}
-                style={{ height: 44 }}
-                aria-label="Reply in thread"
-              />
-              <button
-                type="submit"
-                className={styles.sendBtn}
-                disabled={!threadDraft.trim() || threadReplyMutation.isPending}
-                aria-label="Send thread reply"
-              >
-                <Send size={15} />
-              </button>
-            </form>
-          )}
-        </>
-      )}
-
       {/* PINNED MESSAGES */}
       {effectiveMode === 'pins' && (
         <div className={styles.drawerBody}>
@@ -1348,8 +1166,8 @@ export function RightDrawer({
             <p style={{ fontSize: 13, color: '#686868' }}>Loading pins...</p>
           ) : (pinsQuery.data?.messages.length || 0) === 0 ? (
             <p style={{ fontSize: 13, color: '#686868' }}>
-              No pinned messages in #{pod.code} yet. Hover any message and click
-              the Pin icon.
+              No pinned messages in #{pod.code} Group Chat yet. Hover any
+              message and click the Pin icon.
             </p>
           ) : (
             <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
@@ -1367,7 +1185,6 @@ export function RightDrawer({
                     myPeerId={pod.myPeerId}
                     knownAliases={knownAliases}
                     compact
-                    allowThreadOpen={false}
                   />
                   <div style={{ padding: '0 10px 8px', textAlign: 'right' }}>
                     <button
@@ -1390,17 +1207,28 @@ export function RightDrawer({
         <div className={styles.drawerBody}>
           {bookmarksQuery.isLoading ? (
             <p style={{ fontSize: 13, color: '#686868' }}>
-              Loading saved bookmarks...
+              Loading saved messages...
             </p>
           ) : (bookmarksQuery.data?.messages.length || 0) === 0 ? (
             <p style={{ fontSize: 13, color: '#686868' }}>
-              No saved bookmarks yet. Click the Bookmark icon on any message to
-              save it privately.
+              No saved messages yet. Click the Bookmark icon on any Group or
+              Private 1:1 message to save it privately.
             </p>
           ) : (
             <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
               {bookmarksQuery.data!.messages.map((msg) => {
                 const msgPod = allPods.find((p) => p.podId === msg.podId);
+                const myPeerId = msgPod?.myPeerId || pod?.myPeerId || '';
+                const otherPeerId = resolveMessagePeerId(
+                  msg.senderPeerId,
+                  msg.recipientPeerId,
+                  myPeerId
+                );
+                const otherAlias =
+                  msg.senderPeerId === myPeerId
+                    ? msg.recipientAlias || 'Member'
+                    : msg.senderAlias;
+
                 return (
                   <div
                     key={msg.id}
@@ -1421,15 +1249,18 @@ export function RightDrawer({
                       >
                         {msgPod.title
                           ? `${msgPod.title} (#${msgPod.code})`
-                          : `#${msgPod.code}`}
+                          : `#${msgPod.code}`}{' '}
+                        ·{' '}
+                        {otherPeerId
+                          ? `Private 1:1 with ${otherAlias}`
+                          : 'Group Chat'}
                       </div>
                     )}
                     <MessageCard
                       message={msg}
-                      myPeerId={msgPod?.myPeerId || pod?.myPeerId || ''}
+                      myPeerId={myPeerId}
                       knownAliases={knownAliases}
                       compact
-                      allowThreadOpen={false}
                     />
                     <div style={{ padding: '0 10px 8px', textAlign: 'right' }}>
                       <button

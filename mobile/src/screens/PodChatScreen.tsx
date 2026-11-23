@@ -23,13 +23,15 @@ import {
 import { Ionicons } from '@expo/vector-icons';
 import {
   ApiError,
-  createChannel,
   createPodProposal,
   deleteMessage,
-  fetchMessages,
+  fetchDmMessages,
+  fetchPodDms,
+  fetchPodMessages,
   fetchPods,
   leavePod,
-  postMessage,
+  postDmMessage,
+  postPodMessage,
   toggleBookmark,
   togglePin,
   toggleReaction,
@@ -37,30 +39,46 @@ import {
   votePoll,
   voteProposal,
 } from '../api/client';
-import type { WsOutboundFrame } from '../types/canopy';
+import type {
+  DmSummaryDto,
+  PodDetailDto,
+  RichMessageDto,
+  WsOutboundFrame,
+} from '../types/canopy';
 import {
-  activeChannelByPodAtom,
+  activeDmPeerByPodAtom,
   activePodIdAtom,
   activeTabAtom,
-  activeThreadParentAtom,
-  typingByChannelAtom,
+  dmConvoKey,
+  typingByConvoAtom,
+  unreadDmByPodPeerAtom,
   wsConnectedAtom,
 } from '../state/atoms';
-import type { PodDetail, RichMessage } from '../types/canopy';
-import { PALETTE, TOUCH_MIN, capacityTierBadge } from '../theme/palette';
+import {
+  PALETTE,
+  TOUCH_MIN,
+  aliasInitials,
+  capacityTierBadge,
+  safePeerColor,
+} from '../theme/palette';
 import { MessageCard } from '../components/MessageCard';
-import { ThreadModal } from '../components/ThreadModal';
 import { InviteShareModal } from '../components/InviteShareModal';
 import { PodGovernanceModal } from '../components/PodGovernanceModal';
 
 const QUICK_EMOJIS = ['🔥', '👍', '😂', '🎯', '❤️'];
 
-const SLASH_CHIPS: ReadonlyArray<{ cmd: string; label: string }> = [
+const GROUP_SLASH_CHIPS: ReadonlyArray<{ cmd: string; label: string }> = [
   { cmd: '/invite', label: '/invite' },
   { cmd: '/poll', label: '/poll' },
   { cmd: '/icebreaker', label: '/icebreaker' },
   { cmd: '/shrug', label: '/shrug' },
   { cmd: '/rematch', label: '/rematch' },
+];
+
+const DM_SLASH_CHIPS: ReadonlyArray<{ cmd: string; label: string }> = [
+  { cmd: '/shrug', label: '/shrug' },
+  { cmd: '/status', label: '/status' },
+  { cmd: '/invite', label: '/invite' },
 ];
 
 const MONO_FONT = Platform.select({
@@ -69,6 +87,16 @@ const MONO_FONT = Platform.select({
   default: 'monospace',
 });
 
+interface PeerChatItem {
+  peerId: string;
+  alias: string;
+  color: string;
+  online: boolean;
+  inVoice: boolean;
+  customStatus: string;
+  dm: DmSummaryDto | null;
+}
+
 export function PodChatScreen({
   sendFrame,
 }: {
@@ -76,23 +104,19 @@ export function PodChatScreen({
 }) {
   const queryClient = useQueryClient();
   const [activePodId, setActivePodId] = useAtom(activePodIdAtom);
-  const [activeChannelMap, setActiveChannelMap] = useAtom(
-    activeChannelByPodAtom
-  );
-  const [threadParent, setThreadParent] = useAtom(activeThreadParentAtom);
+  const [activeDmPeerMap, setActiveDmPeerMap] = useAtom(activeDmPeerByPodAtom);
+  const [unreadDmMap, setUnreadDmMap] = useAtom(unreadDmByPodPeerAtom);
   const setActiveTab = useSetAtom(activeTabAtom);
-  const typingByChannel = useAtomValue(typingByChannelAtom);
+  const typingByConvo = useAtomValue(typingByConvoAtom);
   const wsConnected = useAtomValue(wsConnectedAtom);
 
   const [podSwitcherOpen, setPodSwitcherOpen] = useState(false);
+  const [dmDirectoryOpen, setDmDirectoryOpen] = useState(false);
   const [inviteModalOpen, setInviteModalOpen] = useState(false);
   const [governanceModalOpen, setGovernanceModalOpen] = useState(false);
-  const [newChannelModalOpen, setNewChannelModalOpen] = useState(false);
-  const [newChannelLabel, setNewChannelLabel] = useState('');
-  const [newChannelTopic, setNewChannelTopic] = useState('');
 
-  const [actionTarget, setActionTarget] = useState<RichMessage | null>(null);
-  const [quoteTarget, setQuoteTarget] = useState<RichMessage | null>(null);
+  const [actionTarget, setActionTarget] = useState<RichMessageDto | null>(null);
+  const [quoteTarget, setQuoteTarget] = useState<RichMessageDto | null>(null);
   const [draft, setDraft] = useState('');
   const [composerNotice, setComposerNotice] = useState<string | null>(null);
 
@@ -112,7 +136,7 @@ export function PodChatScreen({
   });
 
   const pods = podsQuery.data?.pods ?? [];
-  const activePod: PodDetail | null = useMemo(() => {
+  const activePod: PodDetailDto | null = useMemo(() => {
     if (pods.length === 0) return null;
     return pods.find((p) => p.podId === activePodId) ?? pods[0];
   }, [pods, activePodId]);
@@ -123,38 +147,126 @@ export function PodChatScreen({
     }
   }, [activePod, activePodId, setActivePodId]);
 
-  const textChannels = useMemo(
-    () => (activePod?.channels ?? []).filter((c) => c.kind === 'TEXT'),
-    [activePod]
+  const podId = activePod?.podId ?? '';
+  const activePeerId: string | null = podId
+    ? activeDmPeerMap[podId] ?? null
+    : null;
+
+  const dmsQuery = useQuery({
+    queryKey: ['dms', podId],
+    queryFn: () => fetchPodDms(podId),
+    enabled: !!podId,
+  });
+
+  const dmConversations: DmSummaryDto[] = useMemo(
+    () =>
+      dmsQuery.data?.conversations ?? activePod?.dmConversations ?? [],
+    [dmsQuery.data, activePod?.dmConversations]
   );
 
-  const activeChannel = useMemo(() => {
-    if (!activePod || textChannels.length === 0) return null;
-    const savedId = activeChannelMap[activePod.podId];
-    return (
-      textChannels.find((c) => c.channelId === savedId) ?? textChannels[0]
-    );
-  }, [activePod, textChannels, activeChannelMap]);
+  // Ordered 1:1 peers: recent DM conversations first, then online peers, then offline peers
+  const orderedPeers: PeerChatItem[] = useMemo(() => {
+    if (!activePod) return [];
+    const dmMap = new Map<string, DmSummaryDto>();
+    for (const dm of dmConversations) {
+      if (dm.peerId !== activePod.myPeerId) {
+        dmMap.set(dm.peerId, dm);
+      }
+    }
 
-  const podId = activePod?.podId ?? '';
-  const channelId = activeChannel?.channelId ?? '';
+    const memberMap = new Map(
+      activePod.members
+        .filter((m) => m.peerId !== activePod.myPeerId)
+        .map((m) => [m.peerId, m])
+    );
+
+    const result: PeerChatItem[] = [];
+    const seen = new Set<string>();
+
+    for (const dm of dmConversations) {
+      if (dm.peerId === activePod.myPeerId || seen.has(dm.peerId)) continue;
+      const m = memberMap.get(dm.peerId);
+      seen.add(dm.peerId);
+      result.push({
+        peerId: dm.peerId,
+        alias: m?.alias ?? dm.peerAlias,
+        color: m?.color ?? dm.peerColor,
+        online: m?.online ?? dm.online,
+        inVoice: m?.inVoice ?? false,
+        customStatus: m?.customStatus ?? '',
+        dm,
+      });
+    }
+
+    const remainingMembers = Array.from(memberMap.values())
+      .filter((m) => !seen.has(m.peerId))
+      .sort((a, b) => {
+        if (a.online !== b.online) return a.online ? -1 : 1;
+        return a.alias.localeCompare(b.alias);
+      });
+
+    for (const m of remainingMembers) {
+      result.push({
+        peerId: m.peerId,
+        alias: m.alias,
+        color: m.color,
+        online: m.online,
+        inVoice: m.inVoice,
+        customStatus: m.customStatus,
+        dm: dmMap.get(m.peerId) ?? null,
+      });
+    }
+
+    return result;
+  }, [activePod, dmConversations]);
+
+  const activePeerInfo = useMemo(() => {
+    if (!activePeerId) return null;
+    return orderedPeers.find((p) => p.peerId === activePeerId) ?? null;
+  }, [activePeerId, orderedPeers]);
+
+  // Clear unread badge when viewing a 1:1 DM
+  useEffect(() => {
+    if (!podId || !activePeerId) return;
+    const key = dmConvoKey(podId, activePeerId);
+    if ((unreadDmMap[key] ?? 0) > 0) {
+      setUnreadDmMap((prev) => ({ ...prev, [key]: 0 }));
+    }
+  }, [podId, activePeerId, unreadDmMap, setUnreadDmMap]);
+
+  // Clear cross-conversation quote target on conversation switch
+  useEffect(() => {
+    setQuoteTarget(null);
+    setComposerNotice(null);
+  }, [podId, activePeerId]);
+
+  const convoQueryKey = useMemo(
+    () =>
+      activePeerId
+        ? (['messages', podId, 'dm', activePeerId] as const)
+        : (['messages', podId, 'group'] as const),
+    [podId, activePeerId]
+  );
 
   const messagesQuery = useInfiniteQuery({
-    queryKey: ['messages', podId, channelId],
-    queryFn: ({ pageParam }) => fetchMessages(podId, channelId, pageParam, 40),
+    queryKey: convoQueryKey,
+    queryFn: ({ pageParam }) =>
+      activePeerId
+        ? fetchDmMessages(podId, activePeerId, pageParam, 40)
+        : fetchPodMessages(podId, pageParam, 40),
     initialPageParam: 0,
     getNextPageParam: (lastPage) =>
       lastPage.nextBeforeId && lastPage.nextBeforeId > 0
         ? lastPage.nextBeforeId
         : undefined,
-    enabled: !!podId && !!channelId,
+    enabled: !!podId,
   });
 
   const chronologicalMessages = useMemo(() => {
     const pages = messagesQuery.data?.pages ?? [];
     if (pages.length === 0) return [];
     const seen = new Set<number>();
-    const combined: RichMessage[] = [];
+    const combined: RichMessageDto[] = [];
     for (let i = pages.length - 1; i >= 0; i--) {
       for (const msg of pages[i].messages) {
         if (!seen.has(msg.id)) {
@@ -176,21 +288,47 @@ export function PodChatScreen({
     };
   }, []);
 
+  const switchConversation = (nextPeerId: string | null) => {
+    if (!podId) return;
+    if (draft.trim().length > 0) {
+      sendFrame({
+        type: 'typing',
+        targetPeerId: activePeerId,
+        isTyping: false,
+      });
+    }
+    setActiveDmPeerMap((prev) => ({
+      ...prev,
+      [podId]: nextPeerId,
+    }));
+  };
+
+  const openPrivateChat = (peerId: string) => {
+    if (!podId || peerId === activePod?.myPeerId) return;
+    setDmDirectoryOpen(false);
+    setActionTarget(null);
+    switchConversation(peerId);
+  };
+
   const postMutation = useMutation({
     mutationFn: (payload: {
       body: string;
       quoteMessageId?: number;
       attachmentIds?: number[];
-    }) => postMessage(podId, channelId, payload),
+    }) =>
+      activePeerId
+        ? postDmMessage(podId, activePeerId, payload)
+        : postPodMessage(podId, payload),
     onSuccess: (res) => {
       setDraft('');
       setQuoteTarget(null);
       setComposerNotice(
         res.commandHandled ? `Updated ${res.commandHandled}` : null
       );
-      queryClient.invalidateQueries({
-        queryKey: ['messages', podId, channelId],
-      });
+      queryClient.invalidateQueries({ queryKey: convoQueryKey });
+      if (activePeerId) {
+        queryClient.invalidateQueries({ queryKey: ['dms', podId] });
+      }
       if (res.commandHandled === 'status') {
         queryClient.invalidateQueries({ queryKey: ['pods'] });
       }
@@ -211,9 +349,7 @@ export function PodChatScreen({
       emoji: string;
     }) => toggleReaction(messageId, emoji),
     onSuccess: () => {
-      queryClient.invalidateQueries({
-        queryKey: ['messages', podId, channelId],
-      });
+      queryClient.invalidateQueries({ queryKey: convoQueryKey });
     },
   });
 
@@ -226,6 +362,7 @@ export function PodChatScreen({
         if (
           err instanceof ApiError &&
           err.status === 403 &&
+          !activePeerId &&
           activePod?.governanceMode !== 'ADMIN'
         ) {
           await createPodProposal(podId, {
@@ -243,9 +380,7 @@ export function PodChatScreen({
         queryClient.invalidateQueries({ queryKey: ['proposals', podId] });
         queryClient.invalidateQueries({ queryKey: ['pods'] });
       }
-      queryClient.invalidateQueries({
-        queryKey: ['messages', podId, channelId],
-      });
+      queryClient.invalidateQueries({ queryKey: convoQueryKey });
       queryClient.invalidateQueries({ queryKey: ['pins', podId] });
     },
     onError: (err) => {
@@ -261,9 +396,7 @@ export function PodChatScreen({
       setComposerNotice(
         res.bookmarked ? 'Saved to bookmarks.' : 'Removed from saved.'
       );
-      queryClient.invalidateQueries({
-        queryKey: ['messages', podId, channelId],
-      });
+      queryClient.invalidateQueries({ queryKey: convoQueryKey });
       queryClient.invalidateQueries({ queryKey: ['bookmarks'] });
     },
   });
@@ -271,9 +404,10 @@ export function PodChatScreen({
   const deleteMutation = useMutation({
     mutationFn: (messageId: number) => deleteMessage(messageId),
     onSuccess: () => {
-      queryClient.invalidateQueries({
-        queryKey: ['messages', podId, channelId],
-      });
+      queryClient.invalidateQueries({ queryKey: convoQueryKey });
+      if (activePeerId) {
+        queryClient.invalidateQueries({ queryKey: ['dms', podId] });
+      }
     },
   });
 
@@ -286,9 +420,7 @@ export function PodChatScreen({
       optionIndex: number;
     }) => votePoll(pollId, optionIndex),
     onSuccess: () => {
-      queryClient.invalidateQueries({
-        queryKey: ['messages', podId, channelId],
-      });
+      queryClient.invalidateQueries({ queryKey: convoQueryKey });
     },
   });
 
@@ -301,60 +433,12 @@ export function PodChatScreen({
       vote: boolean;
     }) => voteProposal(proposalId, vote),
     onSuccess: () => {
-      queryClient.invalidateQueries({
-        queryKey: ['messages', podId, channelId],
-      });
+      queryClient.invalidateQueries({ queryKey: ['messages', podId, 'group'] });
       queryClient.invalidateQueries({ queryKey: ['proposals', podId] });
       queryClient.invalidateQueries({ queryKey: ['pods'] });
     },
     onError: (err) => {
       setComposerNotice(err instanceof Error ? err.message : 'Vote failed.');
-    },
-  });
-
-  const createChannelMutation = useMutation({
-    mutationFn: async () => {
-      if (
-        activePod?.governanceMode !== 'ADMIN' &&
-        (activePod?.memberCount ?? 1) > 1
-      ) {
-        const res = await createPodProposal(podId, {
-          kind: 'ADD_CHANNEL',
-          label: newChannelLabel.trim(),
-          topic: newChannelTopic.trim(),
-          channelKind: 'TEXT',
-        });
-        return { kind: 'proposal' as const, proposal: res.proposal };
-      }
-      const res = await createChannel(podId, {
-        label: newChannelLabel.trim(),
-        topic: newChannelTopic.trim(),
-        kind: 'TEXT',
-      });
-      return { kind: 'created' as const, channel: res.channel };
-    },
-    onSuccess: (res) => {
-      setNewChannelModalOpen(false);
-      setNewChannelLabel('');
-      setNewChannelTopic('');
-      queryClient.invalidateQueries({ queryKey: ['pods'] });
-      if (res.kind === 'created') {
-        setActiveChannelMap((prev) => ({
-          ...prev,
-          [podId]: res.channel.channelId,
-        }));
-      } else {
-        setComposerNotice('Opened YES/NO pod vote to add channel.');
-        queryClient.invalidateQueries({ queryKey: ['proposals', podId] });
-        queryClient.invalidateQueries({
-          queryKey: ['messages', podId, channelId],
-        });
-      }
-    },
-    onError: (err) => {
-      setComposerNotice(
-        err instanceof Error ? err.message : 'Channel creation failed.'
-      );
     },
   });
 
@@ -375,23 +459,35 @@ export function PodChatScreen({
 
   const handleDraftChange = (text: string) => {
     setDraft(text);
-    if (!channelId) return;
+    if (!podId) return;
     if (text.trim().length > 0) {
-      sendFrame({ type: 'typing', channelId, isTyping: true });
+      sendFrame({
+        type: 'typing',
+        targetPeerId: activePeerId,
+        isTyping: true,
+      });
       if (typingStopTimerRef.current) {
         clearTimeout(typingStopTimerRef.current);
       }
       typingStopTimerRef.current = setTimeout(() => {
-        sendFrame({ type: 'typing', channelId, isTyping: false });
+        sendFrame({
+          type: 'typing',
+          targetPeerId: activePeerId,
+          isTyping: false,
+        });
       }, 2400);
     } else {
-      sendFrame({ type: 'typing', channelId, isTyping: false });
+      sendFrame({
+        type: 'typing',
+        targetPeerId: activePeerId,
+        isTyping: false,
+      });
     }
   };
 
   const handleSendText = () => {
     const trimmed = draft.trim();
-    if (!trimmed || !podId || !channelId || postMutation.isPending) return;
+    if (!trimmed || !podId || postMutation.isPending) return;
     if (trimmed === '/invite') {
       setDraft('');
       setInviteModalOpen(true);
@@ -402,7 +498,11 @@ export function PodChatScreen({
       rematchMutation.mutate();
       return;
     }
-    sendFrame({ type: 'typing', channelId, isTyping: false });
+    sendFrame({
+      type: 'typing',
+      targetPeerId: activePeerId,
+      isTyping: false,
+    });
     postMutation.mutate({
       body: trimmed,
       quoteMessageId: quoteTarget?.id ?? 0,
@@ -415,11 +515,13 @@ export function PodChatScreen({
     } else if (cmd === '/poll') {
       setDraft('/poll "What should our pod do next?" "Option A" "Option B"');
     } else if (cmd === '/icebreaker') {
-      if (podId && channelId) {
+      if (podId && !activePeerId) {
         postMutation.mutate({ body: '/icebreaker' });
       }
     } else if (cmd === '/shrug') {
       setDraft((prev) => (prev ? `/shrug ${prev}` : '/shrug all good'));
+    } else if (cmd === '/status') {
+      setDraft('/status Down to chat tonight');
     } else if (cmd === '/rematch') {
       rematchMutation.mutate();
     }
@@ -473,7 +575,7 @@ export function PodChatScreen({
   };
 
   const finishAndSendVoiceNote = async () => {
-    if (!recordingRef.current || !podId || !channelId) return;
+    if (!recordingRef.current || !podId) return;
     if (recordTimerRef.current) {
       clearInterval(recordTimerRef.current);
       recordTimerRef.current = null;
@@ -499,16 +601,20 @@ export function PodChatScreen({
         uri,
         durationMs
       );
-      await postMessage(podId, channelId, {
+      const payload = {
         body: draft.trim() || 'Voice note',
         quoteMessageId: quoteTarget?.id ?? 0,
         attachmentIds: [attachment.id],
-      });
+      };
+      if (activePeerId) {
+        await postDmMessage(podId, activePeerId, payload);
+        queryClient.invalidateQueries({ queryKey: ['dms', podId] });
+      } else {
+        await postPodMessage(podId, payload);
+      }
       setDraft('');
       setQuoteTarget(null);
-      queryClient.invalidateQueries({
-        queryKey: ['messages', podId, channelId],
-      });
+      queryClient.invalidateQueries({ queryKey: convoQueryKey });
     } catch (err) {
       setComposerNotice(
         err instanceof Error ? err.message : 'Failed to upload voice note.'
@@ -537,22 +643,33 @@ export function PodChatScreen({
           onPress={() => setActiveTab('pods')}
           style={styles.goPodsBtn}
         >
-          <Text style={styles.goPodsBtnText}>Browse Pods & Match</Text>
+          <Text style={styles.goPodsBtnText}>Browse Pods &amp; Match</Text>
         </Pressable>
       </View>
     );
   }
 
-  const typingAliases = (typingByChannel[channelId] ?? []).filter(
+  const activeTypingKey = dmConvoKey(podId, activePeerId);
+  const typingAliases = (typingByConvo[activeTypingKey] ?? []).filter(
     (a) => a !== activePod.myAlias
   );
+  const activePeerAlias =
+    activePeerInfo?.alias ??
+    activePod.members.find((m) => m.peerId === activePeerId)?.alias ??
+    'Peer';
+
+  const totalUnreadDmsInPod = orderedPeers.reduce((sum, p) => {
+    return sum + (unreadDmMap[dmConvoKey(podId, p.peerId)] ?? 0);
+  }, 0);
+
+  const slashChips = activePeerId ? DM_SLASH_CHIPS : GROUP_SLASH_CHIPS;
 
   return (
     <KeyboardAvoidingView
       style={styles.container}
       behavior={Platform.OS === 'ios' ? 'padding' : undefined}
     >
-      {/* Top Pod Switcher Bar + Channel Strip */}
+      {/* Top Pod Header + Native Chat Switcher Strip */}
       <View style={styles.topHeader}>
         <View style={styles.podBarRow}>
           <Pressable
@@ -622,61 +739,146 @@ export function PodChatScreen({
           </View>
         </View>
 
-        {/* Horizontal Scrollable Text Channels */}
+        {/* Sleek Chat Switcher Strip: Group Chat + 1:1 Member DM Pills + Members/+DM Sheet */}
         <ScrollView
           horizontal
           showsHorizontalScrollIndicator={false}
-          contentContainerStyle={styles.channelsStrip}
+          contentContainerStyle={styles.chatSwitcherStrip}
         >
-          {textChannels.map((ch) => {
-            const selected = ch.channelId === channelId;
+          {/* Pill 1: Pod Group Chat */}
+          <Pressable
+            accessibilityRole="tab"
+            accessibilityLabel={`Group Chat, ${activePod.memberCount} members`}
+            accessibilityState={{ selected: activePeerId === null }}
+            onPress={() => switchConversation(null)}
+            style={[
+              styles.chatPill,
+              activePeerId === null && styles.chatPillActive,
+            ]}
+          >
+            <Ionicons
+              name="people"
+              size={15}
+              color={
+                activePeerId === null ? PALETTE.charcoal : PALETTE.mint
+              }
+            />
+            <Text
+              style={[
+                styles.chatPillText,
+                activePeerId === null && styles.chatPillTextActive,
+              ]}
+            >
+              Group Chat ({activePod.memberCount})
+            </Text>
+          </Pressable>
+
+          {/* 1:1 Member DM Pills */}
+          {orderedPeers.map((peer) => {
+            const selected = activePeerId === peer.peerId;
+            const unread = unreadDmMap[dmConvoKey(podId, peer.peerId)] ?? 0;
             return (
               <Pressable
-                key={ch.channelId}
+                key={peer.peerId}
                 accessibilityRole="tab"
+                accessibilityLabel={`Private chat with ${peer.alias}`}
                 accessibilityState={{ selected }}
-                onPress={() =>
-                  setActiveChannelMap((prev) => ({
-                    ...prev,
-                    [activePod.podId]: ch.channelId,
-                  }))
-                }
-                style={[
-                  styles.channelPill,
-                  selected && styles.channelPillActive,
-                ]}
+                onPress={() => switchConversation(peer.peerId)}
+                style={[styles.chatPill, selected && styles.chatPillActive]}
               >
+                <View
+                  style={[
+                    styles.peerOnlineDot,
+                    peer.online
+                      ? selected
+                        ? styles.peerOnlineDotOnMint
+                        : styles.peerOnlineDotLive
+                      : styles.peerOnlineDotOffline,
+                  ]}
+                />
                 <Text
                   style={[
-                    styles.channelPillText,
-                    selected && styles.channelPillTextActive,
+                    styles.chatPillText,
+                    selected && styles.chatPillTextActive,
                   ]}
+                  numberOfLines={1}
                 >
-                  #{ch.slug}
+                  {peer.alias}
                 </Text>
+                {unread > 0 ? (
+                  <View
+                    style={[
+                      styles.unreadBadge,
+                      selected && styles.unreadBadgeOnMint,
+                    ]}
+                  >
+                    <Text
+                      style={[
+                        styles.unreadBadgeText,
+                        selected && styles.unreadBadgeTextOnMint,
+                      ]}
+                    >
+                      {unread}
+                    </Text>
+                  </View>
+                ) : null}
               </Pressable>
             );
           })}
 
-          {activePod.governanceMode !== 'ADMIN' ||
-          activePod.myRole === 'OWNER' ||
-          activePod.myRole === 'ADMIN' ? (
-            <Pressable
-              accessibilityRole="button"
-              accessibilityLabel="Create text channel"
-              onPress={() => setNewChannelModalOpen(true)}
-              style={styles.addChannelPill}
-            >
-              <Text style={styles.addChannelPillText}>
-                {activePod.governanceMode !== 'ADMIN' &&
-                activePod.memberCount > 1
-                  ? '+ Vote Channel'
-                  : '+ Channel'}
-              </Text>
-            </Pressable>
-          ) : null}
+          {/* + DM / Members Directory Trigger */}
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel="Open members and private messages list"
+            onPress={() => setDmDirectoryOpen(true)}
+            style={styles.membersDmBtn}
+          >
+            <Ionicons
+              name="chatbubble-ellipses-outline"
+              size={15}
+              color={PALETTE.mint}
+            />
+            <Text style={styles.membersDmBtnText}>
+              + DM · Members ({orderedPeers.length})
+            </Text>
+            {totalUnreadDmsInPod > 0 ? (
+              <View style={styles.unreadBadge}>
+                <Text style={styles.unreadBadgeText}>
+                  {totalUnreadDmsInPod}
+                </Text>
+              </View>
+            ) : null}
+          </Pressable>
         </ScrollView>
       </View>
+
+      {/* Crisp 1:1 Private Chat Banner + Quick Return to Group */}
+      {activePeerId !== null ? (
+        <View style={styles.privateDmBanner}>
+          <View style={styles.privateDmBannerLeft}>
+            <Ionicons name="lock-closed" size={15} color={PALETTE.forest} />
+            <View style={styles.privateDmTextCol}>
+              <Text style={styles.privateDmTitle} numberOfLines={1}>
+                Private 1:1 with {activePeerAlias} · Hidden from rest of pod
+              </Text>
+              <Text style={styles.privateDmSub} numberOfLines={1}>
+                {activePeerInfo?.online ? '● Online now' : '○ Offline'}
+                {activePeerInfo?.customStatus
+                  ? ` · ${activePeerInfo.customStatus}`
+                  : ''}
+              </Text>
+            </View>
+          </View>
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel="Back to Pod Group Chat"
+            onPress={() => switchConversation(null)}
+            style={styles.backGroupChip}
+          >
+            <Text style={styles.backGroupChipText}>← Group</Text>
+          </Pressable>
+        </View>
+      ) : null}
 
       {/* Messages FlatList */}
       {messagesQuery.isLoading ? (
@@ -704,14 +906,25 @@ export function PodChatScreen({
                   </Text>
                 )}
               </Pressable>
-            ) : (
-              <View style={styles.channelIntroCard}>
-                <Text style={styles.channelIntroTitle}>
-                  Welcome to #{activeChannel?.label ?? 'general'}
+            ) : activePeerId !== null ? (
+              <View style={styles.roomIntroCard}>
+                <Text style={styles.roomIntroTitle}>
+                  🔒 Private 1:1 Chat with {activePeerAlias}
                 </Text>
-                <Text style={styles.channelIntroSub}>
-                  {activeChannel?.topic ||
-                    'Peer-blind channel: try **bold**, `code`, ||spoilers||, /poll, or Voice Notes.'}
+                <Text style={styles.roomIntroSub}>
+                  Only you ({activePod.myAlias}) and {activePeerAlias} can read
+                  or search these messages inside #{activePod.code}. Zero real
+                  identities exposed.
+                </Text>
+              </View>
+            ) : (
+              <View style={styles.roomIntroCard}>
+                <Text style={styles.roomIntroTitle}>
+                  Pod Group Chat · {activePod.memberCount} peers
+                </Text>
+                <Text style={styles.roomIntroSub}>
+                  {activePod.description ||
+                    'Shared peer-blind group chat — tap any member to message privately 1:1, or drop a /poll or Voice Note.'}
                 </Text>
               </View>
             )
@@ -720,8 +933,10 @@ export function PodChatScreen({
             <MessageCard
               message={item}
               myPeerId={activePod.myPeerId}
+              isDmView={activePeerId !== null}
               onOpenActions={(msg) => setActionTarget(msg)}
-              onOpenThread={(msg) => setThreadParent(msg)}
+              onMessagePrivately={(peerId) => openPrivateChat(peerId)}
+              onReplyQuote={(msg) => setQuoteTarget(msg)}
               onToggleReaction={(messageId, emoji) =>
                 reactMutation.mutate({ messageId, emoji })
               }
@@ -734,8 +949,10 @@ export function PodChatScreen({
             />
           )}
           ListEmptyComponent={
-            <Text style={styles.emptyChannelText}>
-              No messages yet. Tap /icebreaker below to spark the pod!
+            <Text style={styles.emptyRoomText}>
+              {activePeerId !== null
+                ? `Say hi to ${activePeerAlias} privately — only the two of you will see it.`
+                : 'No messages yet. Tap /icebreaker below to spark the pod!'}
             </Text>
           }
         />
@@ -770,10 +987,10 @@ export function PodChatScreen({
         <View style={styles.quoteComposerBanner}>
           <View style={styles.quoteComposerTextCol}>
             <Text style={styles.quoteComposerAuthor}>
-              Quoting {quoteTarget.senderAlias}
+              Replying to {quoteTarget.senderAlias}
             </Text>
             <Text style={styles.quoteComposerSnippet} numberOfLines={1}>
-              {quoteTarget.body || 'Attachment'}
+              {quoteTarget.body || 'Voice note / attachment'}
             </Text>
           </View>
           <Pressable
@@ -796,7 +1013,7 @@ export function PodChatScreen({
           contentContainerStyle={styles.slashStrip}
           keyboardShouldPersistTaps="handled"
         >
-          {SLASH_CHIPS.map((chip) => (
+          {slashChips.map((chip) => (
             <Pressable
               key={chip.cmd}
               accessibilityRole="button"
@@ -854,7 +1071,11 @@ export function PodChatScreen({
             <TextInput
               value={draft}
               onChangeText={handleDraftChange}
-              placeholder={`Message #${activeChannel?.slug ?? 'general'}...`}
+              placeholder={
+                activePeerId
+                  ? `Message ${activePeerAlias} privately...`
+                  : `Message Group Chat...`
+              }
               placeholderTextColor={PALETTE.muted}
               multiline
               style={styles.composerInput}
@@ -877,17 +1098,6 @@ export function PodChatScreen({
         )}
       </View>
 
-      {/* Slack Thread Modal */}
-      <ThreadModal
-        visible={!!threadParent}
-        podId={podId}
-        channelId={channelId}
-        channelLabel={activeChannel?.slug ?? 'general'}
-        myPeerId={activePod.myPeerId}
-        parentMessage={threadParent}
-        onClose={() => setThreadParent(null)}
-      />
-
       {/* Pod Share / Invite Modal */}
       <InviteShareModal
         visible={inviteModalOpen}
@@ -900,7 +1110,166 @@ export function PodChatScreen({
         visible={governanceModalOpen}
         pod={activePod}
         onClose={() => setGovernanceModalOpen(false)}
+        onOpenMemberDm={(peerId) => {
+          setGovernanceModalOpen(false);
+          openPrivateChat(peerId);
+        }}
       />
+
+      {/* Members & Private 1:1 DMs Bottom Sheet */}
+      <Modal
+        visible={dmDirectoryOpen}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setDmDirectoryOpen(false)}
+      >
+        <Pressable
+          style={styles.sheetBackdrop}
+          onPress={() => setDmDirectoryOpen(false)}
+        >
+          <Pressable style={styles.dmSheetCard} onPress={() => {}}>
+            <View style={styles.dmSheetHeader}>
+              <View style={styles.dmSheetHeaderCol}>
+                <Text style={styles.sheetTitle}>
+                  Pod Members &amp; Private DMs
+                </Text>
+                <Text style={styles.dmSheetSub}>
+                  You are {activePod.myAlias} · Tap any peer to chat 1-on-1
+                </Text>
+              </View>
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel="Close members list"
+                onPress={() => setDmDirectoryOpen(false)}
+                style={styles.smallCloseBtn}
+              >
+                <Ionicons name="close" size={20} color={PALETTE.ink} />
+              </Pressable>
+            </View>
+
+            <ScrollView
+              style={styles.dmMembersScroll}
+              contentContainerStyle={styles.dmMembersContent}
+            >
+              {/* Quick return to Group Chat row */}
+              <Pressable
+                accessibilityRole="button"
+                onPress={() => {
+                  setDmDirectoryOpen(false);
+                  switchConversation(null);
+                }}
+                style={[
+                  styles.memberDmRow,
+                  activePeerId === null && styles.memberDmRowActive,
+                ]}
+              >
+                <View
+                  style={[
+                    styles.memberSheetAvatar,
+                    { backgroundColor: PALETTE.forest },
+                  ]}
+                >
+                  <Ionicons name="people" size={18} color={PALETTE.mint} />
+                </View>
+                <View style={styles.memberDmInfoCol}>
+                  <Text style={styles.memberDmAlias}>
+                    Pod Group Chat ({activePod.memberCount})
+                  </Text>
+                  <Text style={styles.memberDmSnippet} numberOfLines={1}>
+                    Shared room with all pod members
+                  </Text>
+                </View>
+                <View style={styles.openDmBtnSecondary}>
+                  <Text style={styles.openDmBtnSecondaryText}>Open Group</Text>
+                </View>
+              </Pressable>
+
+              {orderedPeers.length === 0 ? (
+                <Text style={styles.emptyRoomText}>
+                  No other members in this pod yet — tap Share / Invite to bring
+                  peers in!
+                </Text>
+              ) : (
+                orderedPeers.map((peer) => {
+                  const avatarCol = safePeerColor(peer.color, peer.alias);
+                  const unread =
+                    unreadDmMap[dmConvoKey(podId, peer.peerId)] ?? 0;
+                  const lastSnippet = peer.dm
+                    ? `${
+                        peer.dm.lastSenderPeerId === activePod.myPeerId
+                          ? 'You'
+                          : peer.alias
+                      }: ${peer.dm.lastBody || 'Voice note'}`
+                    : peer.customStatus || 'Tap to start a private 1:1 chat';
+
+                  return (
+                    <View
+                      key={peer.peerId}
+                      style={[
+                        styles.memberDmRow,
+                        activePeerId === peer.peerId && styles.memberDmRowActive,
+                      ]}
+                    >
+                      <View style={styles.avatarWithDot}>
+                        <View
+                          style={[
+                            styles.memberSheetAvatar,
+                            { backgroundColor: avatarCol },
+                          ]}
+                        >
+                          <Text style={styles.memberSheetInitials}>
+                            {aliasInitials(peer.alias)}
+                          </Text>
+                        </View>
+                        <View
+                          style={[
+                            styles.avatarStatusDot,
+                            peer.online
+                              ? styles.avatarStatusOnline
+                              : styles.avatarStatusOffline,
+                          ]}
+                        />
+                      </View>
+
+                      <View style={styles.memberDmInfoCol}>
+                        <View style={styles.memberDmAliasRow}>
+                          <Text style={styles.memberDmAlias} numberOfLines={1}>
+                            {peer.alias}
+                          </Text>
+                          {peer.inVoice ? (
+                            <Text style={styles.inVoiceMiniTag}>🔊 Call</Text>
+                          ) : null}
+                          {unread > 0 ? (
+                            <View style={styles.unreadBadge}>
+                              <Text style={styles.unreadBadgeText}>
+                                {unread}
+                              </Text>
+                            </View>
+                          ) : null}
+                        </View>
+                        <Text style={styles.memberDmSnippet} numberOfLines={1}>
+                          {lastSnippet}
+                        </Text>
+                      </View>
+
+                      <Pressable
+                        accessibilityRole="button"
+                        accessibilityLabel={`Message ${peer.alias} privately`}
+                        onPress={() => openPrivateChat(peer.peerId)}
+                        style={styles.messagePrivatelyBtn}
+                      >
+                        <Text style={styles.messagePrivatelyText}>
+                          Message Privately
+                        </Text>
+                      </Pressable>
+                    </View>
+                  );
+                })
+              )}
+            </ScrollView>
+          </Pressable>
+        </Pressable>
+      </Modal>
 
       {/* Message Action Sheet Modal */}
       <Modal
@@ -941,22 +1310,31 @@ export function PodChatScreen({
               ))}
             </View>
 
-            <Pressable
-              accessibilityRole="button"
-              onPress={() => {
-                const target = actionTarget;
-                setActionTarget(null);
-                if (target) setThreadParent(target);
-              }}
-              style={styles.sheetActionRow}
-            >
-              <Ionicons
-                name="chatbubbles-outline"
-                size={18}
-                color={PALETTE.forest}
-              />
-              <Text style={styles.sheetActionText}>Reply in Slack Thread</Text>
-            </Pressable>
+            {/* 1:1 Private DM Action when tapping a peer's message in Group Chat */}
+            {actionTarget?.senderPeerId &&
+            actionTarget.senderPeerId !== activePod.myPeerId &&
+            activePeerId !== actionTarget.senderPeerId ? (
+              <Pressable
+                accessibilityRole="button"
+                onPress={() => {
+                  const targetPeerId = actionTarget.senderPeerId;
+                  setActionTarget(null);
+                  openPrivateChat(targetPeerId);
+                }}
+                style={[styles.sheetActionRow, styles.sheetActionMint]}
+              >
+                <Ionicons
+                  name="lock-closed-outline"
+                  size={18}
+                  color={PALETTE.forest}
+                />
+                <Text
+                  style={[styles.sheetActionText, { color: PALETTE.forest }]}
+                >
+                  Message {actionTarget.senderAlias} privately
+                </Text>
+              </Pressable>
+            ) : null}
 
             <Pressable
               accessibilityRole="button"
@@ -972,21 +1350,7 @@ export function PodChatScreen({
                 size={18}
                 color={PALETTE.ink}
               />
-              <Text style={styles.sheetActionText}>Quote Reply</Text>
-            </Pressable>
-
-            <Pressable
-              accessibilityRole="button"
-              onPress={() => {
-                if (actionTarget) pinMutation.mutate(actionTarget.id);
-                setActionTarget(null);
-              }}
-              style={styles.sheetActionRow}
-            >
-              <Ionicons name="pin-outline" size={18} color={PALETTE.ink} />
-              <Text style={styles.sheetActionText}>
-                {actionTarget?.isPinned ? 'Unpin from Pod' : 'Pin to Pod'}
-              </Text>
+              <Text style={styles.sheetActionText}>Reply</Text>
             </Pressable>
 
             <Pressable
@@ -1004,6 +1368,22 @@ export function PodChatScreen({
                   : 'Bookmark Message'}
               </Text>
             </Pressable>
+
+            {activePeerId === null ? (
+              <Pressable
+                accessibilityRole="button"
+                onPress={() => {
+                  if (actionTarget) pinMutation.mutate(actionTarget.id);
+                  setActionTarget(null);
+                }}
+                style={styles.sheetActionRow}
+              >
+                <Ionicons name="pin-outline" size={18} color={PALETTE.ink} />
+                <Text style={styles.sheetActionText}>
+                  {actionTarget?.isPinned ? 'Unpin from Pod' : 'Pin to Pod'}
+                </Text>
+              </Pressable>
+            ) : null}
 
             {actionTarget?.senderPeerId === activePod.myPeerId ? (
               <Pressable
@@ -1075,57 +1455,6 @@ export function PodChatScreen({
                 </Pressable>
               );
             })}
-          </Pressable>
-        </Pressable>
-      </Modal>
-
-      {/* Create Channel Modal */}
-      <Modal
-        visible={newChannelModalOpen}
-        transparent
-        animationType="fade"
-        onRequestClose={() => setNewChannelModalOpen(false)}
-      >
-        <Pressable
-          style={styles.sheetBackdrop}
-          onPress={() => setNewChannelModalOpen(false)}
-        >
-          <Pressable style={styles.sheetCard} onPress={() => {}}>
-            <Text style={styles.sheetTitle}>Create Text Channel</Text>
-            <TextInput
-              value={newChannelLabel}
-              onChangeText={setNewChannelLabel}
-              placeholder="e.g. clips-and-builds"
-              placeholderTextColor={PALETTE.muted}
-              autoCapitalize="none"
-              style={styles.modalInput}
-            />
-            <TextInput
-              value={newChannelTopic}
-              onChangeText={setNewChannelTopic}
-              placeholder="Optional topic..."
-              placeholderTextColor={PALETTE.muted}
-              style={styles.modalInput}
-            />
-            <View style={styles.modalBtnRow}>
-              <Pressable
-                accessibilityRole="button"
-                onPress={() => setNewChannelModalOpen(false)}
-                style={styles.cancelRecBtn}
-              >
-                <Text style={styles.cancelRecText}>Cancel</Text>
-              </Pressable>
-              <Pressable
-                accessibilityRole="button"
-                disabled={
-                  !newChannelLabel.trim() || createChannelMutation.isPending
-                }
-                onPress={() => createChannelMutation.mutate()}
-                style={styles.sendRecBtn}
-              >
-                <Text style={styles.sendRecText}>Create Channel</Text>
-              </Pressable>
-            </View>
           </Pressable>
         </Pressable>
       </Modal>
@@ -1260,44 +1589,135 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
-  channelsStrip: {
+  chatSwitcherStrip: {
     paddingHorizontal: 12,
     gap: 8,
   },
-  channelPill: {
+  chatPill: {
     minHeight: TOUCH_MIN,
-    paddingHorizontal: 14,
+    paddingHorizontal: 13,
     borderRadius: 999,
     backgroundColor: '#262926',
+    borderWidth: 1,
+    borderColor: '#363b36',
+    flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
+    gap: 6,
   },
-  channelPillActive: {
+  chatPillActive: {
     backgroundColor: PALETTE.mint,
+    borderColor: PALETTE.mint,
   },
-  channelPillText: {
-    color: '#d4d8d4',
+  chatPillText: {
+    color: '#e2e6e2',
     fontSize: 13,
     fontWeight: '600',
-    fontFamily: MONO_FONT,
+    maxWidth: 130,
   },
-  channelPillTextActive: {
+  chatPillTextActive: {
     color: PALETTE.charcoal,
     fontWeight: '700',
   },
-  addChannelPill: {
-    minHeight: TOUCH_MIN,
-    paddingHorizontal: 14,
-    borderRadius: 999,
-    borderWidth: 1,
-    borderColor: '#454b45',
+  peerOnlineDot: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+  },
+  peerOnlineDotLive: {
+    backgroundColor: PALETTE.mint,
+  },
+  peerOnlineDotOnMint: {
+    backgroundColor: PALETTE.forest,
+  },
+  peerOnlineDotOffline: {
+    backgroundColor: '#666c66',
+  },
+  unreadBadge: {
+    minWidth: 18,
+    height: 18,
+    borderRadius: 9,
+    paddingHorizontal: 5,
+    backgroundColor: PALETTE.mint,
     alignItems: 'center',
     justifyContent: 'center',
   },
-  addChannelPillText: {
+  unreadBadgeOnMint: {
+    backgroundColor: PALETTE.charcoal,
+  },
+  unreadBadgeText: {
+    fontSize: 10,
+    fontWeight: '800',
+    color: PALETTE.charcoal,
+    fontFamily: MONO_FONT,
+  },
+  unreadBadgeTextOnMint: {
+    color: PALETTE.mint,
+  },
+  membersDmBtn: {
+    minHeight: TOUCH_MIN,
+    paddingHorizontal: 13,
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: '#4a524a',
+    backgroundColor: '#222522',
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+  },
+  membersDmBtnText: {
     color: PALETTE.mint,
     fontSize: 12,
     fontWeight: '700',
+  },
+  privateDmBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 8,
+    paddingLeft: 12,
+    paddingRight: 8,
+    paddingVertical: 6,
+    backgroundColor: PALETTE.mintSoft,
+    borderBottomWidth: 1,
+    borderBottomColor: PALETTE.mintBorder,
+  },
+  privateDmBannerLeft: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  privateDmTextCol: {
+    flex: 1,
+    gap: 1,
+  },
+  privateDmTitle: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: PALETTE.forest,
+  },
+  privateDmSub: {
+    fontSize: 11,
+    color: PALETTE.ink,
+    fontFamily: MONO_FONT,
+  },
+  backGroupChip: {
+    minHeight: TOUCH_MIN,
+    paddingHorizontal: 12,
+    borderRadius: 10,
+    backgroundColor: PALETTE.card,
+    borderWidth: 1,
+    borderColor: PALETTE.forest,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  backGroupChipText: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: PALETTE.forest,
+    fontFamily: MONO_FONT,
   },
   centerBox: {
     flex: 1,
@@ -1323,7 +1743,7 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     color: PALETTE.forest,
   },
-  channelIntroCard: {
+  roomIntroCard: {
     backgroundColor: PALETTE.mintSoft,
     borderWidth: 1,
     borderColor: PALETTE.mintBorder,
@@ -1332,21 +1752,22 @@ const styles = StyleSheet.create({
     marginBottom: 6,
     gap: 3,
   },
-  channelIntroTitle: {
+  roomIntroTitle: {
     fontSize: 14,
     fontWeight: '700',
     color: PALETTE.forest,
   },
-  channelIntroSub: {
+  roomIntroSub: {
     fontSize: 12,
     lineHeight: 17,
     color: PALETTE.ink,
   },
-  emptyChannelText: {
+  emptyRoomText: {
     textAlign: 'center',
     color: PALETTE.muted,
     fontSize: 13,
     paddingVertical: 20,
+    paddingHorizontal: 16,
   },
   typingStrip: {
     paddingHorizontal: 14,
@@ -1540,17 +1961,144 @@ const styles = StyleSheet.create({
     padding: 16,
     gap: 8,
   },
+  dmSheetCard: {
+    backgroundColor: PALETTE.card,
+    borderRadius: 18,
+    padding: 16,
+    maxHeight: '80%',
+    gap: 10,
+  },
+  dmSheetHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 8,
+  },
+  dmSheetHeaderCol: {
+    flex: 1,
+    gap: 2,
+  },
+  dmSheetSub: {
+    fontSize: 12,
+    color: PALETTE.muted,
+  },
+  dmMembersScroll: {
+    flexGrow: 0,
+  },
+  dmMembersContent: {
+    gap: 8,
+    paddingBottom: 6,
+  },
+  memberDmRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    padding: 10,
+    borderRadius: 14,
+    backgroundColor: PALETTE.surface,
+    borderWidth: 1,
+    borderColor: PALETTE.border,
+  },
+  memberDmRowActive: {
+    backgroundColor: PALETTE.mintSoft,
+    borderColor: PALETTE.forest,
+  },
+  avatarWithDot: {
+    position: 'relative',
+  },
+  memberSheetAvatar: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  memberSheetInitials: {
+    color: PALETTE.card,
+    fontSize: 13,
+    fontWeight: '700',
+    fontFamily: MONO_FONT,
+  },
+  avatarStatusDot: {
+    position: 'absolute',
+    bottom: 0,
+    right: 0,
+    width: 12,
+    height: 12,
+    borderRadius: 6,
+    borderWidth: 2,
+    borderColor: PALETTE.card,
+  },
+  avatarStatusOnline: {
+    backgroundColor: PALETTE.forest,
+  },
+  avatarStatusOffline: {
+    backgroundColor: PALETTE.muted,
+  },
+  memberDmInfoCol: {
+    flex: 1,
+    gap: 2,
+  },
+  memberDmAliasRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+  },
+  memberDmAlias: {
+    fontSize: 14,
+    fontWeight: '700',
+    color: PALETTE.charcoal,
+  },
+  inVoiceMiniTag: {
+    fontSize: 10,
+    fontWeight: '700',
+    color: PALETTE.forest,
+    fontFamily: MONO_FONT,
+  },
+  memberDmSnippet: {
+    fontSize: 12,
+    color: PALETTE.muted,
+  },
+  messagePrivatelyBtn: {
+    minHeight: TOUCH_MIN,
+    paddingHorizontal: 12,
+    borderRadius: 10,
+    backgroundColor: PALETTE.mint,
+    borderWidth: 1,
+    borderColor: PALETTE.forest,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  messagePrivatelyText: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: PALETTE.charcoal,
+  },
+  openDmBtnSecondary: {
+    minHeight: TOUCH_MIN,
+    paddingHorizontal: 12,
+    borderRadius: 10,
+    backgroundColor: PALETTE.card,
+    borderWidth: 1,
+    borderColor: PALETTE.borderStrong,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  openDmBtnSecondaryText: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: PALETTE.ink,
+  },
   sheetTitle: {
     fontSize: 15,
     fontWeight: '700',
     color: PALETTE.charcoal,
-    marginBottom: 4,
   },
   emojiBar: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     gap: 8,
-    marginBottom: 6,
+    marginBottom: 4,
   },
   sheetEmojiBtn: {
     flex: 1,
@@ -1570,9 +2118,14 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     gap: 10,
-    paddingHorizontal: 10,
+    paddingHorizontal: 12,
     borderRadius: 10,
     backgroundColor: PALETTE.surface,
+  },
+  sheetActionMint: {
+    backgroundColor: PALETTE.mintSoft,
+    borderWidth: 1,
+    borderColor: PALETTE.mintBorder,
   },
   sheetActionText: {
     fontSize: 14,
@@ -1597,6 +2150,7 @@ const styles = StyleSheet.create({
   },
   podSwitchCol: {
     gap: 2,
+    flex: 1,
   },
   podSwitchCode: {
     fontSize: 14,
@@ -1613,20 +2167,5 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     color: PALETTE.forest,
     fontFamily: MONO_FONT,
-  },
-  modalInput: {
-    minHeight: TOUCH_MIN,
-    borderRadius: 10,
-    borderWidth: 1,
-    borderColor: PALETTE.borderStrong,
-    backgroundColor: PALETTE.surface,
-    paddingHorizontal: 12,
-    fontSize: 14,
-    color: PALETTE.ink,
-  },
-  modalBtnRow: {
-    flexDirection: 'row',
-    gap: 8,
-    marginTop: 4,
   },
 });

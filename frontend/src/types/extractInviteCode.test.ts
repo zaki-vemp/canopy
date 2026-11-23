@@ -1,9 +1,13 @@
 import assert from 'node:assert/strict';
 import {
+  conversationKey,
   extractInviteCode,
   getPodTierLabel,
   parseKickCommandTarget,
+  resolveMessagePeerId,
   sanitizeCustomPodCode,
+  sortMembersWithDmConversations,
+  type DmConversationSummary,
   type PodMember,
 } from './canopy';
 
@@ -45,7 +49,8 @@ export function verifyExtractInviteCode(): void {
       role: 'MEMBER',
       customStatus: '',
       online: true,
-      voiceChannelId: null,
+      inVoice: false,
+      isSelf: true,
     },
     {
       peerId: 'p_target',
@@ -53,8 +58,26 @@ export function verifyExtractInviteCode(): void {
       color: '#235c38',
       role: 'MEMBER',
       customStatus: '',
+      online: false,
+      inVoice: false,
+    },
+    {
+      peerId: 'p_jade',
+      alias: 'Jade Owl',
+      color: '#0f766e',
+      role: 'MEMBER',
+      customStatus: 'Ready for co-op',
       online: true,
-      voiceChannelId: null,
+      inVoice: true,
+    },
+    {
+      peerId: 'p_amber',
+      alias: 'Amber Heron',
+      color: '#8c430f',
+      role: 'MEMBER',
+      customStatus: '',
+      online: true,
+      inVoice: false,
     },
   ];
   const parsed = parseKickCommandTarget(
@@ -67,6 +90,33 @@ export function verifyExtractInviteCode(): void {
   assert.equal(
     parseKickCommandTarget('/kick @Cobalt Fox', members, 'p_self'),
     null
+  );
+
+  // Verify Group vs 1:1 DM routing helpers
+  assert.equal(conversationKey('pod1', null), 'pod1:group');
+  assert.equal(conversationKey('pod1', 'p_jade'), 'pod1:dm:p_jade');
+  assert.equal(resolveMessagePeerId('p_self', null, 'p_self'), null);
+  assert.equal(resolveMessagePeerId('p_self', 'p_jade', 'p_self'), 'p_jade');
+  assert.equal(resolveMessagePeerId('p_jade', 'p_self', 'p_self'), 'p_jade');
+
+  // Verify DM sorting: active DMs (lastMessageId DESC), then online/inVoice, then offline, excluding self
+  const dms: DmConversationSummary[] = [
+    {
+      peerId: 'p_target',
+      peerAlias: 'Slate Otter',
+      peerColor: '#235c38',
+      online: false,
+      lastMessageId: 220,
+      lastBody: 'Catch you tomorrow!',
+      lastSenderPeerId: 'p_target',
+      lastSenderAlias: 'Slate Otter',
+      lastCreatedAt: '2026-11-23T17:15:00Z',
+    },
+  ];
+  const ordered = sortMembersWithDmConversations(members, 'p_self', dms);
+  assert.deepEqual(
+    ordered.map((m) => m.peerId),
+    ['p_target', 'p_jade', 'p_amber']
   );
 }
 

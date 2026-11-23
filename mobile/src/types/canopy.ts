@@ -23,32 +23,35 @@ export interface InterestItem {
   selected: boolean;
 }
 
-export type ChannelKind = 'TEXT' | 'VOICE';
 export type PodGovernanceMode = 'DEMOCRATIC' | 'ADMIN';
 export type PodMemberRole = 'OWNER' | 'ADMIN' | 'MEMBER';
 export type PodCapacityPreset = 10 | 25 | 50;
 
-export interface PodChannel {
-  channelId: string;
-  slug: string;
-  label: string;
-  topic: string;
-  kind: ChannelKind;
-  position: number;
-}
-
-export interface PodMember {
+export interface MemberDto {
   peerId: string;
   alias: string;
   color: string;
   role?: PodMemberRole;
   customStatus: string;
   online: boolean;
-  voiceChannelId: string | null;
+  inVoice: boolean;
   isSelf?: boolean;
 }
+export type PodMember = MemberDto;
 
-export interface PodDetail {
+export interface DmSummaryDto {
+  peerId: string;
+  peerAlias: string;
+  peerColor: string;
+  online: boolean;
+  lastMessageId: number;
+  lastBody: string;
+  lastSenderPeerId: string;
+  lastSenderAlias: string;
+  lastCreatedAt: string;
+}
+
+export interface PodDetailDto {
   podId: string;
   code: string;
   title: string;
@@ -58,6 +61,7 @@ export interface PodDetail {
   governanceMode: PodGovernanceMode;
   isPublicized: boolean;
   allowRandomMatch?: boolean;
+  isOpen?: boolean;
   myPeerId: string;
   myAlias: string;
   myColor: string;
@@ -66,14 +70,13 @@ export interface PodDetail {
   memberCount: number;
   maxMembers: number;
   openProposalsCount: number;
-  channels: PodChannel[];
-  members: PodMember[];
+  dmConversations: DmSummaryDto[];
+  members: MemberDto[];
 }
+export type PodDetail = PodDetailDto;
 
 export type ProposalKind =
   | 'KICK_MEMBER'
-  | 'ADD_CHANNEL'
-  | 'REMOVE_CHANNEL'
   | 'RENAME_POD'
   | 'UPDATE_TOPIC'
   | 'CHANGE_CAPACITY'
@@ -106,10 +109,8 @@ export interface PodProposalDto {
 export interface CreateProposalRequest {
   kind: ProposalKind;
   targetPeerId?: string;
-  channelId?: string;
   label?: string;
   topic?: string;
-  channelKind?: ChannelKind;
   maxMembers?: number;
   locked?: boolean;
   messageId?: number;
@@ -197,18 +198,17 @@ export interface QuotedMessage {
   isDeleted?: boolean;
 }
 
-export interface RichMessage {
+export interface RichMessageDto {
   id: number;
   podId: string;
-  channelId: string;
   senderPeerId: string;
   senderAlias: string;
   senderColor: string;
-  parentMessageId: number;
+  recipientPeerId: string | null;
+  recipientAlias: string | null;
   quoteMessage: QuotedMessage | null;
   msgType: MessageKind;
   body: string;
-  replyCount: number;
   isPinned: boolean;
   isBookmarked: boolean;
   isDeleted: boolean;
@@ -219,20 +219,16 @@ export interface RichMessage {
   poll: PollData | null;
   proposal?: PodProposalDto | null;
 }
+export type RichMessage = RichMessageDto;
 
 export interface MessagesPage {
-  messages: RichMessage[];
+  messages: RichMessageDto[];
   nextBeforeId: number;
 }
 
-export interface ThreadPayload {
-  parent: RichMessage;
-  replies: RichMessage[];
-}
-
 export interface PostMessageResponse {
-  message?: RichMessage;
-  commandHandled?: string;
+  message?: RichMessageDto | null;
+  commandHandled?: string | null;
 }
 
 export interface MatchPodsRequest {
@@ -244,8 +240,8 @@ export interface MatchPodsRequest {
 }
 
 export interface MatchPodsResponse {
-  matched: PodDetail[];
-  pods: PodDetail[];
+  matched: PodDetailDto[];
+  pods: PodDetailDto[];
 }
 
 export interface LeavePodRequest {
@@ -256,7 +252,7 @@ export interface LeavePodRequest {
 
 export interface LeavePodResponse {
   leftPodId: string;
-  newPod: PodDetail | null;
+  newPod: PodDetailDto | null;
 }
 
 export interface PodInviteDto {
@@ -286,8 +282,8 @@ export interface CreateInviteRequest {
 
 export interface AcceptInviteResponse {
   alreadyMember: boolean;
-  pod: PodDetail;
-  pods: PodDetail[];
+  pod: PodDetailDto;
+  pods: PodDetailDto[];
 }
 
 export function extractInviteCode(raw: string): string {
@@ -317,7 +313,18 @@ export function extractInviteCode(raw: string): string {
   return seg.replace(/[^a-zA-Z0-9_-]/g, '');
 }
 
-export interface VoicePeer {
+export function resolveDmPartnerPeerId(
+  selfPeerId: string | null | undefined,
+  senderPeerId: string,
+  recipientPeerId: string | null | undefined
+): string | null {
+  if (!recipientPeerId) return null;
+  if (selfPeerId && senderPeerId === selfPeerId) return recipientPeerId;
+  if (selfPeerId && recipientPeerId === selfPeerId) return senderPeerId;
+  return senderPeerId;
+}
+
+export interface VoicePeerDto {
   peerId: string;
   alias: string;
   color: string;
@@ -325,6 +332,7 @@ export interface VoicePeer {
   deafened: boolean;
   speaking: boolean;
 }
+export type VoicePeer = VoicePeerDto;
 
 export interface RtcSdpSignal {
   type: 'offer' | 'answer' | 'pranswer' | 'rollback' | string;
@@ -344,10 +352,9 @@ export interface WebRtcSignalPayload {
 }
 
 export type WsOutboundFrame =
-  | { type: 'typing'; channelId: string; isTyping: boolean }
+  | { type: 'typing'; targetPeerId: string | null; isTyping: boolean }
   | {
       type: 'voice_join';
-      voiceChannelId: string;
       muted: boolean;
       deafened: boolean;
     }
@@ -361,9 +368,9 @@ export type WsOutboundFrame =
   | {
       type: 'webrtc_signal';
       targetPeerId: string;
-      voiceChannelId: string;
       signal: WebRtcSignalPayload;
-    };
+    }
+  | { type: 'ping' };
 
 export type WsInboundFrame =
   | {
@@ -371,59 +378,40 @@ export type WsInboundFrame =
       podId: string;
       selfPeerId: string;
       onlinePeerIds: string[];
-      members: PodMember[];
-      voiceRoster: Record<string, VoicePeer[]>;
+      members: MemberDto[];
+      voicePeers: VoicePeerDto[];
     }
   | {
       type: 'typing_update';
-      channelId: string;
+      targetPeerId: string | null;
+      fromPeerId: string | null;
       typingAliases: string[];
     }
   | {
       type: 'message_created';
-      channelId: string;
-      message: RichMessage;
-    }
-  | {
-      type: 'thread_reply_created';
-      channelId: string;
-      parentMessageId: number;
-      reply: RichMessage;
-      parentReplyCount: number;
+      message: RichMessageDto;
     }
   | {
       type: 'message_updated';
-      channelId: string;
-      message: RichMessage;
+      message: RichMessageDto;
     }
   | {
       type: 'message_deleted';
-      channelId: string;
       messageId: number;
-      parentMessageId: number;
+      senderPeerId: string;
+      recipientPeerId: string | null;
     }
   | {
       type: 'reaction_updated';
-      channelId: string;
-      message: RichMessage;
+      message: RichMessageDto;
     }
   | {
       type: 'pin_updated';
-      channelId: string;
-      message: RichMessage;
+      message: RichMessageDto;
     }
   | {
       type: 'poll_updated';
-      channelId: string;
-      message: RichMessage;
-    }
-  | {
-      type: 'channel_created';
-      channel: PodChannel;
-    }
-  | {
-      type: 'channel_deleted';
-      channelId: string;
+      message: RichMessageDto;
     }
   | {
       type: 'proposal_updated';
@@ -431,11 +419,11 @@ export type WsInboundFrame =
     }
   | {
       type: 'pod_updated';
-      pod: PodDetail;
+      pod: PodDetailDto;
     }
   | {
       type: 'member_joined';
-      member: PodMember;
+      member: MemberDto;
     }
   | {
       type: 'member_left';
@@ -449,15 +437,15 @@ export type WsInboundFrame =
     }
   | {
       type: 'voice_roster_updated';
-      voiceRoster: Record<string, VoicePeer[]>;
+      voicePeers: VoicePeerDto[];
     }
   | {
       type: 'webrtc_signal';
-      voiceChannelId: string;
       fromPeerId: string;
       fromAlias: string;
       signal: WebRtcSignalPayload;
-    };
+    }
+  | { type: 'pong' };
 
 export function sanitizePodHandle(raw: string, fallbackTitle = ''): string {
   const source = raw.trim().replace(/^#+/, '') || fallbackTitle.trim();

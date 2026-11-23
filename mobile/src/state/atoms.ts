@@ -1,26 +1,28 @@
 import { atom } from 'jotai';
 import type {
+  MemberDto,
   MobileTabKey,
-  PodMember,
-  RichMessage,
   SelfUser,
-  VoicePeer,
+  VoicePeerDto,
 } from '../types/canopy';
 import { getDefaultApiBaseUrl } from '../api/client';
 
 export interface PodPresenceState {
   selfPeerId: string;
   onlinePeerIds: string[];
-  members: PodMember[];
+  members: MemberDto[];
 }
 
 export interface ActiveVoiceSession {
   podId: string;
-  voiceChannelId: string;
   muted: boolean;
   deafened: boolean;
   speaking: boolean;
   micMode: 'live' | 'listen-synth';
+}
+
+export function dmConvoKey(podId: string, peerId: string | null): string {
+  return peerId ? `${podId}:dm:${peerId}` : `${podId}:group`;
 }
 
 export const authTokenAtom = atom<string | null>(null);
@@ -29,18 +31,16 @@ export const apiBaseUrlAtom = atom<string>(getDefaultApiBaseUrl());
 
 export const activeTabAtom = atom<MobileTabKey>('pods');
 export const activePodIdAtom = atom<string | null>(null);
-export const activeChannelByPodAtom = atom<Record<string, string>>({});
-export const activeThreadParentAtom = atom<RichMessage | null>(null);
+// null = Pod Group Chat; "p_..." = 1:1 Private Chat with that pod member
+export const activeDmPeerByPodAtom = atom<Record<string, string | null>>({});
+export const unreadDmByPodPeerAtom = atom<Record<string, number>>({});
 
 export const wsConnectedAtom = atom<boolean>(false);
 export const podPresenceByPodAtom = atom<Record<string, PodPresenceState>>({});
-export const typingByChannelAtom = atom<Record<string, string[]>>({});
-export const voiceRosterByPodAtom = atom<
-  Record<string, Record<string, VoicePeer[]>>
->({});
+export const typingByConvoAtom = atom<Record<string, string[]>>({});
+export const voicePeersByPodAtom = atom<Record<string, VoicePeerDto[]>>({});
 export const activeVoiceSessionAtom = atom<ActiveVoiceSession | null>(null);
 export const lastWebRtcSignalAtom = atom<{
-  voiceChannelId: string;
   fromPeerId: string;
   fromAlias: string;
   receivedAt: number;

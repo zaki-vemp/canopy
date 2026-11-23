@@ -7,8 +7,8 @@ import {
   Compass,
   Plus,
   Search,
-  UserPlus,
   ShieldCheck,
+  UserPlus,
 } from 'lucide-react';
 import {
   accountDrawerOpenAtom,
@@ -18,7 +18,7 @@ import {
   interestModalTabAtom,
   mobileNavOpenAtom,
   rightPanelAtom,
-  voiceRosterByPodAtom,
+  voicePeersByPodAtom,
 } from '@/state/workspaceAtoms';
 import { voiceSessionAtom } from '@/state/voiceEngine';
 import { getPodTierLabel, type PodDetail } from '@/types/canopy';
@@ -48,7 +48,7 @@ export function PodServerRail({ pods }: { pods: PodDetail[] }) {
   const setCommandOpen = useSetAtom(commandModalOpenAtom);
   const setAccountOpen = useSetAtom(accountDrawerOpenAtom);
   const setMobileNavOpen = useSetAtom(mobileNavOpenAtom);
-  const voiceRosterByPod = useAtomValue(voiceRosterByPodAtom);
+  const voicePeersByPod = useAtomValue(voicePeersByPodAtom);
   const voiceSession = useAtomValue(voiceSessionAtom);
 
   const interestCounts = useMemo(() => {
@@ -63,11 +63,11 @@ export function PodServerRail({ pods }: { pods: PodDetail[] }) {
     if (voiceSession.status === 'connected' && voiceSession.podId === pod.podId) {
       return true;
     }
-    const roster = voiceRosterByPod[pod.podId];
-    if (roster) {
-      return Object.values(roster).some((list) => list && list.length > 0);
+    const peers = voicePeersByPod[pod.podId];
+    if (peers && peers.length > 0) {
+      return true;
     }
-    return pod.members.some((m) => Boolean(m.voiceChannelId));
+    return pod.members.some((m) => Boolean(m.inVoice));
   };
 
   return (
@@ -127,8 +127,8 @@ export function PodServerRail({ pods }: { pods: PodDetail[] }) {
                 {voiceLive && (
                   <span
                     className={styles.railVoiceDot}
-                    title="Live voice active"
-                    aria-label="Live voice active"
+                    title="Pod audio call active"
+                    aria-label="Pod audio call active"
                   />
                 )}
               </button>
@@ -159,15 +159,7 @@ export function PodServerRail({ pods }: { pods: PodDetail[] }) {
           rightPanel === 'bookmarks' ? styles.railUtilBtnActive : ''
         }`}
         onClick={() => {
-          const isMobile =
-            typeof window !== 'undefined' && window.innerWidth <= 900;
-          setRightPanel(
-            rightPanel === 'bookmarks'
-              ? isMobile
-                ? null
-                : 'members'
-              : 'bookmarks'
-          );
+          setRightPanel(rightPanel === 'bookmarks' ? null : 'bookmarks');
           setMobileNavOpen(false);
         }}
         title="Saved Bookmarks"
@@ -183,7 +175,7 @@ export function PodServerRail({ pods }: { pods: PodDetail[] }) {
           setCommandOpen(true);
           setMobileNavOpen(false);
         }}
-        title="Search pods, channels & messages (Cmd+K)"
+        title="Search chats, members & messages (Cmd+K)"
         aria-label="Quick Switcher & Search (Cmd+K)"
       >
         <Search size={18} />

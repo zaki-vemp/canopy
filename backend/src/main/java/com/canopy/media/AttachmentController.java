@@ -44,12 +44,16 @@ public class AttachmentController {
 
     private record StoredAttachment(
         long id,
+        long messageId,
         long podId,
+        long uploaderUserId,
         String fileName,
         String mimeType,
         long sizeBytes,
         String storagePath
     ) {}
+
+    private record DmParticipants(long dmLow, long dmHigh) {}
 
     private final JdbcClient jdbc;
     private final Path uploadsDir;
@@ -155,14 +159,16 @@ public class AttachmentController {
         }
 
         StoredAttachment row = jdbc.sql("""
-                SELECT id, pod_id, file_name, mime_type, size_bytes, storage_path
+                SELECT id, message_id, pod_id, uploader_user_id, file_name, mime_type, size_bytes, storage_path
                 FROM message_attachments
                 WHERE id = :id
                 """)
             .param("id", attachmentId)
             .query((rs, rowNum) -> new StoredAttachment(
                 rs.getLong("id"),
+                rs.getLong("message_id"),
                 rs.getLong("pod_id"),
+                rs.getLong("uploader_user_id"),
                 rs.getString("file_name"),
                 rs.getString("mime_type"),
                 rs.getLong("size_bytes"),
@@ -172,6 +178,27 @@ public class AttachmentController {
             .orElseThrow(() -> new NoSuchElementException("Attachment not found"));
 
         requirePodMember(row.podId(), principal.userId());
+
+        if (row.messageId() > 0) {
+            DmParticipants dm = jdbc.sql("""
+                    SELECT dm_user_low_id, dm_user_high_id
+                    FROM messages
+                    WHERE id = :msgId
+                    """)
+                .param("msgId", row.messageId())
+                .query((rs, rowNum) -> new DmParticipants(
+                    rs.getLong("dm_user_low_id"),
+                    rs.getLong("dm_user_high_id")
+                ))
+                .optional()
+                .orElseThrow(() -> new NoSuchElementException("Attachment message not found"));
+
+            if (dm.dmLow() > 0 && principal.userId() != dm.dmLow() && principal.userId() != dm.dmHigh()) {
+                throw new SecurityException("Private message attachment restricted to participants");
+            }
+        } else if (row.uploaderUserId() != principal.userId()) {
+            throw new SecurityException("Unattached upload restricted to uploader");
+        }
 
         Path candidate = Paths.get(row.storagePath());
         Path resolved = candidate.isAbsolute()
