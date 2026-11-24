@@ -1,6 +1,12 @@
 import React, { useState } from 'react';
-import { Platform, Pressable, StyleSheet, Text, View } from 'react-native';
-import { PALETTE } from '../theme/palette';
+import {
+  Platform,
+  Pressable,
+  StyleSheet,
+  View,
+} from 'react-native';
+import { Text } from '../theme/ui';
+import { PALETTE, PIECES } from '../theme/palette';
 
 export type InlineSegment =
   | { kind: 'text'; value: string }
@@ -52,18 +58,16 @@ export function tokenizeRichBody(raw: string): RichBlock[] {
   return blocks;
 }
 
-const MONO_FONT = Platform.select({
-  ios: 'Menlo',
-  android: 'monospace',
-  default: 'monospace',
-});
+const MONO_FONT = 'DMMono_500Medium';
 
 export function RichTextBody({
   body,
   compactSystem = false,
+  color,
 }: {
   body: string;
   compactSystem?: boolean;
+  color?: string;
 }) {
   const [revealedSpoilers, setRevealedSpoilers] = useState<
     Record<string, boolean>
@@ -98,13 +102,14 @@ export function RichTextBody({
               style={[
                 styles.paragraphText,
                 compactSystem && styles.systemParagraphText,
+                color ? { color } : null,
               ]}
               selectable
             >
               {block.segments.map((seg, sIdx) => {
                 if (seg.kind === 'bold') {
                   return (
-                    <Text key={sIdx} style={styles.boldText}>
+                    <Text key={sIdx} style={[styles.boldText, color ? { color } : null]}>
                       {seg.value}
                     </Text>
                   );
@@ -156,7 +161,7 @@ export function RichTextBody({
                           : styles.spoilerHiddenText,
                       ]}
                     >
-                      {isOpen ? seg.value : 'SPOILER · TAP TO REVEAL'}
+                      {isOpen ? seg.value : 'Spoiler. Tap to read'}
                     </Text>
                   </Pressable>
                 );
@@ -165,7 +170,7 @@ export function RichTextBody({
                 return (
                   <Text
                     key={sIdx}
-                    style={[styles.paragraphText, styles.boldText]}
+                    style={[styles.paragraphText, styles.boldText, color ? { color } : null]}
                   >
                     {seg.value}
                   </Text>
@@ -179,7 +184,7 @@ export function RichTextBody({
                 );
               }
               return (
-                <Text key={sIdx} style={styles.paragraphText}>
+                <Text key={sIdx} style={[styles.paragraphText, color ? { color } : null]}>
                   {seg.value}
                 </Text>
               );
@@ -196,45 +201,43 @@ const styles = StyleSheet.create({
     gap: 6,
   },
   paragraphText: {
-    fontSize: 15,
-    lineHeight: 22,
-    color: PALETTE.ink,
+    fontSize: 16,
+    lineHeight: 23,
+    color: PIECES.ink,
   },
   systemParagraphText: {
-    fontSize: 12,
+    fontSize: 13,
     lineHeight: 18,
-    color: PALETTE.muted,
+    color: PIECES.muted,
     textAlign: 'center',
   },
   boldText: {
     fontWeight: '700',
-    color: PALETTE.charcoal,
+    color: PIECES.ink,
   },
   inlineCode: {
     fontFamily: MONO_FONT,
-    fontSize: 13,
-    backgroundColor: PALETTE.codeBg,
-    color: PALETTE.forest,
-    paddingHorizontal: 5,
+    fontSize: 14,
+    backgroundColor: PIECES.glass,
+    color: PIECES.ink,
+    paddingHorizontal: 6,
     paddingVertical: 1,
-    borderRadius: 4,
+    borderRadius: 8,
   },
   systemInlineCode: {
-    fontSize: 11,
-    backgroundColor: PALETTE.card,
+    fontSize: 12,
+    backgroundColor: PIECES.sheet,
   },
   codeBlock: {
-    backgroundColor: PALETTE.charcoal,
-    borderRadius: 10,
-    padding: 12,
-    borderWidth: 1,
-    borderColor: PALETTE.borderStrong,
+    backgroundColor: PIECES.ink,
+    borderRadius: 16,
+    padding: 14,
   },
   codeBlockText: {
     fontFamily: MONO_FONT,
     fontSize: 13,
     lineHeight: 19,
-    color: PALETTE.mint,
+    color: PIECES.sheet,
   },
   inlineWrapRow: {
     flexDirection: 'row',
@@ -243,31 +246,28 @@ const styles = StyleSheet.create({
     gap: 4,
   },
   spoilerPill: {
-    minHeight: 34,
-    paddingHorizontal: 10,
+    minHeight: 44,
+    paddingHorizontal: 12,
     paddingVertical: 6,
-    borderRadius: 8,
+    borderRadius: 12,
     justifyContent: 'center',
   },
   spoilerHidden: {
-    backgroundColor: PALETTE.charcoal,
+    backgroundColor: PIECES.ink,
   },
   spoilerOpen: {
-    backgroundColor: PALETTE.mintSoft,
-    borderWidth: 1,
-    borderColor: PALETTE.mintBorder,
+    backgroundColor: PIECES.glass,
   },
   spoilerText: {
-    fontSize: 13,
+    fontSize: 14,
     fontWeight: '600',
   },
   spoilerHiddenText: {
-    color: PALETTE.mint,
+    color: PIECES.sheet,
     fontFamily: MONO_FONT,
-    fontSize: 11,
-    letterSpacing: 0.4,
+    fontSize: 12,
   },
   spoilerOpenText: {
-    color: PALETTE.ink,
+    color: PIECES.ink,
   },
 });

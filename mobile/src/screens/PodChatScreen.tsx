@@ -8,10 +8,9 @@ import {
   Pressable,
   ScrollView,
   StyleSheet,
-  Text,
-  TextInput,
   View,
 } from 'react-native';
+import { Text, TextInput } from '../theme/ui';
 import { Audio } from 'expo-av';
 import { useAtom, useAtomValue, useSetAtom } from 'jotai';
 import {
@@ -62,11 +61,16 @@ import {
 } from '../state/atoms';
 import {
   PALETTE,
+  PIECES,
+  PIECE_HEX,
+  PIECE_NAMES,
   TOUCH_MIN,
-  aliasInitials,
   capacityTierBadge,
-  safePeerColor,
+  pieceColor,
 } from '../theme/palette';
+import { Sheet } from '../components/Sheet';
+import { Badge, Btn, Piece } from '../components/Pieces';
+import { voicePeersByPodAtom } from '../state/atoms';
 import { MessageCard } from '../components/MessageCard';
 import { InviteShareModal } from '../components/InviteShareModal';
 import { PodGovernanceModal } from '../components/PodGovernanceModal';
@@ -74,24 +78,28 @@ import { PodGovernanceModal } from '../components/PodGovernanceModal';
 const QUICK_EMOJIS = ['🔥', '👍', '😂', '🎯', '❤️'];
 
 const GROUP_SLASH_CHIPS: ReadonlyArray<{ cmd: string; label: string }> = [
-  { cmd: '/invite', label: '/invite' },
-  { cmd: '/poll', label: '/poll' },
-  { cmd: '/icebreaker', label: '/icebreaker' },
-  { cmd: '/shrug', label: '/shrug' },
-  { cmd: '/rematch', label: '/rematch' },
+  { cmd: '/poll', label: 'Poll' },
+  { cmd: '/icebreaker', label: 'Icebreaker' },
+  { cmd: '/invite', label: 'Invite' },
+  { cmd: '/shrug', label: 'Shrug' },
+  { cmd: '/rematch', label: 'New room' },
 ];
 
 const DM_SLASH_CHIPS: ReadonlyArray<{ cmd: string; label: string }> = [
-  { cmd: '/shrug', label: '/shrug' },
-  { cmd: '/status', label: '/status' },
-  { cmd: '/invite', label: '/invite' },
+  { cmd: '/status', label: 'Status' },
+  { cmd: '/shrug', label: 'Shrug' },
+  { cmd: '/invite', label: 'Invite' },
 ];
 
-const MONO_FONT = Platform.select({
-  ios: 'Menlo',
-  android: 'monospace',
-  default: 'monospace',
-});
+const CHIP_COLORS = [
+  PIECE_HEX.cobalt,
+  PIECE_HEX.jade,
+  PIECE_HEX.coral,
+  PIECE_HEX.ochre,
+  PIECE_HEX.quartz,
+];
+
+const MONO_FONT = 'DMMono_500Medium';
 
 interface PeerChatItem {
   peerId: string;
@@ -122,6 +130,7 @@ export function PodChatScreen({
   const setActiveTab = useSetAtom(activeTabAtom);
   const typingByConvo = useAtomValue(typingByConvoAtom);
   const wsConnected = useAtomValue(wsConnectedAtom);
+  const voicePeersByPod = useAtomValue(voicePeersByPodAtom);
 
   const lastMarkedReadRef = useRef<Record<string, number>>({});
 
@@ -318,6 +327,13 @@ export function PodChatScreen({
     chronologicalMessages.length > 0
       ? chronologicalMessages[chronologicalMessages.length - 1].id
       : 0;
+
+  // Open at the newest message, and follow it until you scroll yourself.
+  const listRef = useRef<FlatList<RichMessageDto>>(null);
+  const stickToEndRef = useRef(true);
+  useEffect(() => {
+    stickToEndRef.current = true;
+  }, [latestMessageId, convoQueryKey]);
 
   // Auto-advance server read cursor (deduplicated by lastReadMessageId per conversation)
   useEffect(() => {
@@ -531,7 +547,7 @@ export function PodChatScreen({
     },
     onError: (err) => {
       setComposerNotice(
-        err instanceof Error ? err.message : 'Could not send message.'
+        err instanceof Error ? err.message : 'Could not send that.'
       );
     },
   });
@@ -572,7 +588,7 @@ export function PodChatScreen({
     },
     onSuccess: (mode) => {
       if (mode === 'proposed') {
-        setComposerNotice('Opened democratic pod vote to pin message.');
+        setComposerNotice('Opened a room vote to pin that message.');
         queryClient.invalidateQueries({ queryKey: ['proposals', podId] });
         queryClient.invalidateQueries({ queryKey: ['pods'] });
       }
@@ -581,7 +597,7 @@ export function PodChatScreen({
     },
     onError: (err) => {
       setComposerNotice(
-        err instanceof Error ? err.message : 'Could not update pin.'
+        err instanceof Error ? err.message : 'Could not change the pin.'
       );
     },
   });
@@ -590,7 +606,7 @@ export function PodChatScreen({
     mutationFn: (messageId: number) => toggleBookmark(messageId),
     onSuccess: (res) => {
       setComposerNotice(
-        res.bookmarked ? 'Saved to bookmarks.' : 'Removed from saved.'
+        res.bookmarked ? 'Saved.' : 'Removed from saved.'
       );
       queryClient.invalidateQueries({ queryKey: convoQueryKey });
       queryClient.invalidateQueries({ queryKey: ['bookmarks'] });
@@ -645,10 +661,10 @@ export function PodChatScreen({
       if (res.newPod) {
         setActivePodId(res.newPod.podId);
         setComposerNotice(
-          `Rematched into #${res.newPod.code} as ${res.newPod.myAlias}`
+          `New room. You are ${res.newPod.myAlias} here.`
         );
       } else {
-        setComposerNotice('Left pod; pick a new pod in Pods tab.');
+        setComposerNotice('You left. Pick a new room in Rooms.');
       }
     },
   });
@@ -709,7 +725,7 @@ export function PodChatScreen({
     if (cmd === '/invite') {
       setInviteModalOpen(true);
     } else if (cmd === '/poll') {
-      setDraft('/poll "What should our pod do next?" "Option A" "Option B"');
+      setDraft('/poll "What should our room do next?" "Option A" "Option B"');
     } else if (cmd === '/icebreaker') {
       if (podId && !activePeerId) {
         postMutation.mutate({ body: '/icebreaker' });
@@ -729,7 +745,7 @@ export function PodChatScreen({
       const perm = await Audio.requestPermissionsAsync();
       if (!perm.granted) {
         setComposerNotice(
-          'Microphone permission denied. Enable mic access in settings for Voice Notes.'
+          'The microphone is off. Turn it on in settings to send voice notes.'
         );
         return;
       }
@@ -748,7 +764,7 @@ export function PodChatScreen({
       }, 1000);
     } catch {
       setComposerNotice(
-        'Voice recorder unavailable on this simulator/browser — try on a physical device or enable mic input.'
+        'Recording is not available here. Try a phone, or turn on the microphone.'
       );
     }
   };
@@ -813,7 +829,7 @@ export function PodChatScreen({
       queryClient.invalidateQueries({ queryKey: convoQueryKey });
     } catch (err) {
       setComposerNotice(
-        err instanceof Error ? err.message : 'Failed to upload voice note.'
+        err instanceof Error ? err.message : 'Could not send the voice note.'
       );
     } finally {
       setUploadingVoice(false);
@@ -824,23 +840,16 @@ export function PodChatScreen({
   if (!activePod) {
     return (
       <View style={styles.emptyPodState}>
-        <Ionicons
-          name="chatbubble-ellipses-outline"
-          size={34}
-          color={PALETTE.forest}
-        />
-        <Text style={styles.emptyPodTitle}>Join a Pod to Start Chatting</Text>
+        <Text style={styles.emptyPodTitle}>No room to talk in yet</Text>
         <Text style={styles.emptyPodBody}>
-          Head to the Pods tab to match into an anonymous 25-member Compact,
-          Standard, or Club pod.
+          Pick a hobby in Rooms and you get a seat, and an alias to sit under.
         </Text>
-        <Pressable
-          accessibilityRole="button"
+        <Btn
+          label="Go to Rooms"
+          kind="blue"
+          big
           onPress={() => setActiveTab('pods')}
-          style={styles.goPodsBtn}
-        >
-          <Text style={styles.goPodsBtnText}>Browse Pods &amp; Match</Text>
-        </Pressable>
+        />
       </View>
     );
   }
@@ -853,10 +862,7 @@ export function PodChatScreen({
     activePeerInfo?.alias ??
     activePod.members.find((m) => m.peerId === activePeerId)?.alias ??
     'Peer';
-  const activePeerColor =
-    activePeerInfo?.color ??
-    activePod.members.find((m) => m.peerId === activePeerId)?.color ??
-    '#1f6b3a';
+  const activePeerColor = pieceColor(activePeerAlias);
   const activePeerOnline =
     activePeerInfo?.online ??
     activePod.members.find((m) => m.peerId === activePeerId)?.online ??
@@ -864,12 +870,6 @@ export function PodChatScreen({
 
   const groupUnreadCount =
     unreadGroupMap[podId] ?? activePod.unreadGroupCount ?? 0;
-
-  const totalUnreadDmsInPod = orderedPeers.reduce((sum, p) => {
-    const u =
-      unreadDmMap[dmConvoKey(podId, p.peerId)] ?? p.dm?.unreadCount ?? 0;
-    return sum + u;
-  }, 0);
 
   const activePeerLastReadMessageId = activePeerId
     ? Math.max(
@@ -886,122 +886,95 @@ export function PodChatScreen({
       : null;
 
   const slashChips = activePeerId ? DM_SLASH_CHIPS : GROUP_SLASH_CHIPS;
+  const roomName = activePod.title?.trim() || activePod.interestLabel;
+  const callCount = (voicePeersByPod[podId] ?? []).length;
+  const inGroupCall = voiceSession?.podId === podId;
 
   return (
     <KeyboardAvoidingView
       style={styles.container}
       behavior={Platform.OS === 'ios' ? 'padding' : undefined}
     >
-      {/* Top Pod Header + Native Chat Switcher Strip */}
+      {/* Header sheet: room name, the room's own pages, then who you are talking to */}
       <View style={styles.topHeader}>
         <View style={styles.podBarRow}>
           <Pressable
             accessibilityRole="button"
-            accessibilityLabel="Switch active pod"
+            accessibilityLabel={`${roomName}. Switch room`}
             onPress={() => setPodSwitcherOpen(true)}
-            style={styles.podSwitcherPill}
+            style={styles.roomNameBtn}
           >
-            <Text style={styles.podSwitcherText} numberOfLines={1}>
-              {activePod.title?.trim()
-                ? activePod.title
-                : `#${activePod.code}`}{' '}
-              ▾
+            <Text style={styles.roomName} numberOfLines={1}>
+              {roomName}
             </Text>
+            <Ionicons name="chevron-down" size={18} color={PIECES.ink} />
           </Pressable>
 
-          <View style={styles.podMetaRight}>
-            <View
-              style={[
-                styles.wsDot,
-                { backgroundColor: wsConnected ? PALETTE.mint : PALETTE.amber },
-              ]}
-            />
-            <Text style={styles.myAliasHeaderText} numberOfLines={1}>
-              {activePod.myAlias}
+          <View
+            style={[
+              styles.wsDot,
+              { backgroundColor: wsConnected ? PIECE_HEX.jade : PIECES.off },
+            ]}
+            accessibilityLabel={wsConnected ? 'Live' : 'Reconnecting'}
+          />
+
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel={
+              activePod.openProposalsCount > 0
+                ? `${
+                    activePod.governanceMode === 'ADMIN' ? 'Manage' : 'Votes'
+                  }, ${activePod.openProposalsCount} open`
+                : activePod.governanceMode === 'ADMIN'
+                ? 'Manage the room'
+                : 'Votes'
+            }
+            onPress={() => setGovernanceModalOpen(true)}
+            style={styles.headerLink}
+          >
+            <Text style={styles.headerLinkText}>
+              {activePod.governanceMode === 'ADMIN' ? 'Manage' : 'Votes'}
             </Text>
+            {activePod.openProposalsCount > 0 ? (
+              <Badge n={activePod.openProposalsCount} />
+            ) : null}
+          </Pressable>
 
-            <Pressable
-              accessibilityRole="button"
-              accessibilityLabel="Votes / Manage pod governance"
-              onPress={() => setGovernanceModalOpen(true)}
-              style={styles.headerGovBtn}
-            >
-              <Ionicons
-                name={
-                  activePod.governanceMode === 'ADMIN'
-                    ? 'settings-outline'
-                    : 'hammer-outline'
-                }
-                size={15}
-                color={PALETTE.mint}
-              />
-              <Text style={styles.headerGovBtnText}>
-                {activePod.governanceMode === 'ADMIN' ? 'Manage' : 'Votes'}
-              </Text>
-              {activePod.openProposalsCount > 0 ? (
-                <View style={styles.openVoteBadge}>
-                  <Text style={styles.openVoteBadgeText}>
-                    {activePod.openProposalsCount}
-                  </Text>
-                </View>
-              ) : null}
-            </Pressable>
-
-            <Pressable
-              accessibilityRole="button"
-              accessibilityLabel="Share / Invite"
-              onPress={() => setInviteModalOpen(true)}
-              style={styles.headerInviteBtn}
-            >
-              <Ionicons
-                name="share-social-outline"
-                size={18}
-                color={PALETTE.mint}
-              />
-            </Pressable>
-          </View>
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel="Invite people"
+            onPress={() => setInviteModalOpen(true)}
+            style={styles.headerLink}
+          >
+            <Text style={styles.headerLinkText}>Invite</Text>
+          </Pressable>
         </View>
 
-        {/* Sleek Chat Switcher Strip: Group Chat + 1:1 Member DM Pills + Members/+DM Sheet */}
         <ScrollView
           horizontal
           showsHorizontalScrollIndicator={false}
           contentContainerStyle={styles.chatSwitcherStrip}
         >
-          {/* Pill 1: Pod Group Chat */}
           <Pressable
             accessibilityRole="tab"
-            accessibilityLabel={`Group Chat, ${activePod.memberCount} members`}
+            accessibilityLabel={`Group chat, ${activePod.memberCount} people`}
             accessibilityState={{ selected: activePeerId === null }}
             onPress={() => switchConversation(null)}
-            style={[
-              styles.chatPill,
-              activePeerId === null && styles.chatPillActive,
-            ]}
+            style={[styles.chatPill, activePeerId === null && styles.chatPillActive]}
           >
-            <Ionicons
-              name="people"
-              size={15}
-              color={
-                activePeerId === null ? PALETTE.charcoal : PALETTE.mint
-              }
-            />
             <Text
               style={[
                 styles.chatPillText,
                 activePeerId === null && styles.chatPillTextActive,
               ]}
             >
-              Group Chat ({activePod.memberCount})
+              Everyone · {activePod.memberCount}
             </Text>
             {activePeerId !== null && groupUnreadCount > 0 ? (
-              <View style={styles.unreadBadge}>
-                <Text style={styles.unreadBadgeText}>{groupUnreadCount}</Text>
-              </View>
+              <Badge n={groupUnreadCount} />
             ) : null}
           </Pressable>
 
-          {/* 1:1 Member DM Pills */}
           {orderedPeers.map((peer) => {
             const selected = activePeerId === peer.peerId;
             const unread =
@@ -1012,98 +985,76 @@ export function PodChatScreen({
               <Pressable
                 key={peer.peerId}
                 accessibilityRole="tab"
-                accessibilityLabel={`Private chat with ${peer.alias}`}
+                accessibilityLabel={`Private chat with ${peer.alias}${
+                  unread > 0 ? `, ${unread} unread` : ''
+                }${peer.online ? '' : ', away'}`}
                 accessibilityState={{ selected }}
                 onPress={() => switchConversation(peer.peerId)}
-                style={[styles.chatPill, selected && styles.chatPillActive]}
+                style={[
+                  styles.peerChip,
+                  selected && { backgroundColor: pieceColor(peer.alias) },
+                ]}
               >
-                <View
-                  style={[
-                    styles.peerOnlineDot,
-                    peer.online
-                      ? selected
-                        ? styles.peerOnlineDotOnMint
-                        : styles.peerOnlineDotLive
-                      : styles.peerOnlineDotOffline,
-                  ]}
-                />
-                <Text
-                  style={[
-                    styles.chatPillText,
-                    selected && styles.chatPillTextActive,
-                  ]}
-                  numberOfLines={1}
-                >
-                  {peer.alias}
-                </Text>
+                <Piece alias={peer.alias} size={34} away={!peer.online} />
+                {selected ? (
+                  <Text style={styles.chatPillText} numberOfLines={1}>
+                    {peer.alias}
+                  </Text>
+                ) : null}
                 {unread > 0 ? (
-                  <View
-                    style={[
-                      styles.unreadBadge,
-                      selected && styles.unreadBadgeOnMint,
-                    ]}
-                  >
-                    <Text
-                      style={[
-                        styles.unreadBadgeText,
-                        selected && styles.unreadBadgeTextOnMint,
-                      ]}
-                    >
-                      {unread}
-                    </Text>
+                  <View style={styles.peerUnread}>
+                    <Badge n={unread} />
                   </View>
                 ) : null}
               </Pressable>
             );
           })}
 
-          {/* + DM / Members Directory Trigger */}
           <Pressable
             accessibilityRole="button"
-            accessibilityLabel="Open members and private messages list"
+            accessibilityLabel="Everyone in the room, and private chats"
             onPress={() => setDmDirectoryOpen(true)}
-            style={styles.membersDmBtn}
+            style={styles.chatPill}
           >
-            <Ionicons
-              name="chatbubble-ellipses-outline"
-              size={15}
-              color={PALETTE.mint}
-            />
-            <Text style={styles.membersDmBtnText}>
-              + DM · Members ({orderedPeers.length})
-            </Text>
-            {totalUnreadDmsInPod > 0 ? (
-              <View style={styles.unreadBadge}>
-                <Text style={styles.unreadBadgeText}>
-                  {totalUnreadDmsInPod}
-                </Text>
-              </View>
-            ) : null}
+            <Text style={styles.chatPillText}>All {orderedPeers.length + 1}</Text>
           </Pressable>
         </ScrollView>
       </View>
 
-      {/* Crisp 1:1 Private Chat Banner + Call + Quick Return to Group */}
+      {/* Group call strip */}
+      {activePeerId === null && callCount > 0 ? (
+        <View style={styles.groupCallBar}>
+          <Text style={styles.groupCallText}>
+            {callCount} in the call
+          </Text>
+          <Btn
+            label={inGroupCall ? 'Open' : 'Join'}
+            kind="blue"
+            onPress={() => setActiveTab('voice')}
+            a11yLabel={inGroupCall ? 'Open the room call' : 'Join the room call'}
+          />
+        </View>
+      ) : null}
+
+      {/* A private chat: a block in the other person's colour */}
       {activePeerId !== null ? (
-        <View style={styles.privateDmBanner}>
-          <View style={styles.privateDmBannerLeft}>
-            <Ionicons name="lock-closed" size={15} color={PALETTE.forest} />
-            <View style={styles.privateDmTextCol}>
-              <Text style={styles.privateDmTitle} numberOfLines={1}>
-                Private 1:1 with {activePeerAlias} · Hidden from rest of pod
-              </Text>
-              <Text style={styles.privateDmSub} numberOfLines={1}>
-                {activePeerOnline ? '● Online now' : '○ Offline'}
-                {activePeerInfo?.customStatus
-                  ? ` · ${activePeerInfo.customStatus}`
-                  : ''}
-              </Text>
-            </View>
+        <View style={[styles.privateDmBanner, { backgroundColor: activePeerColor }]}>
+          <View style={styles.privateDmTextCol}>
+            <Text style={styles.privateDmTitle} numberOfLines={1}>
+              {activePeerAlias}
+            </Text>
+            <Text style={styles.privateDmSub} numberOfLines={1}>
+              {activePeerOnline ? 'Online' : 'Away'}
+              {activePeerInfo?.customStatus
+                ? ` · ${activePeerInfo.customStatus}`
+                : ''}
+            </Text>
           </View>
           <View style={styles.privateDmBannerActions}>
-            <Pressable
-              accessibilityRole="button"
-              accessibilityLabel={`Start private 1:1 audio call with ${activePeerAlias}`}
+            <Btn
+              label="Call"
+              kind="ink"
+              icon="call-outline"
               disabled={podDmCall?.peerId === activePeerId}
               onPress={() =>
                 handleStartPrivateCall(
@@ -1113,188 +1064,121 @@ export function PodChatScreen({
                   activePeerOnline
                 )
               }
-              style={[
-                styles.privateCallBtn,
-                podDmCall?.peerId === activePeerId && styles.sendBtnDisabled,
-              ]}
-            >
-              <Ionicons
-                name="call-outline"
-                size={15}
-                color={PALETTE.charcoal}
-              />
-              <Text style={styles.privateCallBtnText}>Call</Text>
-            </Pressable>
-
-            <Pressable
-              accessibilityRole="button"
-              accessibilityLabel="Back to Pod Group Chat"
+              a11yLabel={`Call ${activePeerAlias} privately`}
+            />
+            <Btn
+              label="Back"
+              kind="white"
               onPress={() => switchConversation(null)}
-              style={styles.backGroupChip}
-            >
-              <Text style={styles.backGroupChipText}>← Group</Text>
-            </Pressable>
+              a11yLabel="Back to the group chat"
+            />
           </View>
         </View>
       ) : null}
 
-      {/* Active Private 1:1 Audio Call Bar */}
+      {/* Private call bar */}
       {podDmCall ? (
         <View style={styles.dmCallBar}>
           <View style={styles.dmCallTopRow}>
-            <View style={styles.dmCallTitleWrap}>
-              <View
-                style={[
-                  styles.dmCallPulseDot,
-                  podDmCall.phase === 'connected' &&
-                    (podDmCall.speaking || podDmCall.peerSpeaking) &&
-                    styles.dmCallPulseDotSpeaking,
-                ]}
-              />
-              <View style={styles.dmCallTextCol}>
-                <Text style={styles.dmCallTitle} numberOfLines={1}>
-                  {podDmCall.phase === 'ringing'
-                    ? `Calling ${podDmCall.peerAlias}...`
-                    : `🔒 Private 1:1 Call · ${podDmCall.peerAlias}`}
-                </Text>
-                <Text style={styles.dmCallSub} numberOfLines={1}>
-                  {podDmCall.phase === 'ringing'
-                    ? podDmCall.peerOnline
-                      ? 'Ringing privately — hidden from rest of pod'
-                      : 'Peer offline — ringing when online'
-                    : podDmCall.peerSpeaking
-                    ? `${podDmCall.peerAlias} speaking`
-                    : podDmCall.peerMuted
-                    ? `${podDmCall.peerAlias} muted`
-                    : 'Connected · 2-peer private audio'}
-                </Text>
-              </View>
+            <View style={styles.dmCallTextCol}>
+              <Text style={styles.dmCallTitle} numberOfLines={1}>
+                {podDmCall.phase === 'ringing'
+                  ? `Calling ${podDmCall.peerAlias}`
+                  : `On a private call with ${podDmCall.peerAlias}`}
+              </Text>
+              <Text style={styles.dmCallSub} numberOfLines={1}>
+                {podDmCall.phase === 'ringing'
+                  ? podDmCall.peerOnline
+                    ? 'Ringing. Nobody else sees it.'
+                    : 'Away. It rings when they are back.'
+                  : podDmCall.peerSpeaking
+                  ? `${podDmCall.peerAlias} is speaking`
+                  : podDmCall.peerMuted
+                  ? `${podDmCall.peerAlias} is muted`
+                  : 'Connected'}
+              </Text>
             </View>
-
             {podDmCall.phase === 'ringing' ? (
-              <Pressable
-                accessibilityRole="button"
-                accessibilityLabel="End private call"
+              <Btn
+                label="End"
+                kind="off"
                 onPress={handleEndDmCall}
-                style={styles.dmCallEndBtn}
-              >
-                <Ionicons name="call" size={15} color={PALETTE.card} />
-                <Text style={styles.dmCallEndText}>End Call</Text>
-              </Pressable>
+                a11yLabel="End the private call"
+              />
             ) : null}
           </View>
 
           {podDmCall.phase === 'connected' ? (
             <View style={styles.dmCallControlsRow}>
-              <Pressable
-                accessibilityRole="button"
-                accessibilityLabel={
-                  podDmCall.muted ? 'Unmute private call' : 'Mute private call'
-                }
+              <Btn
+                label={podDmCall.muted ? 'Unmute' : 'Mute'}
+                kind="white"
+                icon={podDmCall.muted ? 'mic-off' : 'mic'}
                 onPress={handleToggleDmCallMute}
-                style={[
-                  styles.dmCallCtrlBtn,
-                  podDmCall.muted && styles.dmCallCtrlBtnWarn,
-                ]}
-              >
-                <Ionicons
-                  name={podDmCall.muted ? 'mic-off' : 'mic'}
-                  size={16}
-                  color={podDmCall.muted ? PALETTE.amber : PALETTE.card}
-                />
-                <Text
-                  style={[
-                    styles.dmCallCtrlText,
-                    podDmCall.muted && styles.dmCallCtrlTextWarn,
-                  ]}
-                >
-                  {podDmCall.muted ? 'Unmute' : 'Mute'}
-                </Text>
-              </Pressable>
-
-              <Pressable
-                accessibilityRole="button"
-                accessibilityLabel="Pulse Speak in private call"
+                a11yLabel={
+                  podDmCall.muted ? 'Unmute the private call' : 'Mute the private call'
+                }
+              />
+              <Btn
+                label={podDmCall.speaking ? 'Speaking' : 'Speak'}
+                kind={podDmCall.speaking ? 'blue' : 'white'}
+                icon="pulse"
                 onPress={handleToggleDmCallSpeak}
-                style={[
-                  styles.dmCallPulseBtn,
-                  podDmCall.speaking && styles.dmCallPulseBtnActive,
-                ]}
-              >
-                <Ionicons
-                  name="pulse"
-                  size={16}
-                  color={podDmCall.speaking ? PALETTE.charcoal : PALETTE.mint}
-                />
-                <Text
-                  style={[
-                    styles.dmCallPulseText,
-                    podDmCall.speaking && styles.dmCallPulseTextActive,
-                  ]}
-                >
-                  {podDmCall.speaking ? 'Speaking' : 'Pulse Speak'}
-                </Text>
-              </Pressable>
-
-              <Pressable
-                accessibilityRole="button"
-                accessibilityLabel="End private call"
+                a11yLabel="Pulse speak in the private call"
+              />
+              <Btn
+                label="End"
+                kind="off"
                 onPress={handleEndDmCall}
-                style={styles.dmCallEndBtn}
-              >
-                <Ionicons name="call" size={15} color={PALETTE.card} />
-                <Text style={styles.dmCallEndText}>End Call</Text>
-              </Pressable>
+                a11yLabel="End the private call"
+              />
             </View>
           ) : null}
         </View>
       ) : null}
 
-      {/* Messages FlatList */}
+      {/* Messages */}
       {messagesQuery.isLoading ? (
         <View style={styles.centerBox}>
-          <ActivityIndicator color={PALETTE.forest} />
+          <ActivityIndicator color={PIECES.ink} />
         </View>
       ) : (
         <FlatList
+          ref={listRef}
+          style={styles.list}
+          onContentSizeChange={() => {
+            if (stickToEndRef.current) {
+              listRef.current?.scrollToEnd({ animated: false });
+            }
+          }}
+          onScrollBeginDrag={() => {
+            stickToEndRef.current = false;
+          }}
           data={chronologicalMessages}
           keyExtractor={(item) => String(item.id)}
           contentContainerStyle={styles.messagesList}
           ListHeaderComponent={
             messagesQuery.hasNextPage ? (
-              <Pressable
-                accessibilityRole="button"
-                disabled={messagesQuery.isFetchingNextPage}
-                onPress={() => messagesQuery.fetchNextPage()}
-                style={styles.loadEarlierBtn}
-              >
-                {messagesQuery.isFetchingNextPage ? (
-                  <ActivityIndicator size="small" color={PALETTE.forest} />
-                ) : (
-                  <Text style={styles.loadEarlierText}>
-                    ↑ Load earlier messages
-                  </Text>
-                )}
-              </Pressable>
-            ) : activePeerId !== null ? (
-              <View style={styles.roomIntroCard}>
-                <Text style={styles.roomIntroTitle}>
-                  🔒 Private 1:1 Chat with {activePeerAlias}
-                </Text>
-                <Text style={styles.roomIntroSub}>
-                  Only you ({activePod.myAlias}) and {activePeerAlias} can read
-                  or search these messages inside #{activePod.code}. Zero real
-                  identities exposed.
-                </Text>
+              <View style={styles.loadEarlierWrap}>
+                <Btn
+                  label="Earlier messages"
+                  kind="white"
+                  loading={messagesQuery.isFetchingNextPage}
+                  onPress={() => messagesQuery.fetchNextPage()}
+                />
               </View>
             ) : (
               <View style={styles.roomIntroCard}>
                 <Text style={styles.roomIntroTitle}>
-                  Pod Group Chat · {activePod.memberCount} peers
+                  {activePeerId !== null
+                    ? `Private with ${activePeerAlias}`
+                    : `${roomName}, ${activePod.memberCount} people`}
                 </Text>
                 <Text style={styles.roomIntroSub}>
-                  {activePod.description ||
-                    'Shared peer-blind group chat — tap any member to message privately 1:1, or drop a /poll or Voice Note.'}
+                  {activePeerId !== null
+                    ? `Only you (${activePod.myAlias}) and ${activePeerAlias} can read or search this.`
+                    : activePod.description ||
+                      'Everyone here is an alias. Tap a message to write to that person privately.'}
                 </Text>
               </View>
             )
@@ -1319,40 +1203,41 @@ export function PodChatScreen({
               }
             />
           )}
+          ItemSeparatorComponent={() => <View style={styles.sep} />}
           ListEmptyComponent={
             <Text style={styles.emptyRoomText}>
               {activePeerId !== null
-                ? `Say hi to ${activePeerAlias} privately — only the two of you will see it.`
-                : 'No messages yet. Tap /icebreaker below to spark the pod!'}
+                ? `Say hi to ${activePeerAlias}. Only the two of you see it.`
+                : 'Quiet so far. Try an icebreaker below.'}
             </Text>
           }
         />
       )}
 
-      {/* Typing Indicator + Notice + Quote Banner */}
       {typingAliases.length > 0 ? (
         <View style={styles.typingStrip}>
           <Text style={styles.typingText}>
             {typingAliases.join(', ')}{' '}
-            {typingAliases.length === 1 ? 'is' : 'are'} typing...
+            {typingAliases.length === 1 ? 'is' : 'are'} typing
           </Text>
         </View>
       ) : null}
 
       {composerNotice || dmCallNotice ? (
-        <View style={styles.noticeBar}>
+        <View style={styles.noticeBar} accessibilityRole="alert">
           <Text style={styles.noticeText} numberOfLines={2}>
             {composerNotice || dmCallNotice}
           </Text>
           <Pressable
             accessibilityRole="button"
+            accessibilityLabel="Dismiss"
             onPress={() => {
               setComposerNotice(null);
               setDmCallNotice(null);
             }}
             style={styles.smallCloseBtn}
           >
-            <Ionicons name="close" size={16} color={PALETTE.ink} />
+            <Ionicons name="close" size={18} color={PIECES.ink} />
           </Pressable>
         </View>
       ) : null}
@@ -1364,36 +1249,38 @@ export function PodChatScreen({
               Replying to {quoteTarget.senderAlias}
             </Text>
             <Text style={styles.quoteComposerSnippet} numberOfLines={1}>
-              {quoteTarget.body || 'Voice note / attachment'}
+              {quoteTarget.body || 'Voice note or file'}
             </Text>
           </View>
           <Pressable
             accessibilityRole="button"
-            accessibilityLabel="Cancel quote reply"
+            accessibilityLabel="Cancel the reply"
             onPress={() => setQuoteTarget(null)}
             style={styles.smallCloseBtn}
           >
-            <Ionicons name="close" size={18} color={PALETTE.muted} />
+            <Ionicons name="close" size={18} color={PIECES.ink} />
           </Pressable>
         </View>
       ) : null}
 
-      {/* Rich Composer Footer */}
+      {/* Composer sheet: coloured command pills, then the field and Send */}
       <View style={styles.composerWrap}>
-        {/* Quick Slash Command Strip */}
         <ScrollView
           horizontal
           showsHorizontalScrollIndicator={false}
           contentContainerStyle={styles.slashStrip}
           keyboardShouldPersistTaps="handled"
         >
-          {slashChips.map((chip) => (
+          {slashChips.map((chip, idx) => (
             <Pressable
               key={chip.cmd}
               accessibilityRole="button"
-              accessibilityLabel={`Slash command ${chip.label}`}
+              accessibilityLabel={`${chip.label}, command ${chip.cmd}`}
               onPress={() => handleSlashChip(chip.cmd)}
-              style={styles.slashChip}
+              style={[
+                styles.slashChip,
+                { backgroundColor: CHIP_COLORS[idx % CHIP_COLORS.length] },
+              ]}
             >
               <Text style={styles.slashChipText}>{chip.label}</Text>
             </Pressable>
@@ -1405,40 +1292,27 @@ export function PodChatScreen({
             <View style={styles.recordLiveInfo}>
               <View style={styles.recordRedDot} />
               <Text style={styles.recordingTimerText}>
-                Recording Voice Note · 0:
-                {recordElapsedSec.toString().padStart(2, '0')}
+                Recording 0:{recordElapsedSec.toString().padStart(2, '0')}
               </Text>
             </View>
             <View style={styles.recordActions}>
-              <Pressable
-                accessibilityRole="button"
-                onPress={cancelVoiceRecording}
-                style={styles.cancelRecBtn}
-              >
-                <Text style={styles.cancelRecText}>Cancel</Text>
-              </Pressable>
-              <Pressable
-                accessibilityRole="button"
-                onPress={finishAndSendVoiceNote}
-                style={styles.sendRecBtn}
-              >
-                <Text style={styles.sendRecText}>Send Voice</Text>
-              </Pressable>
+              <Btn label="Cancel" onPress={cancelVoiceRecording} />
+              <Btn label="Send" kind="blue" onPress={finishAndSendVoiceNote} />
             </View>
           </View>
         ) : (
           <View style={styles.composerInputRow}>
             <Pressable
               accessibilityRole="button"
-              accessibilityLabel="Record voice note"
+              accessibilityLabel="Record a voice note"
               disabled={uploadingVoice}
               onPress={startVoiceRecording}
               style={styles.micBtn}
             >
               {uploadingVoice ? (
-                <ActivityIndicator size="small" color={PALETTE.forest} />
+                <ActivityIndicator size="small" color={PIECES.ink} />
               ) : (
-                <Ionicons name="mic-outline" size={20} color={PALETTE.ink} />
+                <Ionicons name="mic-outline" size={22} color={PIECES.ink} />
               )}
             </Pressable>
 
@@ -1447,39 +1321,33 @@ export function PodChatScreen({
               onChangeText={handleDraftChange}
               placeholder={
                 activePeerId
-                  ? `Message ${activePeerAlias} privately...`
-                  : `Message Group Chat...`
+                  ? `Write to ${activePeerAlias} alone`
+                  : `Write to ${roomName}`
               }
-              placeholderTextColor={PALETTE.muted}
+              placeholderTextColor={PIECES.muted}
+              accessibilityLabel="Message"
               multiline
               style={styles.composerInput}
             />
 
-            <Pressable
-              accessibilityRole="button"
-              accessibilityLabel="Send message"
+            <Btn
+              label="Send"
+              kind="blue"
               disabled={!draft.trim() || postMutation.isPending}
               onPress={handleSendText}
-              style={[
-                styles.sendBtn,
-                (!draft.trim() || postMutation.isPending) &&
-                  styles.sendBtnDisabled,
-              ]}
-            >
-              <Ionicons name="send" size={18} color={PALETTE.charcoal} />
-            </Pressable>
+              style={{ minHeight: 48, borderRadius: 24 }}
+              a11yLabel="Send message"
+            />
           </View>
         )}
       </View>
 
-      {/* Pod Share / Invite Modal */}
       <InviteShareModal
         visible={inviteModalOpen}
         pod={activePod}
         onClose={() => setInviteModalOpen(false)}
       />
 
-      {/* Pod Governance / Admin Management Modal */}
       <PodGovernanceModal
         visible={governanceModalOpen}
         pod={activePod}
@@ -1490,1190 +1358,432 @@ export function PodChatScreen({
         }}
       />
 
-      {/* Members & Private 1:1 DMs Bottom Sheet */}
-      <Modal
+      {/* Everyone in the room */}
+      <Sheet
         visible={dmDirectoryOpen}
-        transparent
-        animationType="fade"
-        onRequestClose={() => setDmDirectoryOpen(false)}
+        title="Everyone here"
+        lead={`You are ${activePod.myAlias}. Tap anyone to write to them alone.`}
+        onClose={() => setDmDirectoryOpen(false)}
       >
         <Pressable
-          style={styles.sheetBackdrop}
-          onPress={() => setDmDirectoryOpen(false)}
+          accessibilityRole="button"
+          accessibilityLabel="Group chat"
+          onPress={() => {
+            setDmDirectoryOpen(false);
+            switchConversation(null);
+          }}
+          style={[styles.memberDmRow, activePeerId === null && styles.memberDmRowActive]}
         >
-          <Pressable style={styles.dmSheetCard} onPress={() => {}}>
-            <View style={styles.dmSheetHeader}>
-              <View style={styles.dmSheetHeaderCol}>
-                <Text style={styles.sheetTitle}>
-                  Pod Members &amp; Private DMs
-                </Text>
-                <Text style={styles.dmSheetSub}>
-                  You are {activePod.myAlias} · Tap any peer to chat 1-on-1
-                </Text>
-              </View>
-              <Pressable
-                accessibilityRole="button"
-                accessibilityLabel="Close members list"
-                onPress={() => setDmDirectoryOpen(false)}
-                style={styles.smallCloseBtn}
-              >
-                <Ionicons name="close" size={20} color={PALETTE.ink} />
-              </Pressable>
-            </View>
+          <View style={styles.groupTile}>
+            <Ionicons name="people" size={22} color={PIECES.sheet} />
+          </View>
+          <View style={styles.memberDmInfoCol}>
+            <Text style={styles.memberDmAlias}>Group chat</Text>
+            <Text style={styles.memberDmSnippet} numberOfLines={1}>
+              {activePod.memberCount} people
+            </Text>
+          </View>
+        </Pressable>
 
-            <ScrollView
-              style={styles.dmMembersScroll}
-              contentContainerStyle={styles.dmMembersContent}
-            >
-              {/* Quick return to Group Chat row */}
+        {orderedPeers.length === 0 ? (
+          <Text style={styles.emptyRoomText}>
+            Nobody else is here yet. Invite people to fill the room.
+          </Text>
+        ) : (
+          orderedPeers.map((peer) => {
+            const unread =
+              unreadDmMap[dmConvoKey(podId, peer.peerId)] ??
+              peer.dm?.unreadCount ??
+              0;
+            const lastSnippet = peer.dm
+              ? `${
+                  peer.dm.lastSenderPeerId === activePod.myPeerId ? 'You: ' : ''
+                }${peer.dm.lastBody || 'Voice note'}`
+              : peer.customStatus ||
+                (peer.online ? 'Here now' : 'Away');
+            return (
               <Pressable
+                key={peer.peerId}
                 accessibilityRole="button"
-                onPress={() => {
-                  setDmDirectoryOpen(false);
-                  switchConversation(null);
-                }}
+                accessibilityLabel={`Write to ${peer.alias} privately${
+                  unread > 0 ? `, ${unread} unread` : ''
+                }`}
+                onPress={() => openPrivateChat(peer.peerId)}
                 style={[
                   styles.memberDmRow,
-                  activePeerId === null && styles.memberDmRowActive,
+                  activePeerId === peer.peerId && styles.memberDmRowActive,
                 ]}
               >
-                <View
-                  style={[
-                    styles.memberSheetAvatar,
-                    { backgroundColor: PALETTE.forest },
-                  ]}
-                >
-                  <Ionicons name="people" size={18} color={PALETTE.mint} />
-                </View>
+                <Piece alias={peer.alias} size={48} away={!peer.online} />
                 <View style={styles.memberDmInfoCol}>
-                  <Text style={styles.memberDmAlias}>
-                    Pod Group Chat ({activePod.memberCount})
+                  <Text style={styles.memberDmAlias} numberOfLines={1}>
+                    {peer.alias}
+                    {peer.inVoice ? '  · in the call' : ''}
                   </Text>
                   <Text style={styles.memberDmSnippet} numberOfLines={1}>
-                    Shared room with all pod members
+                    {lastSnippet}
                   </Text>
                 </View>
-                <View style={styles.openDmBtnSecondary}>
-                  <Text style={styles.openDmBtnSecondaryText}>Open Group</Text>
-                </View>
+                {unread > 0 ? <Badge n={unread} /> : null}
               </Pressable>
+            );
+          })
+        )}
+      </Sheet>
 
-              {orderedPeers.length === 0 ? (
-                <Text style={styles.emptyRoomText}>
-                  No other members in this pod yet — tap Share / Invite to bring
-                  peers in!
-                </Text>
-              ) : (
-                orderedPeers.map((peer) => {
-                  const avatarCol = safePeerColor(peer.color, peer.alias);
-                  const unread =
-                    unreadDmMap[dmConvoKey(podId, peer.peerId)] ??
-                    peer.dm?.unreadCount ??
-                    0;
-                  const lastSnippet = peer.dm
-                    ? `${
-                        peer.dm.lastSenderPeerId === activePod.myPeerId
-                          ? 'You'
-                          : peer.alias
-                      }: ${peer.dm.lastBody || 'Voice note'}`
-                    : peer.customStatus || 'Tap to start a private 1:1 chat';
-
-                  return (
-                    <View
-                      key={peer.peerId}
-                      style={[
-                        styles.memberDmRow,
-                        activePeerId === peer.peerId && styles.memberDmRowActive,
-                      ]}
-                    >
-                      <View style={styles.avatarWithDot}>
-                        <View
-                          style={[
-                            styles.memberSheetAvatar,
-                            { backgroundColor: avatarCol },
-                          ]}
-                        >
-                          <Text style={styles.memberSheetInitials}>
-                            {aliasInitials(peer.alias)}
-                          </Text>
-                        </View>
-                        <View
-                          style={[
-                            styles.avatarStatusDot,
-                            peer.online
-                              ? styles.avatarStatusOnline
-                              : styles.avatarStatusOffline,
-                          ]}
-                        />
-                      </View>
-
-                      <View style={styles.memberDmInfoCol}>
-                        <View style={styles.memberDmAliasRow}>
-                          <Text style={styles.memberDmAlias} numberOfLines={1}>
-                            {peer.alias}
-                          </Text>
-                          {peer.inVoice ? (
-                            <Text style={styles.inVoiceMiniTag}>🔊 Call</Text>
-                          ) : null}
-                          {unread > 0 ? (
-                            <View style={styles.unreadBadge}>
-                              <Text style={styles.unreadBadgeText}>
-                                {unread}
-                              </Text>
-                            </View>
-                          ) : null}
-                        </View>
-                        <Text style={styles.memberDmSnippet} numberOfLines={1}>
-                          {lastSnippet}
-                        </Text>
-                      </View>
-
-                      <Pressable
-                        accessibilityRole="button"
-                        accessibilityLabel={`Message ${peer.alias} privately`}
-                        onPress={() => openPrivateChat(peer.peerId)}
-                        style={styles.messagePrivatelyBtn}
-                      >
-                        <Text style={styles.messagePrivatelyText}>
-                          Message Privately
-                        </Text>
-                      </Pressable>
-                    </View>
-                  );
-                })
-              )}
-            </ScrollView>
-          </Pressable>
-        </Pressable>
-      </Modal>
-
-      {/* Message Action Sheet Modal */}
-      <Modal
+      {/* What you can do with a message */}
+      <Sheet
         visible={!!actionTarget}
-        transparent
-        animationType="fade"
-        onRequestClose={() => setActionTarget(null)}
+        title={`From ${actionTarget?.senderAlias ?? ''}`}
+        onClose={() => setActionTarget(null)}
       >
-        <Pressable
-          style={styles.sheetBackdrop}
-          onPress={() => setActionTarget(null)}
-        >
-          <Pressable style={styles.sheetCard} onPress={() => {}}>
-            <Text style={styles.sheetTitle}>
-              Message from {actionTarget?.senderAlias}
-            </Text>
-
-            {/* Quick Emoji React Row */}
-            <View style={styles.emojiBar}>
-              {QUICK_EMOJIS.map((emoji) => (
-                <Pressable
-                  key={emoji}
-                  accessibilityRole="button"
-                  accessibilityLabel={`React with ${emoji}`}
-                  onPress={() => {
-                    if (actionTarget) {
-                      reactMutation.mutate({
-                        messageId: actionTarget.id,
-                        emoji,
-                      });
-                    }
-                    setActionTarget(null);
-                  }}
-                  style={styles.sheetEmojiBtn}
-                >
-                  <Text style={styles.sheetEmojiText}>{emoji}</Text>
-                </Pressable>
-              ))}
-            </View>
-
-            {/* 1:1 Private DM Action when tapping a peer's message in Group Chat */}
-            {actionTarget?.senderPeerId &&
-            actionTarget.senderPeerId !== activePod.myPeerId &&
-            activePeerId !== actionTarget.senderPeerId ? (
-              <Pressable
-                accessibilityRole="button"
-                onPress={() => {
-                  const targetPeerId = actionTarget.senderPeerId;
-                  setActionTarget(null);
-                  openPrivateChat(targetPeerId);
-                }}
-                style={[styles.sheetActionRow, styles.sheetActionMint]}
-              >
-                <Ionicons
-                  name="lock-closed-outline"
-                  size={18}
-                  color={PALETTE.forest}
-                />
-                <Text
-                  style={[styles.sheetActionText, { color: PALETTE.forest }]}
-                >
-                  Message {actionTarget.senderAlias} privately
-                </Text>
-              </Pressable>
-            ) : null}
-
+        <View style={styles.emojiBar}>
+          {QUICK_EMOJIS.map((emoji) => (
             <Pressable
+              key={emoji}
               accessibilityRole="button"
+              accessibilityLabel={`React with ${emoji}`}
               onPress={() => {
-                const target = actionTarget;
-                setActionTarget(null);
-                if (target) setQuoteTarget(target);
-              }}
-              style={styles.sheetActionRow}
-            >
-              <Ionicons
-                name="return-down-forward-outline"
-                size={18}
-                color={PALETTE.ink}
-              />
-              <Text style={styles.sheetActionText}>Reply</Text>
-            </Pressable>
-
-            <Pressable
-              accessibilityRole="button"
-              onPress={() => {
-                if (actionTarget) bookmarkMutation.mutate(actionTarget.id);
+                if (actionTarget) {
+                  reactMutation.mutate({ messageId: actionTarget.id, emoji });
+                }
                 setActionTarget(null);
               }}
-              style={styles.sheetActionRow}
+              style={styles.sheetEmojiBtn}
             >
-              <Ionicons name="bookmark-outline" size={18} color={PALETTE.ink} />
-              <Text style={styles.sheetActionText}>
-                {actionTarget?.isBookmarked
-                  ? 'Remove Saved Bookmark'
-                  : 'Bookmark Message'}
-              </Text>
+              <Text style={styles.sheetEmojiText}>{emoji}</Text>
             </Pressable>
+          ))}
+        </View>
 
-            {activePeerId === null ? (
-              <Pressable
-                accessibilityRole="button"
-                onPress={() => {
-                  if (actionTarget) pinMutation.mutate(actionTarget.id);
-                  setActionTarget(null);
-                }}
-                style={styles.sheetActionRow}
-              >
-                <Ionicons name="pin-outline" size={18} color={PALETTE.ink} />
-                <Text style={styles.sheetActionText}>
-                  {actionTarget?.isPinned ? 'Unpin from Pod' : 'Pin to Pod'}
-                </Text>
-              </Pressable>
-            ) : null}
+        {actionTarget?.senderPeerId &&
+        actionTarget.senderPeerId !== activePod.myPeerId &&
+        activePeerId !== actionTarget.senderPeerId ? (
+          <Btn
+            label={`Write to ${actionTarget.senderAlias} privately`}
+            kind="blue"
+            wide
+            onPress={() => {
+              const targetPeerId = actionTarget.senderPeerId;
+              setActionTarget(null);
+              openPrivateChat(targetPeerId);
+            }}
+          />
+        ) : null}
 
-            {actionTarget?.senderPeerId === activePod.myPeerId ? (
-              <Pressable
-                accessibilityRole="button"
-                onPress={() => {
-                  if (actionTarget) deleteMutation.mutate(actionTarget.id);
-                  setActionTarget(null);
-                }}
-                style={styles.sheetActionRow}
-              >
-                <Ionicons
-                  name="trash-outline"
-                  size={18}
-                  color={PALETTE.danger}
-                />
-                <Text
-                  style={[styles.sheetActionText, { color: PALETTE.danger }]}
-                >
-                  Delete My Message
-                </Text>
-              </Pressable>
-            ) : null}
-          </Pressable>
-        </Pressable>
-      </Modal>
+        <Btn
+          label="Reply"
+          wide
+          onPress={() => {
+            const target = actionTarget;
+            setActionTarget(null);
+            if (target) setQuoteTarget(target);
+          }}
+        />
+        <Btn
+          label={actionTarget?.isBookmarked ? 'Remove from saved' : 'Save it'}
+          wide
+          onPress={() => {
+            if (actionTarget) bookmarkMutation.mutate(actionTarget.id);
+            setActionTarget(null);
+          }}
+        />
+        {activePeerId === null ? (
+          <Btn
+            label={actionTarget?.isPinned ? 'Unpin' : 'Pin to the room'}
+            wide
+            onPress={() => {
+              if (actionTarget) pinMutation.mutate(actionTarget.id);
+              setActionTarget(null);
+            }}
+          />
+        ) : null}
+        {actionTarget?.senderPeerId === activePod.myPeerId ? (
+          <Btn
+            label="Delete mine"
+            kind="off"
+            wide
+            onPress={() => {
+              if (actionTarget) deleteMutation.mutate(actionTarget.id);
+              setActionTarget(null);
+            }}
+          />
+        ) : null}
+      </Sheet>
 
-      {/* Pod Switcher Sheet */}
-      <Modal
+      {/* Switch room */}
+      <Sheet
         visible={podSwitcherOpen}
-        transparent
-        animationType="fade"
-        onRequestClose={() => setPodSwitcherOpen(false)}
+        title="Your rooms"
+        onClose={() => setPodSwitcherOpen(false)}
       >
-        <Pressable
-          style={styles.sheetBackdrop}
-          onPress={() => setPodSwitcherOpen(false)}
-        >
-          <Pressable style={styles.sheetCard} onPress={() => {}}>
-            <Text style={styles.sheetTitle}>Switch Active Pod</Text>
-            {pods.map((p) => {
-              const selected = p.podId === activePod.podId;
-              return (
-                <Pressable
-                  key={p.podId}
-                  accessibilityRole="button"
-                  onPress={() => {
-                    setActivePodId(p.podId);
-                    setPodSwitcherOpen(false);
-                  }}
-                  style={[
-                    styles.podSwitchRow,
-                    selected && styles.podSwitchRowActive,
-                  ]}
-                >
-                  <View style={styles.podSwitchCol}>
-                    <Text style={styles.podSwitchCode}>
-                      {p.title?.trim() ? p.title : `#${p.code}`}
-                    </Text>
-                    <Text style={styles.podSwitchSub}>
-                      {p.governanceMode === 'ADMIN'
-                        ? '👑 Admin'
-                        : '⚖️ Democratic'}{' '}
-                      · {p.interestLabel} · You: {p.myAlias}
-                    </Text>
-                  </View>
-                  <Text style={styles.podSwitchTier}>
-                    {capacityTierBadge(p.memberCount, p.maxMembers)}
-                  </Text>
-                </Pressable>
-              );
-            })}
-          </Pressable>
-        </Pressable>
-      </Modal>
+        {pods.map((p) => {
+          const selected = p.podId === activePod.podId;
+          return (
+            <Pressable
+              key={p.podId}
+              accessibilityRole="button"
+              accessibilityLabel={`${p.title?.trim() || p.interestLabel}, you are ${p.myAlias}`}
+              accessibilityState={{ selected }}
+              onPress={() => {
+                setActivePodId(p.podId);
+                setPodSwitcherOpen(false);
+              }}
+              style={[
+                styles.podSwitchRow,
+                selected && { backgroundColor: pieceColor(p.myAlias) },
+              ]}
+            >
+              <View style={styles.podSwitchCol}>
+                <Text style={styles.podSwitchCode}>
+                  {p.title?.trim() || p.interestLabel}
+                </Text>
+                <Text style={styles.podSwitchSub}>
+                  as {p.myAlias} · {capacityTierBadge(p.memberCount, p.maxMembers)}
+                </Text>
+              </View>
+            </Pressable>
+          );
+        })}
+      </Sheet>
     </KeyboardAvoidingView>
   );
 }
 
 const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: PALETTE.surface,
-  },
+  container: { flex: 1, backgroundColor: PIECES.bg },
   emptyPodState: {
     flex: 1,
     alignItems: 'center',
     justifyContent: 'center',
     padding: 24,
-    gap: 10,
-    backgroundColor: PALETTE.surface,
+    gap: 12,
+    backgroundColor: PIECES.bg,
   },
-  emptyPodTitle: {
-    fontSize: 18,
-    fontWeight: '700',
-    color: PALETTE.charcoal,
-  },
-  emptyPodBody: {
-    fontSize: 14,
-    lineHeight: 20,
-    color: PALETTE.muted,
-    textAlign: 'center',
-  },
-  goPodsBtn: {
-    minHeight: TOUCH_MIN,
-    paddingHorizontal: 20,
-    borderRadius: 12,
-    backgroundColor: PALETTE.mint,
-    borderWidth: 1.5,
-    borderColor: PALETTE.forest,
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginTop: 6,
-  },
-  goPodsBtnText: {
-    fontSize: 14,
-    fontWeight: '700',
-    color: PALETTE.charcoal,
-  },
+  emptyPodTitle: { fontSize: 24, color: PIECES.ink, fontWeight: '600', textAlign: 'center' },
+  emptyPodBody: { fontSize: 16, lineHeight: 23, color: PIECES.muted, textAlign: 'center' },
   topHeader: {
-    backgroundColor: PALETTE.charcoal,
-    paddingTop: 8,
+    backgroundColor: PIECES.sheet,
+    borderBottomLeftRadius: 28,
+    borderBottomRightRadius: 28,
+    paddingTop: 6,
     paddingBottom: 10,
-    gap: 8,
+    gap: 4,
   },
   podBarRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'space-between',
     paddingHorizontal: 12,
-    gap: 8,
+    gap: 6,
   },
-  podSwitcherPill: {
-    flexShrink: 1,
+  roomNameBtn: {
+    flex: 1,
     minHeight: TOUCH_MIN,
-    paddingHorizontal: 12,
-    borderRadius: 12,
-    backgroundColor: '#2a2d2a',
-    borderWidth: 1,
-    borderColor: '#3a3f3a',
-    justifyContent: 'center',
-  },
-  podSwitcherText: {
-    color: PALETTE.mint,
-    fontSize: 13,
-    fontWeight: '700',
-    fontFamily: MONO_FONT,
-  },
-  podMetaRight: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 6,
   },
-  wsDot: {
-    width: 8,
-    height: 8,
-    borderRadius: 4,
-  },
-  myAliasHeaderText: {
-    maxWidth: 88,
-    color: PALETTE.card,
-    fontSize: 11,
-    fontWeight: '600',
-  },
-  headerGovBtn: {
+  roomName: { flexShrink: 1, fontSize: 24, color: PIECES.ink, fontWeight: '600' },
+  wsDot: { width: 10, height: 10, borderRadius: 5 },
+  headerLink: {
     minHeight: TOUCH_MIN,
-    paddingHorizontal: 10,
-    borderRadius: 12,
-    backgroundColor: '#2a2d2a',
-    borderWidth: 1,
-    borderColor: '#3a3f3a',
+    paddingHorizontal: 8,
     flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'center',
-    gap: 5,
+    gap: 6,
   },
-  headerGovBtnText: {
-    color: PALETTE.mint,
-    fontSize: 12,
-    fontWeight: '700',
-  },
-  openVoteBadge: {
-    minWidth: 18,
-    height: 18,
-    borderRadius: 9,
-    paddingHorizontal: 5,
-    backgroundColor: PALETTE.mint,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  openVoteBadgeText: {
-    color: PALETTE.charcoal,
-    fontSize: 10,
-    fontWeight: '800',
-    fontFamily: MONO_FONT,
-  },
-  headerInviteBtn: {
-    width: TOUCH_MIN,
-    height: TOUCH_MIN,
-    borderRadius: 12,
-    backgroundColor: '#2a2d2a',
-    borderWidth: 1,
-    borderColor: '#3a3f3a',
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
+  headerLinkText: { fontSize: 15, color: PIECES.ink, fontWeight: '600' },
   chatSwitcherStrip: {
     paddingHorizontal: 12,
     gap: 8,
+    alignItems: 'center',
   },
   chatPill: {
     minHeight: TOUCH_MIN,
-    paddingHorizontal: 13,
-    borderRadius: 999,
-    backgroundColor: '#262926',
-    borderWidth: 1,
-    borderColor: '#363b36',
+    paddingHorizontal: 16,
     flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'center',
-    gap: 6,
+    gap: 8,
+    borderRadius: 22,
+    backgroundColor: PIECES.bg,
   },
-  chatPillActive: {
-    backgroundColor: PALETTE.mint,
-    borderColor: PALETTE.mint,
-  },
-  chatPillText: {
-    color: '#e2e6e2',
-    fontSize: 13,
-    fontWeight: '600',
-    maxWidth: 130,
-  },
-  chatPillTextActive: {
-    color: PALETTE.charcoal,
-    fontWeight: '700',
-  },
-  peerOnlineDot: {
-    width: 8,
-    height: 8,
-    borderRadius: 4,
-  },
-  peerOnlineDotLive: {
-    backgroundColor: PALETTE.mint,
-  },
-  peerOnlineDotOnMint: {
-    backgroundColor: PALETTE.forest,
-  },
-  peerOnlineDotOffline: {
-    backgroundColor: '#666c66',
-  },
-  unreadBadge: {
-    minWidth: 18,
-    height: 18,
-    borderRadius: 9,
+  chatPillActive: { backgroundColor: PIECES.ink },
+  chatPillText: { fontSize: 15, fontWeight: '600', color: PIECES.ink },
+  chatPillTextActive: { color: PIECES.sheet },
+  peerChip: {
+    minHeight: TOUCH_MIN,
+    minWidth: TOUCH_MIN,
     paddingHorizontal: 5,
-    backgroundColor: PALETTE.mint,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  unreadBadgeOnMint: {
-    backgroundColor: PALETTE.charcoal,
-  },
-  unreadBadgeText: {
-    fontSize: 10,
-    fontWeight: '800',
-    color: PALETTE.charcoal,
-    fontFamily: MONO_FONT,
-  },
-  unreadBadgeTextOnMint: {
-    color: PALETTE.mint,
-  },
-  membersDmBtn: {
-    minHeight: TOUCH_MIN,
-    paddingHorizontal: 13,
-    borderRadius: 999,
-    borderWidth: 1,
-    borderColor: '#4a524a',
-    backgroundColor: '#222522',
     flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'center',
-    gap: 6,
+    gap: 8,
+    borderRadius: 22,
+    backgroundColor: PIECES.bg,
+    paddingRight: 5,
   },
-  membersDmBtnText: {
-    color: PALETTE.mint,
-    fontSize: 12,
-    fontWeight: '700',
+  peerUnread: { position: 'absolute', top: -6, right: -6 },
+  groupCallBar: {
+    marginHorizontal: 12,
+    marginTop: 8,
+    minHeight: 56,
+    paddingLeft: 20,
+    paddingRight: 6,
+    borderRadius: 28,
+    backgroundColor: PIECES.ink,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
   },
+  groupCallText: { fontSize: 16, fontWeight: '600', color: PIECES.sheet },
   privateDmBanner: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    gap: 8,
-    paddingLeft: 12,
-    paddingRight: 8,
-    paddingVertical: 6,
-    backgroundColor: PALETTE.mintSoft,
-    borderBottomWidth: 1,
-    borderBottomColor: PALETTE.mintBorder,
-  },
-  privateDmBannerLeft: {
-    flex: 1,
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-  },
-  privateDmTextCol: {
-    flex: 1,
-    gap: 1,
-  },
-  privateDmTitle: {
-    fontSize: 12,
-    fontWeight: '700',
-    color: PALETTE.forest,
-  },
-  privateDmSub: {
-    fontSize: 11,
-    color: PALETTE.ink,
-    fontFamily: MONO_FONT,
-  },
-  privateDmBannerActions: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-  },
-  privateCallBtn: {
-    minHeight: TOUCH_MIN,
-    paddingHorizontal: 11,
-    borderRadius: 10,
-    backgroundColor: PALETTE.mint,
-    borderWidth: 1,
-    borderColor: PALETTE.forest,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 5,
-  },
-  privateCallBtnText: {
-    fontSize: 12,
-    fontWeight: '700',
-    color: PALETTE.charcoal,
-  },
-  backGroupChip: {
-    minHeight: TOUCH_MIN,
-    paddingHorizontal: 11,
-    borderRadius: 10,
-    backgroundColor: PALETTE.card,
-    borderWidth: 1,
-    borderColor: PALETTE.forest,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  backGroupChipText: {
-    fontSize: 12,
-    fontWeight: '700',
-    color: PALETTE.forest,
-    fontFamily: MONO_FONT,
-  },
-  dmCallBar: {
-    backgroundColor: PALETTE.charcoal,
-    paddingHorizontal: 12,
-    paddingVertical: 10,
-    borderBottomWidth: 1,
-    borderBottomColor: '#2d322d',
-    gap: 8,
-  },
-  dmCallTopRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    gap: 8,
-  },
-  dmCallTitleWrap: {
-    flex: 1,
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-  },
-  dmCallPulseDot: {
-    width: 10,
-    height: 10,
-    borderRadius: 5,
-    backgroundColor: PALETTE.amber,
-  },
-  dmCallPulseDotSpeaking: {
-    backgroundColor: PALETTE.mint,
-  },
-  dmCallTextCol: {
-    flex: 1,
-    gap: 1,
-  },
-  dmCallTitle: {
-    fontSize: 13,
-    fontWeight: '700',
-    color: PALETTE.mint,
-  },
-  dmCallSub: {
-    fontSize: 11,
-    color: '#c9cfc9',
-    fontFamily: MONO_FONT,
-  },
-  dmCallControlsRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-  },
-  dmCallCtrlBtn: {
-    flex: 1,
-    minHeight: TOUCH_MIN,
-    borderRadius: 10,
-    backgroundColor: '#2a2e2a',
-    borderWidth: 1,
-    borderColor: '#3c423c',
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 5,
-  },
-  dmCallCtrlBtnWarn: {
-    backgroundColor: PALETTE.amberSoft,
-    borderColor: PALETTE.amber,
-  },
-  dmCallCtrlText: {
-    fontSize: 12,
-    fontWeight: '700',
-    color: PALETTE.card,
-  },
-  dmCallCtrlTextWarn: {
-    color: PALETTE.amber,
-  },
-  dmCallPulseBtn: {
-    flex: 1.2,
-    minHeight: TOUCH_MIN,
-    borderRadius: 10,
-    backgroundColor: '#243429',
-    borderWidth: 1.5,
-    borderColor: PALETTE.mint,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 5,
-  },
-  dmCallPulseBtnActive: {
-    backgroundColor: PALETTE.mint,
-  },
-  dmCallPulseText: {
-    fontSize: 12,
-    fontWeight: '700',
-    color: PALETTE.mint,
-  },
-  dmCallPulseTextActive: {
-    color: PALETTE.charcoal,
-  },
-  dmCallEndBtn: {
-    minHeight: TOUCH_MIN,
-    paddingHorizontal: 12,
-    borderRadius: 10,
-    backgroundColor: PALETTE.danger,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 5,
-  },
-  dmCallEndText: {
-    fontSize: 12,
-    fontWeight: '700',
-    color: PALETTE.card,
-  },
-  centerBox: {
-    flex: 1,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  messagesList: {
-    padding: 12,
+    marginHorizontal: 12,
+    marginTop: 8,
+    padding: 16,
+    borderRadius: 24,
     gap: 10,
   },
-  loadEarlierBtn: {
-    minHeight: TOUCH_MIN,
-    borderRadius: 12,
-    backgroundColor: PALETTE.card,
-    borderWidth: 1,
-    borderColor: PALETTE.borderStrong,
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginBottom: 8,
+  privateDmTextCol: { gap: 2 },
+  privateDmTitle: { fontSize: 24, color: PIECES.ink, fontWeight: '600' },
+  privateDmSub: { fontSize: 14, color: PIECES.ink2 },
+  privateDmBannerActions: { flexDirection: 'row', gap: 8 },
+  dmCallBar: {
+    marginHorizontal: 12,
+    marginTop: 8,
+    padding: 16,
+    borderRadius: 24,
+    backgroundColor: PIECES.ink,
+    gap: 12,
   },
-  loadEarlierText: {
-    fontSize: 13,
-    fontWeight: '700',
-    color: PALETTE.forest,
-  },
+  dmCallTopRow: { flexDirection: 'row', alignItems: 'center', gap: 10 },
+  dmCallTextCol: { flex: 1, gap: 2 },
+  dmCallTitle: { fontSize: 18, color: PIECES.sheet, fontWeight: '600' },
+  dmCallSub: { fontSize: 14, color: '#d0d0d0' },
+  dmCallControlsRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
+  centerBox: { flex: 1, alignItems: 'center', justifyContent: 'center' },
+  list: { flex: 1, minHeight: 0 },
+  messagesList: { padding: 12, paddingBottom: 8, flexGrow: 1 },
+  sep: { height: 10 },
+  loadEarlierWrap: { alignItems: 'center', paddingBottom: 12 },
   roomIntroCard: {
-    backgroundColor: PALETTE.mintSoft,
-    borderWidth: 1,
-    borderColor: PALETTE.mintBorder,
-    borderRadius: 14,
-    padding: 12,
-    marginBottom: 6,
-    gap: 3,
+    backgroundColor: PIECES.sheet,
+    borderRadius: 24,
+    padding: 16,
+    gap: 4,
+    marginBottom: 12,
   },
-  roomIntroTitle: {
-    fontSize: 14,
-    fontWeight: '700',
-    color: PALETTE.forest,
-  },
-  roomIntroSub: {
-    fontSize: 12,
-    lineHeight: 17,
-    color: PALETTE.ink,
-  },
-  emptyRoomText: {
-    textAlign: 'center',
-    color: PALETTE.muted,
-    fontSize: 13,
-    paddingVertical: 20,
-    paddingHorizontal: 16,
-  },
-  typingStrip: {
-    paddingHorizontal: 14,
-    paddingVertical: 4,
-    backgroundColor: PALETTE.surfaceMuted,
-  },
-  typingText: {
-    fontSize: 12,
-    color: PALETTE.forest,
-    fontWeight: '600',
-  },
+  roomIntroTitle: { fontSize: 20, color: PIECES.ink, fontWeight: '600' },
+  roomIntroSub: { fontSize: 14, lineHeight: 20, color: PIECES.muted },
+  emptyRoomText: { fontSize: 15, lineHeight: 21, color: PIECES.muted, textAlign: 'center', padding: 16 },
+  typingStrip: { paddingHorizontal: 20, paddingVertical: 4 },
+  typingText: { fontSize: 14, color: PIECES.muted },
   noticeBar: {
+    marginHorizontal: 12,
+    marginBottom: 6,
+    paddingLeft: 18,
+    minHeight: 48,
+    borderRadius: 24,
+    backgroundColor: PIECE_HEX.mint,
     flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'space-between',
-    paddingHorizontal: 12,
-    paddingVertical: 6,
-    backgroundColor: PALETTE.mintSoft,
-    borderTopWidth: 1,
-    borderTopColor: PALETTE.mintBorder,
-  },
-  noticeText: {
-    flex: 1,
-    fontSize: 12,
-    color: PALETTE.forest,
-    fontWeight: '600',
-  },
-  smallCloseBtn: {
-    width: TOUCH_MIN,
-    height: TOUCH_MIN,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  quoteComposerBanner: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingLeft: 14,
-    paddingRight: 6,
-    backgroundColor: PALETTE.surfaceMuted,
-    borderTopWidth: 1,
-    borderTopColor: PALETTE.border,
-  },
-  quoteComposerTextCol: {
-    flex: 1,
-    paddingVertical: 6,
-  },
-  quoteComposerAuthor: {
-    fontSize: 12,
-    fontWeight: '700',
-    color: PALETTE.forest,
-  },
-  quoteComposerSnippet: {
-    fontSize: 12,
-    color: PALETTE.muted,
-  },
-  composerWrap: {
-    backgroundColor: PALETTE.card,
-    borderTopWidth: 1,
-    borderTopColor: PALETTE.border,
-    paddingTop: 6,
-    paddingBottom: 8,
-    gap: 6,
-  },
-  slashStrip: {
-    paddingHorizontal: 10,
-    gap: 6,
-  },
-  slashChip: {
-    minHeight: TOUCH_MIN,
-    paddingHorizontal: 12,
-    borderRadius: 10,
-    backgroundColor: PALETTE.surface,
-    borderWidth: 1,
-    borderColor: PALETTE.border,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  slashChipText: {
-    fontSize: 12,
-    fontWeight: '700',
-    color: PALETTE.forest,
-    fontFamily: MONO_FONT,
-  },
-  composerInputRow: {
-    flexDirection: 'row',
-    alignItems: 'flex-end',
-    paddingHorizontal: 10,
     gap: 8,
   },
+  noticeText: { flex: 1, fontSize: 14, fontWeight: '600', color: PIECES.ink },
+  smallCloseBtn: { width: TOUCH_MIN, height: TOUCH_MIN, alignItems: 'center', justifyContent: 'center' },
+  quoteComposerBanner: {
+    marginHorizontal: 12,
+    marginBottom: 6,
+    paddingLeft: 18,
+    minHeight: 52,
+    borderRadius: 24,
+    backgroundColor: PIECES.sheet,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  quoteComposerTextCol: { flex: 1 },
+  quoteComposerAuthor: { fontSize: 13, fontWeight: '700', color: PIECES.ink },
+  quoteComposerSnippet: { fontSize: 14, color: PIECES.muted },
+  composerWrap: {
+    marginHorizontal: 8,
+    marginBottom: 6,
+    padding: 10,
+    gap: 8,
+    borderRadius: 28,
+    backgroundColor: PIECES.sheet,
+  },
+  slashStrip: { gap: 8, paddingHorizontal: 2 },
+  slashChip: {
+    minHeight: TOUCH_MIN,
+    paddingHorizontal: 18,
+    borderRadius: 22,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  slashChipText: { fontSize: 15, fontWeight: '600', color: PIECES.ink },
+  composerInputRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
   micBtn: {
-    width: TOUCH_MIN,
-    height: TOUCH_MIN,
-    borderRadius: 12,
-    backgroundColor: PALETTE.surface,
-    borderWidth: 1,
-    borderColor: PALETTE.borderStrong,
+    width: 48,
+    height: 48,
+    borderRadius: 24,
+    backgroundColor: PIECES.bg,
     alignItems: 'center',
     justifyContent: 'center',
   },
   composerInput: {
     flex: 1,
-    minHeight: TOUCH_MIN,
-    maxHeight: 110,
-    borderRadius: 12,
-    backgroundColor: PALETTE.surface,
-    borderWidth: 1,
-    borderColor: PALETTE.borderStrong,
-    paddingHorizontal: 12,
-    paddingVertical: 10,
-    fontSize: 15,
-    color: PALETTE.ink,
+    minHeight: 48,
+    maxHeight: 120,
+    paddingHorizontal: 18,
+    paddingVertical: 12,
+    borderRadius: 24,
+    backgroundColor: PIECES.bg,
+    fontSize: 16,
+    color: PIECES.ink,
   },
-  sendBtn: {
-    width: TOUCH_MIN,
-    height: TOUCH_MIN,
-    borderRadius: 12,
-    backgroundColor: PALETTE.mint,
-    borderWidth: 1,
-    borderColor: PALETTE.forest,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  sendBtnDisabled: {
-    opacity: 0.45,
-  },
-  recordingBar: {
-    paddingHorizontal: 12,
-    paddingVertical: 6,
-    gap: 8,
-  },
-  recordLiveInfo: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-  },
-  recordRedDot: {
-    width: 10,
-    height: 10,
-    borderRadius: 5,
-    backgroundColor: PALETTE.danger,
-  },
-  recordingTimerText: {
-    fontSize: 13,
-    fontWeight: '700',
-    color: PALETTE.danger,
-    fontFamily: MONO_FONT,
-  },
-  recordActions: {
-    flexDirection: 'row',
-    gap: 8,
-  },
-  cancelRecBtn: {
-    flex: 1,
-    minHeight: TOUCH_MIN,
-    borderRadius: 10,
-    backgroundColor: PALETTE.surface,
-    borderWidth: 1,
-    borderColor: PALETTE.borderStrong,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  cancelRecText: {
-    fontSize: 13,
-    fontWeight: '700',
-    color: PALETTE.ink,
-  },
-  sendRecBtn: {
-    flex: 1,
-    minHeight: TOUCH_MIN,
-    borderRadius: 10,
-    backgroundColor: PALETTE.mint,
-    borderWidth: 1,
-    borderColor: PALETTE.forest,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  sendRecText: {
-    fontSize: 13,
-    fontWeight: '700',
-    color: PALETTE.charcoal,
-  },
-  sheetBackdrop: {
-    flex: 1,
-    backgroundColor: 'rgba(25, 27, 25, 0.5)',
-    justifyContent: 'flex-end',
-    padding: 12,
-  },
-  sheetCard: {
-    backgroundColor: PALETTE.card,
-    borderRadius: 18,
-    padding: 16,
-    gap: 8,
-  },
-  dmSheetCard: {
-    backgroundColor: PALETTE.card,
-    borderRadius: 18,
-    padding: 16,
-    maxHeight: '80%',
-    gap: 10,
-  },
-  dmSheetHeader: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    gap: 8,
-  },
-  dmSheetHeaderCol: {
-    flex: 1,
-    gap: 2,
-  },
-  dmSheetSub: {
-    fontSize: 12,
-    color: PALETTE.muted,
-  },
-  dmMembersScroll: {
-    flexGrow: 0,
-  },
-  dmMembersContent: {
-    gap: 8,
-    paddingBottom: 6,
-  },
+  recordingBar: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 8 },
+  recordLiveInfo: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+  recordRedDot: { width: 12, height: 12, borderRadius: 6, backgroundColor: PIECES.alarm },
+  recordingTimerText: { fontSize: 15, fontFamily: MONO_FONT, color: PIECES.ink },
+  recordActions: { flexDirection: 'row', gap: 8 },
   memberDmRow: {
+    minHeight: 64,
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 10,
-    padding: 10,
-    borderRadius: 14,
-    backgroundColor: PALETTE.surface,
-    borderWidth: 1,
-    borderColor: PALETTE.border,
+    gap: 12,
+    padding: 8,
+    borderRadius: 26,
   },
-  memberDmRowActive: {
-    backgroundColor: PALETTE.mintSoft,
-    borderColor: PALETTE.forest,
-  },
-  avatarWithDot: {
-    position: 'relative',
-  },
-  memberSheetAvatar: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
+  memberDmRowActive: { backgroundColor: PIECES.bg },
+  groupTile: {
+    width: 48,
+    height: 48,
+    borderRadius: 24,
+    backgroundColor: PIECES.ink,
     alignItems: 'center',
     justifyContent: 'center',
   },
-  memberSheetInitials: {
-    color: PALETTE.card,
-    fontSize: 13,
-    fontWeight: '700',
-    fontFamily: MONO_FONT,
-  },
-  avatarStatusDot: {
-    position: 'absolute',
-    bottom: 0,
-    right: 0,
-    width: 12,
-    height: 12,
-    borderRadius: 6,
-    borderWidth: 2,
-    borderColor: PALETTE.card,
-  },
-  avatarStatusOnline: {
-    backgroundColor: PALETTE.forest,
-  },
-  avatarStatusOffline: {
-    backgroundColor: PALETTE.muted,
-  },
-  memberDmInfoCol: {
-    flex: 1,
-    gap: 2,
-  },
-  memberDmAliasRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-  },
-  memberDmAlias: {
-    fontSize: 14,
-    fontWeight: '700',
-    color: PALETTE.charcoal,
-  },
-  inVoiceMiniTag: {
-    fontSize: 10,
-    fontWeight: '700',
-    color: PALETTE.forest,
-    fontFamily: MONO_FONT,
-  },
-  memberDmSnippet: {
-    fontSize: 12,
-    color: PALETTE.muted,
-  },
-  messagePrivatelyBtn: {
-    minHeight: TOUCH_MIN,
-    paddingHorizontal: 12,
-    borderRadius: 10,
-    backgroundColor: PALETTE.mint,
-    borderWidth: 1,
-    borderColor: PALETTE.forest,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  messagePrivatelyText: {
-    fontSize: 12,
-    fontWeight: '700',
-    color: PALETTE.charcoal,
-  },
-  openDmBtnSecondary: {
-    minHeight: TOUCH_MIN,
-    paddingHorizontal: 12,
-    borderRadius: 10,
-    backgroundColor: PALETTE.card,
-    borderWidth: 1,
-    borderColor: PALETTE.borderStrong,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  openDmBtnSecondaryText: {
-    fontSize: 12,
-    fontWeight: '700',
-    color: PALETTE.ink,
-  },
-  sheetTitle: {
-    fontSize: 15,
-    fontWeight: '700',
-    color: PALETTE.charcoal,
-  },
-  emojiBar: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    gap: 8,
-    marginBottom: 4,
-  },
+  memberDmInfoCol: { flex: 1, minWidth: 0 },
+  memberDmAlias: { fontSize: 17, fontWeight: '600', color: PIECES.ink },
+  memberDmSnippet: { fontSize: 14, color: PIECES.muted },
+  emojiBar: { flexDirection: 'row', gap: 8, justifyContent: 'space-between' },
   sheetEmojiBtn: {
     flex: 1,
-    minHeight: TOUCH_MIN,
-    borderRadius: 12,
-    backgroundColor: PALETTE.surface,
-    borderWidth: 1,
-    borderColor: PALETTE.border,
+    minHeight: 52,
+    borderRadius: 26,
+    backgroundColor: PIECES.bg,
     alignItems: 'center',
     justifyContent: 'center',
   },
-  sheetEmojiText: {
-    fontSize: 20,
-  },
-  sheetActionRow: {
-    minHeight: TOUCH_MIN,
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 10,
-    paddingHorizontal: 12,
-    borderRadius: 10,
-    backgroundColor: PALETTE.surface,
-  },
-  sheetActionMint: {
-    backgroundColor: PALETTE.mintSoft,
-    borderWidth: 1,
-    borderColor: PALETTE.mintBorder,
-  },
-  sheetActionText: {
-    fontSize: 14,
-    fontWeight: '600',
-    color: PALETTE.ink,
-  },
+  sheetEmojiText: { fontSize: 24 },
   podSwitchRow: {
-    minHeight: 52,
+    minHeight: 64,
     flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'space-between',
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-    borderRadius: 12,
-    backgroundColor: PALETTE.surface,
-    borderWidth: 1,
-    borderColor: PALETTE.border,
+    padding: 14,
+    borderRadius: 24,
+    backgroundColor: PIECES.bg,
   },
-  podSwitchRowActive: {
-    backgroundColor: PALETTE.mintSoft,
-    borderColor: PALETTE.forest,
-  },
-  podSwitchCol: {
-    gap: 2,
-    flex: 1,
-  },
-  podSwitchCode: {
-    fontSize: 14,
-    fontWeight: '700',
-    color: PALETTE.charcoal,
-    fontFamily: MONO_FONT,
-  },
-  podSwitchSub: {
-    fontSize: 12,
-    color: PALETTE.muted,
-  },
-  podSwitchTier: {
-    fontSize: 11,
-    fontWeight: '700',
-    color: PALETTE.forest,
-    fontFamily: MONO_FONT,
-  },
+  podSwitchCol: { flex: 1 },
+  podSwitchCode: { fontSize: 19, color: PIECES.ink, fontFamily: 'Gabarito_500Medium' },
+  podSwitchSub: { fontSize: 14, color: PIECES.ink2, marginTop: 1 },
 });

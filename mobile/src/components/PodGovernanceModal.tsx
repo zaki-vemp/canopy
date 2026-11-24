@@ -7,10 +7,9 @@ import {
   Pressable,
   ScrollView,
   StyleSheet,
-  Text,
-  TextInput,
   View,
 } from 'react-native';
+import { Text, TextInput } from '../theme/ui';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useSetAtom } from 'jotai';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
@@ -37,17 +36,15 @@ import type {
 } from '../types/canopy';
 import {
   PALETTE,
+  PIECES,
+  pieceRadii,
   TOUCH_MIN,
   aliasInitials,
   capacityTierBadge,
   safePeerColor,
 } from '../theme/palette';
 
-const MONO_FONT = Platform.select({
-  ios: 'Menlo',
-  android: 'monospace',
-  default: 'monospace',
-});
+const MONO_FONT = 'DMMono_500Medium';
 
 const CAPACITY_PRESETS: ReadonlyArray<{
   value: PodCapacityPreset;
@@ -63,6 +60,15 @@ function normalizePreset(val: number): PodCapacityPreset {
   if (val <= 25) return 25;
   return 50;
 }
+
+const KIND_LABEL: Record<string, string> = {
+  KICK_MEMBER: 'Remove someone',
+  RENAME_POD: 'Rename',
+  UPDATE_TOPIC: 'Topic',
+  CHANGE_CAPACITY: 'Size',
+  TOGGLE_LOCK: 'Lock',
+  PIN_MESSAGE: 'Pin',
+};
 
 function isProposalExpired(expiresAt: string): boolean {
   if (!expiresAt) return false;
@@ -191,13 +197,13 @@ export function PodGovernanceModal({
       setDemTab('votes');
       setBannerMsg(
         res.proposal.status === 'PASSED'
-          ? `Vote passed & executed: ${res.proposal.title}`
-          : `Opened pod vote: ${res.proposal.title}`
+          ? `It passed: ${res.proposal.title}`
+          : `Vote opened: ${res.proposal.title}`
       );
     },
     onError: (err) => {
       setErrorMsg(
-        err instanceof Error ? err.message : 'Could not create proposal.'
+        err instanceof Error ? err.message : 'Could not open that vote.'
       );
     },
   });
@@ -231,7 +237,7 @@ export function PodGovernanceModal({
       if (res.pod) patchPodInCache(res.pod);
       queryClient.invalidateQueries({ queryKey: ['proposals', podId] });
       queryClient.invalidateQueries({ queryKey: ['pods'] });
-      setBannerMsg(`Finalized vote (${res.proposal.status}).`);
+      setBannerMsg(`Vote closed: ${res.proposal.status === 'PASSED' ? 'it passed' : 'it did not pass'}.`);
     },
     onError: (err) => {
       setErrorMsg(
@@ -272,7 +278,7 @@ export function PodGovernanceModal({
       setBannerMsg('Removed member from group.');
     },
     onError: (err) => {
-      setErrorMsg(err instanceof Error ? err.message : 'Kick failed.');
+      setErrorMsg(err instanceof Error ? err.message : 'Could not remove them.');
     },
   });
 
@@ -304,35 +310,39 @@ export function PodGovernanceModal({
   return (
     <Modal
       visible={visible}
+      transparent
       animationType="slide"
-      presentationStyle="pageSheet"
       onRequestClose={onClose}
     >
-      <SafeAreaView style={styles.safeArea} edges={['top', 'bottom']}>
+      <View style={styles.backdrop}>
+        <Pressable
+          accessibilityLabel="Close"
+          style={styles.backdropHit}
+          onPress={onClose}
+        />
+        <View style={styles.safeArea}>
         <KeyboardAvoidingView
           style={styles.flex}
           behavior={Platform.OS === 'ios' ? 'padding' : undefined}
         >
-          {/* Charcoal Header */}
           <View style={styles.header}>
             <View style={styles.headerTextCol}>
               <Text style={styles.headerTitle} numberOfLines={1}>
                 {isAdminPod
-                  ? `👑 Manage · ${displayPodTitle}`
-                  : `⚖️ Pod Votes · ${displayPodTitle}`}
+                  ? `Manage ${displayPodTitle}`
+                  : `Votes in ${displayPodTitle}`}
               </Text>
               <Text style={styles.headerSub}>
-                #{pod.code} · {pod.interestLabel} ·{' '}
-                {capacityTierBadge(pod.memberCount, pod.maxMembers)}
+                {pod.interestLabel} · {capacityTierBadge(pod.memberCount, pod.maxMembers)}
               </Text>
             </View>
             <Pressable
               accessibilityRole="button"
-              accessibilityLabel="Close governance modal"
+              accessibilityLabel="Close"
               onPress={onClose}
               style={styles.closeBtn}
             >
-              <Ionicons name="close" size={22} color={PALETTE.card} />
+              <Ionicons name="close" size={22} color={PIECES.ink} />
             </Pressable>
           </View>
 
@@ -342,7 +352,7 @@ export function PodGovernanceModal({
               {(
                 [
                   { key: 'settings', label: 'Settings' },
-                  { key: 'roster', label: `Members (${pod.members.length})` },
+                  { key: 'roster', label: `People (${pod.members.length})` },
                 ] as const
               ).map((t) => {
                 const active = adminTab === t.key;
@@ -376,10 +386,10 @@ export function PodGovernanceModal({
                       proposalsQuery.data ? openCount : pod.openProposalsCount
                     })`,
                   },
-                  { key: 'propose', label: 'New Vote' },
+                  { key: 'propose', label: 'New vote' },
                   {
                     key: 'roster',
-                    label: `Members / Roster (${pod.members.length})`,
+                    label: `People (${pod.members.length})`,
                   },
                 ] as const
               ).map((t) => {
@@ -438,11 +448,11 @@ export function PodGovernanceModal({
               <View style={styles.sectionStack}>
                 <View style={styles.infoNote}>
                   <Text style={styles.infoNoteTitle}>
-                    ⚖️ 100% Democratic Peer-Blind Pod
+                    Votes decide here
                   </Text>
                   <Text style={styles.infoNoteBody}>
-                    No single member has admin power. Every kick, rename, topic
-                    update, capacity change, or lock passes by YES &gt; NO vote.
+                    Nobody runs this room. Removing someone, renaming, changing the
+                    topic or size, or locking it all pass when Yes beats No.
                   </Text>
                 </View>
 
@@ -454,9 +464,9 @@ export function PodGovernanceModal({
                   <Ionicons
                     name="add-circle-outline"
                     size={18}
-                    color={PALETTE.charcoal}
+                    color={PIECES.sheet}
                   />
-                  <Text style={styles.mintCtaText}>+ Start a Pod Proposal</Text>
+                  <Text style={styles.mintCtaText}>Start a vote</Text>
                 </Pressable>
 
                 {proposalsQuery.isLoading ? (
@@ -465,10 +475,9 @@ export function PodGovernanceModal({
                   </View>
                 ) : proposals.length === 0 ? (
                   <View style={styles.emptyCard}>
-                    <Text style={styles.emptyTitle}>No proposals yet</Text>
+                    <Text style={styles.emptyTitle}>No votes yet</Text>
                     <Text style={styles.emptyBody}>
-                      Tap New Vote above or Members / Roster to open a YES vs NO
-                      vote for this pod.
+                      Start one above, or open People to vote on someone.
                     </Text>
                   </View>
                 ) : (
@@ -479,7 +488,7 @@ export function PodGovernanceModal({
                     return (
                       <View key={prop.id} style={styles.proposalCard}>
                         <View style={styles.propHeaderRow}>
-                          <Text style={styles.propKindTag}>{prop.kind}</Text>
+                          <Text style={styles.propKindTag}>{KIND_LABEL[prop.kind] ?? prop.kind}</Text>
                           <View
                             style={[
                               styles.statusPill,
@@ -508,31 +517,31 @@ export function PodGovernanceModal({
                         <Text style={styles.propTitle}>{prop.title}</Text>
                         {prop.reason ? (
                           <Text style={styles.propReason}>
-                            Reason: {prop.reason}
+                            Why: {prop.reason}
                           </Text>
                         ) : null}
 
                         <View style={styles.tallyRow}>
                           <Text style={styles.yesCountText}>
-                            YES: {prop.yesCount}
+                            Yes: {prop.yesCount}
                           </Text>
                           <Text style={styles.eligibleText}>
                             {prop.eligibleCount} eligible · by{' '}
                             {prop.proposerAlias}
                           </Text>
                           <Text style={styles.noCountText}>
-                            NO: {prop.noCount}
+                            No: {prop.noCount}
                           </Text>
                         </View>
 
                         {prop.yesAliases.length > 0 ? (
                           <Text style={styles.voterListText} numberOfLines={1}>
-                            YES: {prop.yesAliases.join(', ')}
+                            Yes: {prop.yesAliases.join(', ')}
                           </Text>
                         ) : null}
                         {prop.noAliases.length > 0 ? (
                           <Text style={styles.voterListText} numberOfLines={1}>
-                            NO: {prop.noAliases.join(', ')}
+                            No: {prop.noAliases.join(', ')}
                           </Text>
                         ) : null}
 
@@ -540,7 +549,7 @@ export function PodGovernanceModal({
                           <View style={styles.voteActionRow}>
                             <Pressable
                               accessibilityRole="button"
-                              accessibilityLabel={`Vote YES on ${prop.title}`}
+                              accessibilityLabel={`Vote Yes on ${prop.title}`}
                               disabled={voteProposalMutation.isPending}
                               onPress={() =>
                                 voteProposalMutation.mutate({
@@ -555,15 +564,15 @@ export function PodGovernanceModal({
                             >
                               <Text style={styles.voteYesBtnText}>
                                 {prop.myVote === true
-                                  ? '✓ Voted YES'
-                                  : 'Vote YES'}{' '}
+                                  ? 'Voted Yes'
+                                  : 'Vote Yes'}{' '}
                                 ({prop.yesCount})
                               </Text>
                             </Pressable>
 
                             <Pressable
                               accessibilityRole="button"
-                              accessibilityLabel={`Vote NO on ${prop.title}`}
+                              accessibilityLabel={`Vote No on ${prop.title}`}
                               disabled={voteProposalMutation.isPending}
                               onPress={() =>
                                 voteProposalMutation.mutate({
@@ -584,8 +593,8 @@ export function PodGovernanceModal({
                                 ]}
                               >
                                 {prop.myVote === false
-                                  ? '✕ Voted NO'
-                                  : 'Vote NO'}{' '}
+                                  ? 'Voted No'
+                                  : 'Vote No'}{' '}
                                 ({prop.noCount})
                               </Text>
                             </Pressable>
@@ -602,7 +611,7 @@ export function PodGovernanceModal({
                             style={styles.secondaryBtn}
                           >
                             <Text style={styles.secondaryBtnText}>
-                              Finalize Expired Vote
+                              Close the expired vote
                             </Text>
                           </Pressable>
                         ) : null}
@@ -617,23 +626,23 @@ export function PodGovernanceModal({
               <View style={styles.sectionStack}>
                 {/* Optional Reason */}
                 <View style={styles.card}>
-                  <Text style={styles.cardTitle}>Optional Vote Note</Text>
+                  <Text style={styles.cardTitle}>A note for the vote</Text>
                   <TextInput
                     value={reasonDraft}
                     onChangeText={setReasonDraft}
-                    placeholder="Reason shown on the YES/NO ballot..."
+                    placeholder="Why, shown on the vote"
                     placeholderTextColor={PALETTE.muted}
                     style={styles.input}
                   />
                 </View>
 
-                {/* Vote to Rename Pod */}
+                {/* Rename the room */}
                 <View style={styles.card}>
-                  <Text style={styles.cardTitle}>Vote to Rename Pod</Text>
+                  <Text style={styles.cardTitle}>Rename the room</Text>
                   <TextInput
                     value={renameDraft}
                     onChangeText={setRenameDraft}
-                    placeholder="New pod display title..."
+                    placeholder="New name"
                     placeholderTextColor={PALETTE.muted}
                     style={styles.input}
                   />
@@ -654,19 +663,19 @@ export function PodGovernanceModal({
                       !renameDraft.trim() && styles.disabledBtn,
                     ]}
                   >
-                    <Text style={styles.mintCtaText}>Vote to Rename Pod</Text>
+                    <Text style={styles.mintCtaText}>Rename the room</Text>
                   </Pressable>
                 </View>
 
-                {/* Vote to Update Pod Topic */}
+                {/* Change the topic */}
                 <View style={styles.card}>
                   <Text style={styles.cardTitle}>
-                    Vote to Update Pod Topic
+                    Change the topic
                   </Text>
                   <TextInput
                     value={topicDraft}
                     onChangeText={setTopicDraft}
-                    placeholder="Pod description / topic..."
+                    placeholder="What the room is about"
                     placeholderTextColor={PALETTE.muted}
                     multiline
                     style={styles.input}
@@ -688,14 +697,14 @@ export function PodGovernanceModal({
                       !topicDraft.trim() && styles.disabledBtn,
                     ]}
                   >
-                    <Text style={styles.mintCtaText}>Vote to Update Topic</Text>
+                    <Text style={styles.mintCtaText}>Vote on the topic</Text>
                   </Pressable>
                 </View>
 
                 {/* Vote to Change Capacity */}
                 <View style={styles.card}>
                   <Text style={styles.cardTitle}>
-                    Vote to Change Capacity (10 / 25 / 50)
+                    Change the size (10, 25 or 50)
                   </Text>
                   <View style={styles.rowWrap}>
                     {CAPACITY_PRESETS.map((preset) => {
@@ -733,7 +742,7 @@ export function PodGovernanceModal({
                     style={styles.mintCtaBtn}
                   >
                     <Text style={styles.mintCtaText}>
-                      Vote Capacity {'->'} {propCapacity} Seats
+                      Vote for {propCapacity} seats
                     </Text>
                   </Pressable>
                 </View>
@@ -741,7 +750,7 @@ export function PodGovernanceModal({
                 {/* Vote to Lock / Unlock Pod */}
                 <View style={styles.card}>
                   <Text style={styles.cardTitle}>
-                    Vote to Lock / Unlock Random Matching
+                    Lock or open the room to newcomers
                   </Text>
                   <View style={styles.rowGap}>
                     <Pressable
@@ -757,7 +766,7 @@ export function PodGovernanceModal({
                       style={styles.secondaryFlexBtn}
                     >
                       <Text style={styles.secondaryBtnText}>
-                        🔒 Vote to Lock
+                        Vote to lock
                       </Text>
                     </Pressable>
                     <Pressable
@@ -772,7 +781,7 @@ export function PodGovernanceModal({
                       }
                       style={styles.mintFlexBtn}
                     >
-                      <Text style={styles.mintCtaText}>🔓 Vote to Unlock</Text>
+                      <Text style={styles.mintCtaText}>Vote to unlock</Text>
                     </Pressable>
                   </View>
                 </View>
@@ -783,16 +792,15 @@ export function PodGovernanceModal({
               <View style={styles.sectionStack}>
                 <View style={styles.card}>
                   <Text style={styles.cardTitle}>
-                    Blind Pod Roster · Private DM or Vote to Kick
+                    People
                   </Text>
                   <Text style={styles.helperText}>
-                    Peers only appear by their room-scoped animal alias. Tap DM
-                    for a private 1:1 chat, or open a YES vs NO kick vote.
+                    Everyone appears only as their alias. Write privately, or open a vote to remove someone.
                   </Text>
                   <TextInput
                     value={reasonDraft}
                     onChangeText={setReasonDraft}
-                    placeholder="Optional kick reason (e.g. audio spam)..."
+                    placeholder="Why, if you want to say"
                     placeholderTextColor={PALETTE.muted}
                     style={styles.input}
                   />
@@ -807,6 +815,7 @@ export function PodGovernanceModal({
                         style={[
                           styles.memberAvatar,
                           { backgroundColor: peerCol },
+                          pieceRadii(m.alias, 48),
                         ]}
                       >
                         <Text style={styles.memberAvatarText}>
@@ -819,8 +828,8 @@ export function PodGovernanceModal({
                           {isSelf ? ' (You)' : ''}
                         </Text>
                         <Text style={styles.memberMeta}>
-                          {m.online ? '● Online' : '○ Offline'}
-                          {m.inVoice ? ' · 🔊 Call' : ''}
+                          {m.online ? 'Online' : 'Away'}
+                          {m.inVoice ? ' · in the call' : ''}
                           {m.customStatus ? ` · ${m.customStatus}` : ''}
                         </Text>
                       </View>
@@ -828,21 +837,21 @@ export function PodGovernanceModal({
                         <View style={styles.memberActionRow}>
                           <Pressable
                             accessibilityRole="button"
-                            accessibilityLabel={`Direct message ${m.alias}`}
+                            accessibilityLabel={`Write to ${m.alias} privately`}
                             onPress={() => handleOpenDm(m.peerId)}
                             style={styles.dmSmBtn}
                           >
                             <Ionicons
                               name="chatbubble-ellipses-outline"
                               size={15}
-                              color={PALETTE.charcoal}
+                              color={PIECES.sheet}
                             />
-                            <Text style={styles.dmSmText}>DM</Text>
+                            <Text style={styles.dmSmText}>Write</Text>
                           </Pressable>
 
                           <Pressable
                             accessibilityRole="button"
-                            accessibilityLabel={`Vote to kick ${m.alias}`}
+                            accessibilityLabel={`Start a vote to remove ${m.alias}`}
                             disabled={createProposalMutation.isPending}
                             onPress={() =>
                               createProposalMutation.mutate({
@@ -853,7 +862,7 @@ export function PodGovernanceModal({
                             }
                             style={styles.dangerSmBtn}
                           >
-                            <Text style={styles.dangerSmText}>Kick Vote</Text>
+                            <Text style={styles.dangerSmText}>Vote to remove</Text>
                           </Pressable>
                         </View>
                       ) : null}
@@ -868,21 +877,21 @@ export function PodGovernanceModal({
               <View style={styles.sectionStack}>
                 <View style={styles.infoNote}>
                   <Text style={styles.infoNoteTitle}>
-                    👑 Admin Group · Your Role: {pod.myRole}
+                    Run by an admin. Your role: {pod.myRole}
                   </Text>
                   <Text style={styles.infoNoteBody}>
                     Visibility:{' '}
                     {pod.isPublicized
-                      ? 'Publicized in Directory'
-                      : 'Private (Invite Only)'}{' '}
-                    · Every member remains 100% peer-blind.
+                      ? 'Listed for anyone to join'
+                      : 'Invite only'}{' '}
+                    · Everyone stays an alias.
                   </Text>
                 </View>
 
                 {canAdminManage ? (
                   <View style={styles.card}>
-                    <Text style={styles.cardTitle}>Edit Group Settings</Text>
-                    <Text style={styles.fieldLabel}>Group Title</Text>
+                    <Text style={styles.cardTitle}>Group settings</Text>
+                    <Text style={styles.fieldLabel}>Name</Text>
                     <TextInput
                       value={adminTitle}
                       onChangeText={setAdminTitle}
@@ -891,7 +900,7 @@ export function PodGovernanceModal({
                       style={styles.input}
                     />
 
-                    <Text style={styles.fieldLabel}>Description / Topic</Text>
+                    <Text style={styles.fieldLabel}>What it is about</Text>
                     <TextInput
                       value={adminDesc}
                       onChangeText={setAdminDesc}
@@ -901,7 +910,7 @@ export function PodGovernanceModal({
                       style={styles.input}
                     />
 
-                    <Text style={styles.fieldLabel}>Capacity Preset</Text>
+                    <Text style={styles.fieldLabel}>Seats</Text>
                     <View style={styles.rowWrap}>
                       {CAPACITY_PRESETS.map((preset) => {
                         const active = adminCapacity === preset.value;
@@ -929,7 +938,7 @@ export function PodGovernanceModal({
                       })}
                     </View>
 
-                    <Text style={styles.fieldLabel}>Group Visibility</Text>
+                    <Text style={styles.fieldLabel}>Who can find it</Text>
                     <View style={styles.rowGap}>
                       <Pressable
                         accessibilityRole="button"
@@ -946,7 +955,7 @@ export function PodGovernanceModal({
                             !adminPublicized && styles.chipTextActive,
                           ]}
                         >
-                          🔒 Private
+                          Invite only
                         </Text>
                       </Pressable>
                       <Pressable
@@ -978,11 +987,11 @@ export function PodGovernanceModal({
                       {saveAdminSettingsMutation.isPending ? (
                         <ActivityIndicator
                           size="small"
-                          color={PALETTE.charcoal}
+                          color={PIECES.sheet}
                         />
                       ) : (
                         <Text style={styles.mintCtaText}>
-                          Save Group Settings
+                          Save
                         </Text>
                       )}
                     </Pressable>
@@ -994,7 +1003,7 @@ export function PodGovernanceModal({
                       <Text style={styles.helperText}>{pod.description}</Text>
                     ) : null}
                     <Text style={styles.helperText}>
-                      Only the Group Owner and Co-Admins can modify group
+                      Only the owner and co-admins can change group
                       settings or member roles.
                     </Text>
                   </View>
@@ -1015,6 +1024,7 @@ export function PodGovernanceModal({
                           style={[
                             styles.memberAvatar,
                             { backgroundColor: peerCol },
+                          pieceRadii(m.alias, 48),
                           ]}
                         >
                           <Text style={styles.memberAvatarText}>
@@ -1027,23 +1037,23 @@ export function PodGovernanceModal({
                             {isSelf ? ' (You)' : ''}
                           </Text>
                           <Text style={styles.memberMeta}>
-                            {role} · {m.online ? '● Online' : '○ Offline'}
-                            {m.inVoice ? ' · 🔊 Call' : ''}
+                            {role} · {m.online ? 'Online' : 'Away'}
+                            {m.inVoice ? ' · in the call' : ''}
                           </Text>
                         </View>
                         {!isSelf ? (
                           <Pressable
                             accessibilityRole="button"
-                            accessibilityLabel={`Direct message ${m.alias}`}
+                            accessibilityLabel={`Write to ${m.alias} privately`}
                             onPress={() => handleOpenDm(m.peerId)}
                             style={styles.dmSmBtn}
                           >
                             <Ionicons
                               name="chatbubble-ellipses-outline"
                               size={15}
-                              color={PALETTE.charcoal}
+                              color={PIECES.sheet}
                             />
-                            <Text style={styles.dmSmText}>DM</Text>
+                            <Text style={styles.dmSmText}>Write</Text>
                           </Pressable>
                         ) : null}
                       </View>
@@ -1064,19 +1074,19 @@ export function PodGovernanceModal({
                           >
                             <Text style={styles.secondaryBtnText}>
                               {role === 'ADMIN'
-                                ? 'Set Member'
-                                : 'Make Co-Admin'}
+                                ? 'Make member'
+                                : 'Make co-admin'}
                             </Text>
                           </Pressable>
 
                           <Pressable
                             accessibilityRole="button"
-                            accessibilityLabel={`Kick ${m.alias}`}
+                            accessibilityLabel={`Remove ${m.alias}`}
                             disabled={adminKickMutation.isPending}
                             onPress={() => adminKickMutation.mutate(m.peerId)}
                             style={styles.dangerSmBtn}
                           >
-                            <Text style={styles.dangerSmText}>Kick</Text>
+                            <Text style={styles.dangerSmText}>Remove</Text>
                           </Pressable>
                         </View>
                       ) : null}
@@ -1087,511 +1097,96 @@ export function PodGovernanceModal({
             ) : null}
           </ScrollView>
         </KeyboardAvoidingView>
-      </SafeAreaView>
+        </View>
+      </View>
     </Modal>
   );
 }
 
 const styles = StyleSheet.create({
-  safeArea: {
-    flex: 1,
-    backgroundColor: PALETTE.surface,
-  },
-  flex: {
-    flex: 1,
-  },
-  header: {
-    backgroundColor: PALETTE.charcoal,
-    paddingHorizontal: 16,
-    paddingVertical: 12,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    gap: 10,
-  },
-  headerTextCol: {
-    flex: 1,
-    gap: 2,
-  },
-  headerTitle: {
-    color: PALETTE.card,
-    fontSize: 16,
-    fontWeight: '700',
-  },
-  headerSub: {
-    color: PALETTE.mint,
-    fontSize: 12,
-    fontWeight: '600',
-    fontFamily: MONO_FONT,
-  },
-  closeBtn: {
-    width: TOUCH_MIN,
-    height: TOUCH_MIN,
-    borderRadius: 12,
-    alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: '#2a2d2a',
-  },
-  tabsBar: {
-    flexDirection: 'row',
-    backgroundColor: PALETTE.card,
-    padding: 6,
-    gap: 6,
-    borderBottomWidth: 1,
-    borderBottomColor: PALETTE.border,
-  },
-  tabBtn: {
-    flex: 1,
-    minHeight: TOUCH_MIN,
-    borderRadius: 10,
-    backgroundColor: PALETTE.surface,
-    alignItems: 'center',
-    justifyContent: 'center',
-    paddingHorizontal: 6,
-  },
-  tabBtnActive: {
-    backgroundColor: PALETTE.charcoal,
-  },
-  tabBtnText: {
-    fontSize: 12,
-    fontWeight: '700',
-    color: PALETTE.ink,
-  },
-  tabBtnTextActive: {
-    color: PALETTE.mint,
-  },
-  content: {
-    padding: 14,
-    gap: 12,
-    paddingBottom: 32,
-  },
-  sectionStack: {
-    gap: 12,
-  },
-  mintBanner: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-    backgroundColor: PALETTE.mintSoft,
-    borderWidth: 1,
-    borderColor: PALETTE.mintBorder,
-    borderRadius: 12,
-    padding: 10,
-  },
-  mintBannerText: {
-    flex: 1,
-    fontSize: 13,
-    fontWeight: '600',
-    color: PALETTE.forest,
-  },
-  errorBanner: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-    backgroundColor: PALETTE.dangerSoft,
-    borderRadius: 12,
-    padding: 10,
-  },
-  errorBannerText: {
-    flex: 1,
-    fontSize: 13,
-    fontWeight: '600',
-    color: PALETTE.danger,
-  },
-  infoNote: {
-    backgroundColor: PALETTE.mintSoft,
-    borderWidth: 1,
-    borderColor: PALETTE.mintBorder,
-    borderRadius: 14,
-    padding: 12,
-    gap: 4,
-  },
-  infoNoteTitle: {
-    fontSize: 13,
-    fontWeight: '700',
-    color: PALETTE.forest,
-  },
-  infoNoteBody: {
-    fontSize: 12,
-    lineHeight: 18,
-    color: PALETTE.ink,
-  },
-  card: {
-    backgroundColor: PALETTE.card,
-    borderRadius: 16,
-    borderWidth: 1,
-    borderColor: PALETTE.border,
-    padding: 14,
-    gap: 10,
-  },
-  cardTitle: {
-    fontSize: 15,
-    fontWeight: '700',
-    color: PALETTE.charcoal,
-  },
-  fieldLabel: {
-    fontSize: 12,
-    fontWeight: '700',
-    color: PALETTE.ink,
-  },
-  helperText: {
-    fontSize: 12,
-    lineHeight: 17,
-    color: PALETTE.muted,
-  },
-  input: {
-    minHeight: TOUCH_MIN,
-    borderRadius: 10,
-    backgroundColor: PALETTE.surface,
-    borderWidth: 1,
-    borderColor: PALETTE.borderStrong,
-    paddingHorizontal: 12,
-    paddingVertical: 10,
-    fontSize: 14,
-    color: PALETTE.ink,
-  },
-  rowGap: {
-    flexDirection: 'row',
-    gap: 8,
-  },
-  rowWrap: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 8,
-  },
-  chipBtn: {
-    minHeight: TOUCH_MIN,
-    paddingHorizontal: 12,
-    borderRadius: 10,
-    backgroundColor: PALETTE.surface,
-    borderWidth: 1,
-    borderColor: PALETTE.border,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  chipFlexBtn: {
-    flex: 1,
-    minHeight: TOUCH_MIN,
-    paddingHorizontal: 10,
-    borderRadius: 10,
-    backgroundColor: PALETTE.surface,
-    borderWidth: 1,
-    borderColor: PALETTE.border,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  chipActive: {
-    backgroundColor: PALETTE.mint,
-    borderColor: PALETTE.forest,
-  },
-  chipText: {
-    fontSize: 13,
-    fontWeight: '600',
-    color: PALETTE.ink,
-  },
-  chipTextActive: {
-    color: PALETTE.charcoal,
-    fontWeight: '700',
-  },
-  mintCtaBtn: {
-    minHeight: TOUCH_MIN,
-    borderRadius: 12,
-    backgroundColor: PALETTE.mint,
-    borderWidth: 1.5,
-    borderColor: PALETTE.forest,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 6,
-    paddingHorizontal: 14,
-  },
-  mintFlexBtn: {
-    flex: 1,
-    minHeight: TOUCH_MIN,
-    borderRadius: 12,
-    backgroundColor: PALETTE.mint,
-    borderWidth: 1.5,
-    borderColor: PALETTE.forest,
-    alignItems: 'center',
-    justifyContent: 'center',
-    paddingHorizontal: 10,
-  },
-  mintCtaText: {
-    fontSize: 14,
-    fontWeight: '700',
-    color: PALETTE.charcoal,
-  },
-  secondaryBtn: {
-    minHeight: TOUCH_MIN,
-    borderRadius: 10,
-    backgroundColor: PALETTE.surface,
-    borderWidth: 1,
-    borderColor: PALETTE.borderStrong,
-    alignItems: 'center',
-    justifyContent: 'center',
-    paddingHorizontal: 12,
-  },
-  secondaryFlexBtn: {
-    flex: 1,
-    minHeight: TOUCH_MIN,
-    borderRadius: 10,
-    backgroundColor: PALETTE.surface,
-    borderWidth: 1,
-    borderColor: PALETTE.borderStrong,
-    alignItems: 'center',
-    justifyContent: 'center',
-    paddingHorizontal: 10,
-  },
-  secondaryBtnText: {
-    fontSize: 13,
-    fontWeight: '700',
-    color: PALETTE.ink,
-  },
-  disabledBtn: {
-    opacity: 0.45,
-  },
-  centerPad: {
-    paddingVertical: 24,
-    alignItems: 'center',
-  },
-  emptyCard: {
-    backgroundColor: PALETTE.card,
-    borderRadius: 14,
-    padding: 18,
-    borderWidth: 1,
-    borderColor: PALETTE.border,
-    alignItems: 'center',
-    gap: 4,
-  },
-  emptyTitle: {
-    fontSize: 15,
-    fontWeight: '700',
-    color: PALETTE.charcoal,
-  },
-  emptyBody: {
-    fontSize: 13,
-    color: PALETTE.muted,
-    textAlign: 'center',
-    lineHeight: 18,
-  },
-  proposalCard: {
-    backgroundColor: PALETTE.card,
-    borderRadius: 14,
-    padding: 14,
-    borderWidth: 1,
-    borderColor: PALETTE.borderStrong,
-    gap: 8,
-  },
-  propHeaderRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-  },
-  propKindTag: {
-    fontSize: 11,
-    fontWeight: '700',
-    color: PALETTE.forest,
-    fontFamily: MONO_FONT,
-  },
-  statusPill: {
-    paddingHorizontal: 8,
-    paddingVertical: 3,
-    borderRadius: 999,
-    borderWidth: 1,
-  },
-  statusOpen: {
-    backgroundColor: PALETTE.mintSoft,
-    borderColor: PALETTE.mintBorder,
-  },
-  statusPassed: {
-    backgroundColor: PALETTE.mint,
-    borderColor: PALETTE.forest,
-  },
-  statusRejected: {
-    backgroundColor: PALETTE.dangerSoft,
-    borderColor: '#f3c1bd',
-  },
-  statusPillText: {
-    fontSize: 10,
-    fontWeight: '700',
-    fontFamily: MONO_FONT,
-  },
-  statusTextOpen: {
-    color: PALETTE.forest,
-  },
-  statusTextPassed: {
-    color: PALETTE.charcoal,
-  },
-  statusTextRejected: {
-    color: PALETTE.danger,
-  },
-  propTitle: {
-    fontSize: 15,
-    fontWeight: '700',
-    color: PALETTE.charcoal,
-  },
-  propReason: {
-    fontSize: 13,
-    color: PALETTE.muted,
-  },
-  tallyRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-  },
-  yesCountText: {
-    fontSize: 12,
-    fontWeight: '700',
-    color: PALETTE.forest,
-    fontFamily: MONO_FONT,
-  },
-  eligibleText: {
-    fontSize: 11,
-    color: PALETTE.muted,
-  },
-  noCountText: {
-    fontSize: 12,
-    fontWeight: '700',
-    color: PALETTE.danger,
-    fontFamily: MONO_FONT,
-  },
-  voterListText: {
-    fontSize: 11,
-    color: PALETTE.muted,
-  },
-  voteActionRow: {
-    flexDirection: 'row',
-    gap: 8,
-    marginTop: 2,
-  },
-  voteYesBtn: {
-    flex: 1,
-    minHeight: TOUCH_MIN,
-    borderRadius: 10,
-    backgroundColor: PALETTE.mintSoft,
-    borderWidth: 1,
-    borderColor: PALETTE.forest,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  voteYesBtnActive: {
-    backgroundColor: PALETTE.mint,
-    borderWidth: 1.5,
-  },
-  voteYesBtnText: {
-    fontSize: 13,
-    fontWeight: '700',
-    color: PALETTE.charcoal,
-  },
-  voteNoBtn: {
-    flex: 1,
-    minHeight: TOUCH_MIN,
-    borderRadius: 10,
-    backgroundColor: PALETTE.surface,
-    borderWidth: 1,
-    borderColor: PALETTE.borderStrong,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  voteNoBtnActive: {
-    backgroundColor: PALETTE.dangerSoft,
-    borderColor: PALETTE.danger,
-    borderWidth: 1.5,
-  },
-  voteNoBtnText: {
-    fontSize: 13,
-    fontWeight: '700',
-    color: PALETTE.ink,
-  },
-  voteNoBtnTextActive: {
-    color: PALETTE.danger,
-  },
-  memberActionRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-  },
-  dmSmBtn: {
-    minHeight: TOUCH_MIN,
-    paddingHorizontal: 12,
-    borderRadius: 10,
-    backgroundColor: PALETTE.mint,
-    borderWidth: 1,
-    borderColor: PALETTE.forest,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 4,
-  },
-  dmSmText: {
-    fontSize: 12,
-    fontWeight: '700',
-    color: PALETTE.charcoal,
-    fontFamily: MONO_FONT,
-  },
-  dangerSmBtn: {
-    minHeight: TOUCH_MIN,
-    paddingHorizontal: 12,
-    borderRadius: 10,
-    backgroundColor: PALETTE.dangerSoft,
-    borderWidth: 1,
-    borderColor: '#f3c1bd',
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  dangerSmText: {
-    fontSize: 12,
-    fontWeight: '700',
-    color: PALETTE.danger,
-  },
-  memberCard: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 10,
-    backgroundColor: PALETTE.card,
-    borderRadius: 14,
-    padding: 12,
-    borderWidth: 1,
-    borderColor: PALETTE.border,
-  },
-  adminMemberCard: {
-    backgroundColor: PALETTE.card,
-    borderRadius: 14,
-    padding: 12,
-    borderWidth: 1,
-    borderColor: PALETTE.border,
-    gap: 10,
-  },
-  memberTopLine: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 10,
-  },
-  memberAvatar: {
-    width: 38,
-    height: 38,
-    borderRadius: 19,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  memberAvatarText: {
-    color: PALETTE.card,
-    fontSize: 13,
-    fontWeight: '700',
-    fontFamily: MONO_FONT,
-  },
-  memberInfoCol: {
-    flex: 1,
-    gap: 2,
-  },
-  memberAlias: {
-    fontSize: 14,
-    fontWeight: '700',
-    color: PALETTE.charcoal,
-  },
-  memberMeta: {
-    fontSize: 12,
-    color: PALETTE.muted,
-    fontFamily: MONO_FONT,
-  },
+  backdrop: { flex: 1, backgroundColor: 'rgba(17, 17, 17, 0.45)', justifyContent: 'flex-end', alignItems: 'center' },
+  backdropHit: { ...StyleSheet.absoluteFillObject },
+  safeArea: { width: '100%', maxWidth: 640, maxHeight: '92%', minHeight: '60%', backgroundColor: PIECES.sheet, borderTopLeftRadius: 28, borderTopRightRadius: 28, overflow: 'hidden' },
+  flex: { flex: 1 },
+  header: { flexDirection: 'row', alignItems: 'center', gap: 12, paddingHorizontal: 20, paddingTop: 20, paddingBottom: 8 },
+  headerTextCol: { flex: 1, gap: 2 },
+  headerTitle: { fontSize: 26, lineHeight: 30, color: PIECES.ink, fontWeight: '600' },
+  headerSub: { fontSize: 14, color: PIECES.muted, fontFamily: 'DMMono_500Medium' },
+  closeBtn: { width: TOUCH_MIN, height: TOUCH_MIN, borderRadius: TOUCH_MIN / 2, backgroundColor: PIECES.bg, alignItems: 'center', justifyContent: 'center' },
+  tabsBar: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, paddingHorizontal: 20, paddingVertical: 8 },
+  tabBtn: { minHeight: TOUCH_MIN, paddingHorizontal: 16, borderRadius: 22, backgroundColor: PIECES.bg, alignItems: 'center', justifyContent: 'center' },
+  tabBtnActive: { backgroundColor: PIECES.ink },
+  tabBtnText: { fontSize: 15, fontWeight: '600', color: PIECES.ink },
+  tabBtnTextActive: { color: PIECES.sheet },
+  content: { padding: 20, paddingTop: 8, gap: 14, paddingBottom: 28 },
+  sectionStack: { gap: 14 },
+  mintBanner: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingHorizontal: 18, paddingVertical: 12, borderRadius: 22, backgroundColor: '#9bddbb' },
+  mintBannerText: { flex: 1, fontSize: 15, fontWeight: '600', color: PIECES.ink },
+  errorBanner: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingHorizontal: 18, paddingVertical: 14, backgroundColor: PIECES.off, borderTopLeftRadius: 20, borderTopRightRadius: 20, borderBottomRightRadius: 20, borderBottomLeftRadius: 0 },
+  errorBannerText: { flex: 1, fontSize: 15, fontWeight: '600', color: PIECES.ink },
+  infoNote: { backgroundColor: '#e8c7c9', borderRadius: 24, padding: 16, gap: 4 },
+  infoNoteTitle: { fontSize: 20, color: PIECES.ink, fontWeight: '600' },
+  infoNoteBody: { fontSize: 15, lineHeight: 21, color: PIECES.ink },
+  card: { backgroundColor: PIECES.bg, borderRadius: 24, padding: 16, gap: 12 },
+  cardTitle: { fontSize: 18, color: PIECES.ink, fontWeight: '600' },
+  fieldLabel: { fontSize: 15, fontWeight: '600', color: PIECES.ink },
+  helperText: { fontSize: 14, lineHeight: 20, color: PIECES.muted },
+  input: { minHeight: 56, borderRadius: 28, backgroundColor: PIECES.sheet, paddingHorizontal: 22, paddingVertical: 12, fontSize: 16, color: PIECES.ink },
+  rowGap: { flexDirection: 'row', gap: 8, alignItems: 'center' },
+  rowWrap: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
+  chipBtn: { minHeight: TOUCH_MIN, paddingHorizontal: 16, borderRadius: 22, backgroundColor: PIECES.sheet, alignItems: 'center', justifyContent: 'center' },
+  chipFlexBtn: { flex: 1, minHeight: TOUCH_MIN, paddingHorizontal: 12, borderRadius: 22, backgroundColor: PIECES.sheet, alignItems: 'center', justifyContent: 'center' },
+  chipActive: { backgroundColor: PIECES.ink },
+  chipText: { fontSize: 15, fontWeight: '600', color: PIECES.ink },
+  chipTextActive: { color: PIECES.sheet },
+  mintCtaBtn: { minHeight: 52, paddingHorizontal: 22, borderRadius: 26, backgroundColor: PIECES.blue, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8 },
+  mintFlexBtn: { flex: 1, minHeight: 52, paddingHorizontal: 14, borderRadius: 26, backgroundColor: PIECES.blue, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8 },
+  mintCtaText: { fontSize: 16, fontWeight: '600', color: PIECES.sheet },
+  secondaryBtn: { minHeight: 52, paddingHorizontal: 22, borderRadius: 26, backgroundColor: PIECES.sheet, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8 },
+  secondaryFlexBtn: { flex: 1, minHeight: 52, paddingHorizontal: 14, borderRadius: 26, backgroundColor: PIECES.sheet, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8 },
+  secondaryBtnText: { fontSize: 16, fontWeight: '600', color: PIECES.ink },
+  disabledBtn: { opacity: 0.45 },
+  centerPad: { padding: 24, alignItems: 'center' },
+  emptyCard: { backgroundColor: PIECES.bg, borderRadius: 24, padding: 18, gap: 6 },
+  emptyTitle: { fontSize: 20, color: PIECES.ink, fontWeight: '600' },
+  emptyBody: { fontSize: 15, lineHeight: 21, color: PIECES.muted },
+  proposalCard: { backgroundColor: '#7396f2', borderRadius: 24, padding: 16, gap: 10 },
+  propHeaderRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 8 },
+  propKindTag: { fontSize: 12, color: PIECES.ink, fontFamily: 'DMMono_500Medium' },
+  statusPill: { borderRadius: 14, paddingHorizontal: 12, paddingVertical: 4, backgroundColor: PIECES.glass },
+  statusOpen: { backgroundColor: PIECES.glass },
+  statusPassed: { backgroundColor: '#9bddbb' },
+  statusRejected: { backgroundColor: PIECES.off },
+  statusPillText: { fontSize: 13, fontWeight: '700', color: PIECES.ink },
+  statusTextOpen: { color: PIECES.ink },
+  statusTextPassed: { color: PIECES.ink },
+  statusTextRejected: { color: PIECES.ink },
+  propTitle: { fontSize: 22, lineHeight: 26, color: PIECES.ink, fontWeight: '600' },
+  propReason: { fontSize: 14, color: PIECES.ink2 },
+  tallyRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
+  yesCountText: { fontSize: 15, fontWeight: '700', color: PIECES.ink },
+  eligibleText: { fontSize: 13, color: PIECES.ink2 },
+  noCountText: { fontSize: 15, fontWeight: '700', color: PIECES.ink },
+  voterListText: { fontSize: 13, color: PIECES.ink2 },
+  voteActionRow: { flexDirection: 'row', gap: 8 },
+  voteYesBtn: { flex: 1, minHeight: 52, borderRadius: 26, backgroundColor: PIECES.glass, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6 },
+  voteYesBtnActive: { backgroundColor: PIECES.ink },
+  voteYesBtnText: { fontSize: 15, fontWeight: '600', color: PIECES.ink },
+  voteNoBtn: { flex: 1, minHeight: 52, borderRadius: 26, backgroundColor: PIECES.glass, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6 },
+  voteNoBtnActive: { backgroundColor: PIECES.ink },
+  voteNoBtnText: { fontSize: 15, fontWeight: '600', color: PIECES.ink },
+  voteNoBtnTextActive: { color: PIECES.sheet },
+  memberActionRow: { flexDirection: 'row', gap: 8, flexWrap: 'wrap' },
+  dmSmBtn: { minHeight: TOUCH_MIN, paddingHorizontal: 16, borderRadius: 22, backgroundColor: PIECES.ink, alignItems: 'center', justifyContent: 'center' },
+  dmSmText: { fontSize: 14, fontWeight: '600', color: PIECES.sheet },
+  dangerSmBtn: { minHeight: TOUCH_MIN, paddingHorizontal: 16, borderRadius: 22, backgroundColor: PIECES.off, alignItems: 'center', justifyContent: 'center' },
+  dangerSmText: { fontSize: 14, fontWeight: '600', color: PIECES.ink },
+  memberCard: { backgroundColor: PIECES.bg, borderRadius: 24, padding: 14, gap: 10 },
+  adminMemberCard: { backgroundColor: PIECES.bg, borderRadius: 24, padding: 14, gap: 10 },
+  memberTopLine: { flexDirection: 'row', alignItems: 'center', gap: 12 },
+  memberAvatar: { width: 48, height: 48, alignItems: 'center', justifyContent: 'center' },
+  memberAvatarText: { fontSize: 16, color: PIECES.ink, fontFamily: 'Gabarito_500Medium' },
+  memberInfoCol: { flex: 1, minWidth: 0 },
+  memberAlias: { fontSize: 17, fontWeight: '600', color: PIECES.ink },
+  memberMeta: { fontSize: 14, color: PIECES.muted },
 });

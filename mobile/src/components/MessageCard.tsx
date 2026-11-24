@@ -1,21 +1,12 @@
 import React from 'react';
-import { Platform, Pressable, StyleSheet, Text, View } from 'react-native';
+import { Pressable, StyleSheet, View } from 'react-native';
+import { Text } from '../theme/ui';
 import { Ionicons } from '@expo/vector-icons';
 import type { RichMessageDto } from '../types/canopy';
-import {
-  PALETTE,
-  TOUCH_MIN,
-  aliasInitials,
-  safePeerColor,
-} from '../theme/palette';
+import { PIECES, TOUCH_MIN, pieceColor } from '../theme/palette';
+import { Piece } from './Pieces';
 import { RichTextBody } from './RichTextBody';
 import { VoiceNotePlayer } from './VoiceNotePlayer';
-
-const MONO_FONT = Platform.select({
-  ios: 'Menlo',
-  android: 'monospace',
-  default: 'monospace',
-});
 
 function formatShortTime(iso: string): string {
   if (!iso) return '';
@@ -59,7 +50,6 @@ export function MessageCard({
     );
   }
 
-  const peerColor = safePeerColor(message.senderColor, message.senderAlias);
   const isSelf = !!myPeerId && message.senderPeerId === myPeerId;
   const isIcebreaker = message.msgType === 'ICEBREAKER';
   const isGovernance = message.msgType === 'GOVERNANCE' && !!message.proposal;
@@ -71,340 +61,184 @@ export function MessageCard({
     !message.isDeleted &&
     (!!onMessagePrivately || !!onOpenActions);
 
+  // Every bubble is the sender's alias colour. In a private chat your own
+  // bubbles are blue with white type, the one place blue marks "yours".
+  const onBlue = isDmView && isSelf;
+  const bubbleColor = onBlue ? PIECES.blue : pieceColor(message.senderAlias);
+  const textColor = onBlue ? PIECES.sheet : PIECES.ink;
+  const subColor = onBlue ? 'rgba(255,255,255,0.86)' : PIECES.ink2;
+
   const totalPollVotes = message.poll
     ? message.poll.options.reduce((acc, opt) => acc + opt.votes, 0)
     : 0;
+  const hasFooter =
+    !message.isDeleted &&
+    (message.reactions.length > 0 ||
+      (!isDmView && !isSelf && !!onMessagePrivately && !!message.senderPeerId) ||
+      !!onReplyQuote);
 
   return (
-    <Pressable
-      onLongPress={
-        onOpenActions && !message.isDeleted
-          ? () => onOpenActions(message)
-          : undefined
-      }
-      delayLongPress={260}
+    <View
       style={[
-        styles.card,
-        isDmView && (isSelf ? styles.dmBubbleSelf : styles.dmBubblePeer),
-        !isDmView && isSelf && styles.groupSelfCard,
-        isIcebreaker && styles.icebreakerCard,
-        isGovernance && styles.governanceOuterCard,
-        message.isPinned && styles.pinnedCard,
+        styles.row,
+        isSelf ? styles.rowSelf : styles.rowPeer,
       ]}
     >
-      {/* Header row: blind animal avatar + alias + badges + 44pt menu trigger */}
-      <View style={styles.headerRow}>
-        <Pressable
-          accessibilityRole={canDmSender ? 'button' : undefined}
-          accessibilityLabel={
-            canDmSender
-              ? `Options for ${message.senderAlias}, including Message privately`
-              : undefined
-          }
-          disabled={!canDmSender}
-          onPress={() => {
-            if (onOpenActions) {
-              onOpenActions(message);
-            } else if (onMessagePrivately && message.senderPeerId) {
-              onMessagePrivately(message.senderPeerId, message.senderAlias);
-            }
-          }}
-          style={styles.authorTapRow}
-        >
-          {!(isDmView && isSelf) ? (
-            <View style={[styles.avatarCircle, { backgroundColor: peerColor }]}>
-              <Text style={styles.avatarText}>
-                {aliasInitials(message.senderAlias)}
-              </Text>
-            </View>
-          ) : null}
-
-          <View style={styles.headerMeta}>
-            <View style={styles.aliasRow}>
-              <Text
-                style={[
-                  styles.aliasName,
-                  { color: isSelf && isDmView ? PALETTE.forest : peerColor },
-                ]}
-              >
-                {isSelf && isDmView ? 'You' : message.senderAlias}
-              </Text>
-              {isSelf && !isDmView ? (
-                <View style={styles.youBadge}>
-                  <Text style={styles.youBadgeText}>YOU</Text>
-                </View>
-              ) : null}
-              {message.isPinned ? (
-                <View style={styles.pinBadge}>
-                  <Ionicons name="pin" size={11} color={PALETTE.forest} />
-                  <Text style={styles.pinBadgeText}>pinned</Text>
-                </View>
-              ) : null}
-              {message.isBookmarked ? (
-                <View style={styles.savedBadge}>
-                  <Ionicons name="bookmark" size={11} color={PALETTE.charcoal} />
-                </View>
-              ) : null}
-            </View>
-            <View style={styles.timestampRow}>
-              <Text style={styles.timestampText}>
-                {formatShortTime(message.createdAt)}
-                {message.editedAt ? ' · edited' : ''}
-              </Text>
-              {isDmView && isSelf && !message.isDeleted ? (
-                message.id <= peerLastReadMessageId ? (
-                  <Text style={styles.seenReceiptText}>✓✓ Seen</Text>
-                ) : (
-                  <Text style={styles.sentReceiptText}>✓ Sent</Text>
-                )
-              ) : null}
-            </View>
-          </View>
-        </Pressable>
-
-        {onOpenActions && !message.isDeleted ? (
+      <Pressable
+        onLongPress={
+          onOpenActions && !message.isDeleted
+            ? () => onOpenActions(message)
+            : undefined
+        }
+        delayLongPress={260}
+        style={[
+          styles.bubble,
+          isSelf ? styles.bubbleSelf : styles.bubblePeer,
+          { backgroundColor: bubbleColor },
+          isGovernance && styles.bubbleWide,
+          message.isPinned && styles.bubblePinned,
+        ]}
+      >
+        <View style={styles.headerRow}>
           <Pressable
-            accessibilityRole="button"
-            accessibilityLabel={`Actions for message from ${message.senderAlias}`}
-            onPress={() => onOpenActions(message)}
-            style={styles.moreBtn}
+            accessibilityRole={canDmSender ? 'button' : undefined}
+            accessibilityLabel={
+              canDmSender
+                ? `${message.senderAlias}. Options, including write privately`
+                : undefined
+            }
+            disabled={!canDmSender}
+            onPress={() => {
+              if (onOpenActions) {
+                onOpenActions(message);
+              } else if (onMessagePrivately && message.senderPeerId) {
+                onMessagePrivately(message.senderPeerId, message.senderAlias);
+              }
+            }}
+            style={styles.authorTapRow}
           >
-            <Ionicons
-              name="ellipsis-horizontal"
-              size={18}
-              color={PALETTE.muted}
-            />
+            <Text style={[styles.aliasName, { color: textColor }]} numberOfLines={1}>
+              {isSelf ? 'You' : message.senderAlias}
+            </Text>
+            <Text style={[styles.timestampText, { color: subColor }]}>
+              {formatShortTime(message.createdAt)}
+              {message.editedAt ? ' · edited' : ''}
+            </Text>
+            {message.isPinned ? (
+              <Ionicons name="pin" size={13} color={textColor} />
+            ) : null}
+            {message.isBookmarked ? (
+              <Ionicons name="bookmark" size={13} color={textColor} />
+            ) : null}
           </Pressable>
-        ) : null}
-      </View>
 
-      {isIcebreaker ? (
-        <View style={styles.icebreakerBanner}>
-          <Ionicons name="sparkles-outline" size={14} color={PALETTE.forest} />
-          <Text style={styles.icebreakerLabel}>POD ICEBREAKER</Text>
-        </View>
-      ) : null}
-
-      {/* Quoted reply preview */}
-      {message.quoteMessage ? (
-        <View
-          style={[
-            styles.quoteBox,
-            isDmView && isSelf && styles.quoteBoxOnMint,
-          ]}
-        >
-          <Text style={styles.quoteAuthor}>
-            {message.quoteMessage.senderAlias}
-          </Text>
-          <Text style={styles.quoteBody} numberOfLines={2}>
-            {message.quoteMessage.isDeleted
-              ? 'Deleted message'
-              : message.quoteMessage.body || 'Voice note / attachment'}
-          </Text>
-        </View>
-      ) : null}
-
-      {/* Main body or Deleted notice */}
-      {message.isDeleted ? (
-        <Text style={styles.deletedText}>This message was removed.</Text>
-      ) : (
-        <View style={styles.bodyWrap}>
-          {message.body &&
-          message.msgType !== 'POLL' &&
-          !isGovernance ? (
-            <RichTextBody body={message.body} />
+          {onOpenActions && !message.isDeleted ? (
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel={`More for the message from ${message.senderAlias}`}
+              onPress={() => onOpenActions(message)}
+              style={styles.moreBtn}
+            >
+              <Ionicons name="ellipsis-horizontal" size={18} color={textColor} />
+            </Pressable>
           ) : null}
+        </View>
 
-          {/* Interactive Democratic Governance Vote Card */}
-          {proposal ? (
-            <View style={styles.govCard}>
-              <View style={styles.govTopRow}>
-                <View style={styles.govLabelRow}>
-                  <Ionicons
-                    name="hammer-outline"
-                    size={15}
-                    color={PALETTE.forest}
-                  />
-                  <Text style={styles.govKindLabel}>⚖️ POD VOTE</Text>
-                </View>
-                <View
-                  style={[
-                    styles.govStatusBadge,
-                    proposal.status === 'PASSED'
-                      ? styles.govStatusPassed
-                      : proposal.status === 'REJECTED'
-                      ? styles.govStatusRejected
-                      : styles.govStatusOpen,
-                  ]}
-                >
-                  <Text
-                    style={[
-                      styles.govStatusText,
-                      proposal.status === 'PASSED'
-                        ? styles.govStatusTextPassed
-                        : proposal.status === 'REJECTED'
-                        ? styles.govStatusTextRejected
-                        : styles.govStatusTextOpen,
-                    ]}
-                  >
-                    {proposal.status}
-                  </Text>
-                </View>
-              </View>
+        {isIcebreaker ? (
+          <Text style={[styles.kicker, { color: subColor }]}>Icebreaker</Text>
+        ) : null}
 
-              <Text style={styles.govTitle}>{proposal.title}</Text>
-              {proposal.reason ? (
-                <Text style={styles.govReason}>
-                  Reason: {proposal.reason}
+        {message.quoteMessage ? (
+          <View style={styles.quoteBox}>
+            <Text style={styles.quoteAuthor}>
+              {message.quoteMessage.senderAlias}
+            </Text>
+            <Text style={styles.quoteBody} numberOfLines={2}>
+              {message.quoteMessage.isDeleted
+                ? 'Removed message'
+                : message.quoteMessage.body || 'Voice note or file'}
+            </Text>
+          </View>
+        ) : null}
+
+        {message.isDeleted ? (
+          <Text style={[styles.deletedText, { color: subColor }]}>
+            This message was removed.
+          </Text>
+        ) : (
+          <View style={styles.bodyWrap}>
+            {message.body &&
+            message.msgType !== 'POLL' &&
+            message.msgType !== 'VOICE_NOTE' &&
+            !isGovernance ? (
+              <RichTextBody body={message.body} color={textColor} />
+            ) : null}
+
+            {/* A room vote: Yes against No, more Yes than No wins */}
+            {proposal ? (
+              <View style={styles.voteBox}>
+                <Text style={styles.voteTitle}>{proposal.title}</Text>
+                {proposal.reason ? (
+                  <Text style={styles.voteSub}>Reason: {proposal.reason}</Text>
+                ) : null}
+
+                {(
+                  [
+                    { label: 'Yes', n: proposal.yesCount, mine: proposal.myVote === true, vote: true },
+                    { label: 'No', n: proposal.noCount, mine: proposal.myVote === false, vote: false },
+                  ] as const
+                ).map((row) => {
+                  const pct =
+                    proposal.eligibleCount > 0
+                      ? Math.min(100, Math.round((row.n / proposal.eligibleCount) * 100))
+                      : 0;
+                  return (
+                    <Pressable
+                      key={row.label}
+                      accessibilityRole="button"
+                      accessibilityLabel={`Vote ${row.label} on ${proposal.title}. ${row.n} so far`}
+                      accessibilityState={{ selected: row.mine, disabled: proposal.status !== 'OPEN' }}
+                      disabled={!onVoteProposal || proposal.status !== 'OPEN'}
+                      onPress={() => onVoteProposal && onVoteProposal(proposal.id, row.vote)}
+                      style={[styles.voteRow, row.mine && styles.voteRowMine]}
+                    >
+                      <View style={[styles.voteFill, { width: `${pct}%` }]} />
+                      <Text style={styles.voteLabel}>
+                        {row.mine ? `${row.label} (yours)` : row.label}
+                      </Text>
+                      <Text style={styles.voteCount}>{row.n}</Text>
+                    </Pressable>
+                  );
+                })}
+
+                <Text style={styles.voteSub}>
+                  {proposal.status === 'OPEN'
+                    ? 'More Yes than No wins.'
+                    : proposal.status === 'PASSED'
+                    ? 'It passed.'
+                    : 'It did not pass.'}{' '}
+                  {proposal.eligibleCount - proposal.yesCount - proposal.noCount > 0
+                    ? `${proposal.eligibleCount - proposal.yesCount - proposal.noCount} still to vote.`
+                    : ''}
                 </Text>
-              ) : null}
-
-              {/* YES vs NO Tally */}
-              <View style={styles.govTallyBox}>
-                <View style={styles.govCountsRow}>
-                  <Text style={styles.govYesStat}>
-                    YES: {proposal.yesCount}
-                  </Text>
-                  <Text style={styles.govEligibleStat}>
-                    {proposal.eligibleCount} eligible
-                  </Text>
-                  <Text style={styles.govNoStat}>NO: {proposal.noCount}</Text>
-                </View>
-                <View style={styles.govTrack}>
-                  <View
-                    style={[
-                      styles.govYesBar,
-                      {
-                        width: `${
-                          proposal.eligibleCount > 0
-                            ? Math.min(
-                                100,
-                                Math.round(
-                                  (proposal.yesCount / proposal.eligibleCount) *
-                                    100
-                                )
-                              )
-                            : 0
-                        }%`,
-                      },
-                    ]}
-                  />
-                  <View
-                    style={[
-                      styles.govNoBar,
-                      {
-                        width: `${
-                          proposal.eligibleCount > 0
-                            ? Math.min(
-                                100,
-                                Math.round(
-                                  (proposal.noCount / proposal.eligibleCount) *
-                                    100
-                                )
-                              )
-                            : 0
-                        }%`,
-                      },
-                    ]}
-                  />
-                </View>
                 {proposal.yesAliases.length > 0 ? (
-                  <Text style={styles.govAliasesText} numberOfLines={1}>
-                    YES: {proposal.yesAliases.join(', ')}
+                  <Text style={styles.voteSub} numberOfLines={1}>
+                    Yes: {proposal.yesAliases.join(', ')}
                   </Text>
                 ) : null}
                 {proposal.noAliases.length > 0 ? (
-                  <Text style={styles.govAliasesText} numberOfLines={1}>
-                    NO: {proposal.noAliases.join(', ')}
+                  <Text style={styles.voteSub} numberOfLines={1}>
+                    No: {proposal.noAliases.join(', ')}
                   </Text>
                 ) : null}
+                <Text style={styles.voteSub}>Asked by {proposal.proposerAlias}</Text>
               </View>
+            ) : null}
 
-              {proposal.status === 'OPEN' ? (
-                <View style={styles.govButtonsRow}>
-                  <Pressable
-                    accessibilityRole="button"
-                    accessibilityLabel={`Vote YES on ${proposal.title}`}
-                    disabled={!onVoteProposal}
-                    onPress={() =>
-                      onVoteProposal && onVoteProposal(proposal.id, true)
-                    }
-                    style={[
-                      styles.govVoteYesBtn,
-                      proposal.myVote === true && styles.govVoteYesBtnActive,
-                    ]}
-                  >
-                    <Ionicons
-                      name={
-                        proposal.myVote === true
-                          ? 'checkmark-circle'
-                          : 'thumbs-up-outline'
-                      }
-                      size={17}
-                      color={PALETTE.charcoal}
-                    />
-                    <Text style={styles.govVoteYesText}>
-                      {proposal.myVote === true ? 'Voted YES' : 'Vote YES'} (
-                      {proposal.yesCount})
-                    </Text>
-                  </Pressable>
-
-                  <Pressable
-                    accessibilityRole="button"
-                    accessibilityLabel={`Vote NO on ${proposal.title}`}
-                    disabled={!onVoteProposal}
-                    onPress={() =>
-                      onVoteProposal && onVoteProposal(proposal.id, false)
-                    }
-                    style={[
-                      styles.govVoteNoBtn,
-                      proposal.myVote === false && styles.govVoteNoBtnActive,
-                    ]}
-                  >
-                    <Ionicons
-                      name={
-                        proposal.myVote === false
-                          ? 'close-circle'
-                          : 'thumbs-down-outline'
-                      }
-                      size={17}
-                      color={
-                        proposal.myVote === false ? PALETTE.danger : PALETTE.ink
-                      }
-                    />
-                    <Text
-                      style={[
-                        styles.govVoteNoText,
-                        proposal.myVote === false &&
-                          styles.govVoteNoTextActive,
-                      ]}
-                    >
-                      {proposal.myVote === false ? 'Voted NO' : 'Vote NO'} (
-                      {proposal.noCount})
-                    </Text>
-                  </Pressable>
-                </View>
-              ) : null}
-
-              <Text style={styles.govFooterText}>
-                Proposed by {proposal.proposerAlias} · Democratic YES &gt; NO vote
-              </Text>
-            </View>
-          ) : null}
-
-          {/* Interactive /poll card */}
-          {message.poll ? (
-            <View style={styles.pollCard}>
-              <View style={styles.pollHeader}>
-                <Ionicons
-                  name="stats-chart"
-                  size={15}
-                  color={PALETTE.forest}
-                />
-                <Text style={styles.pollQuestion}>{message.poll.question}</Text>
-              </View>
-
-              <View style={styles.pollOptionsList}>
+            {/* A /poll: same bars, any number of options */}
+            {message.poll ? (
+              <View style={styles.voteBox}>
+                <Text style={styles.voteTitle}>{message.poll.question}</Text>
                 {message.poll.options.map((opt) => {
                   const pct =
                     totalPollVotes > 0
@@ -414,130 +248,92 @@ export function MessageCard({
                     <Pressable
                       key={opt.index}
                       accessibilityRole="button"
-                      accessibilityLabel={`Vote ${opt.label}, ${opt.votes} votes`}
+                      accessibilityLabel={`Vote ${opt.label}. ${opt.votes} so far`}
+                      accessibilityState={{ selected: opt.meVoted, disabled: !!message.poll?.isClosed }}
                       disabled={message.poll?.isClosed || !onVotePoll}
                       onPress={() =>
                         message.poll &&
                         onVotePoll &&
                         onVotePoll(message.poll.pollId, opt.index)
                       }
-                      style={[
-                        styles.pollOptionBtn,
-                        opt.meVoted && styles.pollOptionVoted,
-                      ]}
+                      style={[styles.voteRow, opt.meVoted && styles.voteRowMine]}
                     >
-                      <View
-                        style={[styles.pollFillBar, { width: `${pct}%` }]}
-                      />
-                      <View style={styles.pollOptionContent}>
-                        <View style={styles.pollLabelWrap}>
-                          <Ionicons
-                            name={
-                              opt.meVoted
-                                ? 'checkmark-circle'
-                                : 'ellipse-outline'
-                            }
-                            size={18}
-                            color={
-                              opt.meVoted ? PALETTE.forest : PALETTE.muted
-                            }
-                          />
-                          <Text style={styles.pollOptionLabel}>
-                            {opt.label}
-                          </Text>
-                        </View>
-                        <Text style={styles.pollVoteCount}>
-                          {opt.votes} ({pct}%)
-                        </Text>
-                      </View>
-                      {opt.voters.length > 0 ? (
-                        <Text style={styles.pollVotersText} numberOfLines={1}>
-                          {opt.voters.join(', ')}
-                        </Text>
-                      ) : null}
+                      <View style={[styles.voteFill, { width: `${pct}%` }]} />
+                      <Text style={styles.voteLabel} numberOfLines={1}>
+                        {opt.meVoted ? `${opt.label} (yours)` : opt.label}
+                      </Text>
+                      <Text style={styles.voteCount}>{opt.votes}</Text>
                     </Pressable>
                   );
                 })}
+                <Text style={styles.voteSub}>
+                  {totalPollVotes} {totalPollVotes === 1 ? 'vote' : 'votes'}
+                  {message.poll.isClosed ? ' · closed' : ''}
+                </Text>
               </View>
-              <Text style={styles.pollFooter}>
-                {totalPollVotes} {totalPollVotes === 1 ? 'vote' : 'votes'} ·
-                Peer-blind poll
-              </Text>
-            </View>
-          ) : null}
+            ) : null}
 
-          {/* Attachments (Voice Notes / Files) */}
-          {message.attachments && message.attachments.length > 0 ? (
-            <View style={styles.attachmentsList}>
-              {message.attachments.map((att) =>
-                att.kind === 'voice_note' ||
-                att.mimeType.startsWith('audio/') ? (
-                  <VoiceNotePlayer key={att.id} attachment={att} />
-                ) : (
-                  <View key={att.id} style={styles.fileChip}>
-                    <Ionicons
-                      name="document-attach-outline"
-                      size={16}
-                      color={PALETTE.forest}
-                    />
-                    <Text style={styles.fileChipText} numberOfLines={1}>
-                      {att.fileName}
-                    </Text>
-                  </View>
-                )
-              )}
-            </View>
-          ) : null}
-        </View>
-      )}
+            {message.attachments && message.attachments.length > 0 ? (
+              <View style={styles.attachmentsList}>
+                {message.attachments.map((att) =>
+                  att.kind === 'voice_note' ||
+                  att.mimeType.startsWith('audio/') ? (
+                    <VoiceNotePlayer key={att.id} attachment={att} />
+                  ) : (
+                    <View key={att.id} style={styles.fileChip}>
+                      <Text style={styles.fileChipText} numberOfLines={1}>
+                        {att.fileName}
+                      </Text>
+                      <Text style={styles.fileSize}>
+                        {att.sizeBytes < 1024
+                          ? `${att.sizeBytes} B`
+                          : `${Math.round(att.sizeBytes / 1024)} KB`}
+                      </Text>
+                    </View>
+                  )
+                )}
+              </View>
+            ) : null}
+          </View>
+        )}
 
-      {/* Reactions + Quick Actions Bar */}
-      {!message.isDeleted &&
-      (message.reactions.length > 0 ||
-        (!isDmView && !isSelf && !!onMessagePrivately && !!message.senderPeerId) ||
-        !!onReplyQuote) ? (
-        <View style={styles.footerBar}>
-          <View style={styles.reactionsWrap}>
+        {/* Seen receipts: sent is one tick, seen is two */}
+        {isDmView && isSelf && !message.isDeleted ? (
+          <Text style={[styles.receipt, { color: subColor }]}>
+            {message.id <= peerLastReadMessageId ? '✓✓ Seen' : '✓ Sent'}
+          </Text>
+        ) : null}
+
+        {hasFooter ? (
+          <View style={styles.footerBar}>
             {message.reactions.map((rx) => (
               <Pressable
                 key={rx.emoji}
                 accessibilityRole="button"
-                accessibilityLabel={`Reaction ${rx.emoji} count ${rx.count}`}
+                accessibilityLabel={`${rx.emoji}, ${rx.count}${rx.meReacted ? ', you reacted' : ''}`}
+                accessibilityState={{ selected: rx.meReacted }}
                 onPress={() =>
                   onToggleReaction && onToggleReaction(message.id, rx.emoji)
                 }
-                style={[
-                  styles.reactionPill,
-                  rx.meReacted && styles.reactionPillActive,
-                ]}
+                style={[styles.reactionPill, rx.meReacted && styles.reactionPillActive]}
               >
                 <Text style={styles.reactionEmoji}>{rx.emoji}</Text>
                 <Text
-                  style={[
-                    styles.reactionCount,
-                    rx.meReacted && styles.reactionCountActive,
-                  ]}
+                  style={[styles.reactionCount, rx.meReacted && styles.reactionCountActive]}
                 >
                   {rx.count}
                 </Text>
               </Pressable>
             ))}
-          </View>
 
-          <View style={styles.quickFooterActions}>
             {onReplyQuote ? (
               <Pressable
                 accessibilityRole="button"
                 accessibilityLabel={`Reply to ${message.senderAlias}`}
                 onPress={() => onReplyQuote(message)}
-                style={styles.quickReplyChip}
+                style={styles.quickChip}
               >
-                <Ionicons
-                  name="return-down-forward-outline"
-                  size={14}
-                  color={PALETTE.ink}
-                />
-                <Text style={styles.quickReplyText}>Reply</Text>
+                <Text style={styles.quickChipText}>Reply</Text>
               </Pressable>
             ) : null}
 
@@ -547,24 +343,19 @@ export function MessageCard({
             message.senderPeerId ? (
               <Pressable
                 accessibilityRole="button"
-                accessibilityLabel={`Message ${message.senderAlias} privately`}
+                accessibilityLabel={`Write to ${message.senderAlias} privately`}
                 onPress={() =>
                   onMessagePrivately(message.senderPeerId, message.senderAlias)
                 }
-                style={styles.quickDmChip}
+                style={styles.quickChip}
               >
-                <Ionicons
-                  name="lock-closed-outline"
-                  size={13}
-                  color={PALETTE.forest}
-                />
-                <Text style={styles.quickDmText}>DM</Text>
+                <Text style={styles.quickChipText}>Write privately</Text>
               </Pressable>
             ) : null}
           </View>
-        </View>
-      ) : null}
-    </Pressable>
+        ) : null}
+      </Pressable>
+    </View>
   );
 }
 
@@ -574,541 +365,121 @@ const styles = StyleSheet.create({
     paddingVertical: 6,
   },
   systemPill: {
-    backgroundColor: PALETTE.surfaceMuted,
-    paddingHorizontal: 12,
+    backgroundColor: PIECES.glass,
+    paddingHorizontal: 14,
     paddingVertical: 6,
-    borderRadius: 999,
+    borderRadius: 16,
     maxWidth: '94%',
   },
-  card: {
-    backgroundColor: PALETTE.card,
-    borderRadius: 16,
-    padding: 12,
-    borderWidth: 1,
-    borderColor: PALETTE.border,
-    gap: 8,
+  row: { flexDirection: 'row' },
+  rowSelf: { justifyContent: 'flex-end' },
+  rowPeer: { justifyContent: 'flex-start' },
+  bubble: {
+    maxWidth: '88%',
+    minWidth: 120,
+    paddingHorizontal: 16,
+    paddingTop: 6,
+    paddingBottom: 12,
+    gap: 6,
+    borderRadius: 24,
   },
-  groupSelfCard: {
-    borderColor: PALETTE.borderStrong,
-  },
-  dmBubbleSelf: {
-    alignSelf: 'flex-end',
-    width: '86%',
-    backgroundColor: PALETTE.mintSoft,
-    borderColor: PALETTE.mintBorder,
-    borderBottomRightRadius: 4,
-  },
-  dmBubblePeer: {
-    alignSelf: 'flex-start',
-    width: '86%',
-    backgroundColor: PALETTE.card,
-    borderColor: PALETTE.border,
-    borderBottomLeftRadius: 4,
-  },
-  icebreakerCard: {
-    backgroundColor: PALETTE.mintSoft,
-    borderColor: PALETTE.mintBorder,
-  },
-  governanceOuterCard: {
-    borderColor: PALETTE.mintBorder,
-    borderWidth: 1.5,
-  },
-  pinnedCard: {
-    borderColor: PALETTE.forest,
-  },
+  // The tail: one square corner on the side the sender sits.
+  bubblePeer: { borderBottomLeftRadius: 0 },
+  bubbleSelf: { borderBottomRightRadius: 0 },
+  bubbleWide: { width: '88%' },
+  bubblePinned: { borderWidth: 3, borderColor: PIECES.ink },
   headerRow: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    gap: 8,
+    gap: 4,
   },
   authorTapRow: {
     flex: 1,
     minHeight: TOUCH_MIN,
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 10,
+    gap: 8,
   },
-  avatarCircle: {
-    width: 36,
-    height: 36,
-    borderRadius: 18,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  avatarText: {
-    color: PALETTE.card,
-    fontWeight: '700',
-    fontSize: 13,
-    fontFamily: MONO_FONT,
-  },
-  headerMeta: {
-    flex: 1,
-    gap: 1,
-  },
-  aliasRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    flexWrap: 'wrap',
-    gap: 6,
-  },
-  aliasName: {
-    fontSize: 14,
-    fontWeight: '700',
-  },
-  youBadge: {
-    backgroundColor: PALETTE.mint,
-    paddingHorizontal: 6,
-    paddingVertical: 1,
-    borderRadius: 6,
-  },
-  youBadgeText: {
-    fontSize: 10,
-    fontWeight: '700',
-    color: PALETTE.charcoal,
-    fontFamily: MONO_FONT,
-  },
-  pinBadge: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 3,
-    backgroundColor: PALETTE.mintSoft,
-    borderWidth: 1,
-    borderColor: PALETTE.mintBorder,
-    paddingHorizontal: 6,
-    paddingVertical: 1,
-    borderRadius: 6,
-  },
-  pinBadgeText: {
-    fontSize: 10,
-    fontWeight: '700',
-    color: PALETTE.forest,
-  },
-  savedBadge: {
-    backgroundColor: PALETTE.surfaceMuted,
-    paddingHorizontal: 5,
-    paddingVertical: 2,
-    borderRadius: 5,
-  },
-  timestampRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-  },
-  timestampText: {
-    fontSize: 11,
-    color: PALETTE.muted,
-    fontFamily: MONO_FONT,
-  },
-  seenReceiptText: {
-    fontSize: 11,
-    fontWeight: '700',
-    color: PALETTE.forest,
-    fontFamily: MONO_FONT,
-  },
-  sentReceiptText: {
-    fontSize: 11,
-    fontWeight: '600',
-    color: PALETTE.muted,
-    fontFamily: MONO_FONT,
-  },
+  aliasName: { fontSize: 14, fontWeight: '700', flexShrink: 1 },
+  timestampText: { fontSize: 13, fontFamily: 'DMMono_400Regular' },
   moreBtn: {
     width: TOUCH_MIN,
     height: TOUCH_MIN,
-    borderRadius: 10,
+    marginRight: -10,
     alignItems: 'center',
     justifyContent: 'center',
   },
-  icebreakerBanner: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 5,
-  },
-  icebreakerLabel: {
-    fontSize: 11,
-    fontWeight: '700',
-    color: PALETTE.forest,
-    letterSpacing: 0.6,
-    fontFamily: MONO_FONT,
-  },
+  kicker: { fontSize: 13, fontFamily: 'DMMono_500Medium', marginTop: -6 },
   quoteBox: {
-    borderLeftWidth: 3,
-    borderLeftColor: PALETTE.forest,
-    backgroundColor: PALETTE.surface,
-    paddingHorizontal: 10,
-    paddingVertical: 6,
-    borderRadius: 8,
-    gap: 2,
-  },
-  quoteBoxOnMint: {
-    backgroundColor: PALETTE.card,
-  },
-  quoteAuthor: {
-    fontSize: 12,
-    fontWeight: '700',
-    color: PALETTE.forest,
-  },
-  quoteBody: {
-    fontSize: 13,
-    color: PALETTE.muted,
-  },
-  bodyWrap: {
-    gap: 8,
-  },
-  deletedText: {
-    fontSize: 14,
-    fontStyle: 'italic',
-    color: PALETTE.muted,
-  },
-  govCard: {
-    backgroundColor: PALETTE.surface,
-    borderRadius: 12,
-    padding: 12,
-    borderWidth: 1,
-    borderColor: PALETTE.mintBorder,
-    gap: 10,
-  },
-  govTopRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    gap: 8,
-  },
-  govLabelRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-  },
-  govKindLabel: {
-    fontSize: 11,
-    fontWeight: '700',
-    color: PALETTE.forest,
-    fontFamily: MONO_FONT,
-    letterSpacing: 0.5,
-  },
-  govStatusBadge: {
-    paddingHorizontal: 8,
-    paddingVertical: 3,
-    borderRadius: 999,
-    borderWidth: 1,
-  },
-  govStatusOpen: {
-    backgroundColor: PALETTE.mintSoft,
-    borderColor: PALETTE.mintBorder,
-  },
-  govStatusPassed: {
-    backgroundColor: PALETTE.mint,
-    borderColor: PALETTE.forest,
-  },
-  govStatusRejected: {
-    backgroundColor: PALETTE.dangerSoft,
-    borderColor: '#f3c1bd',
-  },
-  govStatusText: {
-    fontSize: 10,
-    fontWeight: '700',
-    fontFamily: MONO_FONT,
-  },
-  govStatusTextOpen: {
-    color: PALETTE.forest,
-  },
-  govStatusTextPassed: {
-    color: PALETTE.charcoal,
-  },
-  govStatusTextRejected: {
-    color: PALETTE.danger,
-  },
-  govTitle: {
-    fontSize: 15,
-    fontWeight: '700',
-    color: PALETTE.charcoal,
-  },
-  govReason: {
-    fontSize: 13,
-    color: PALETTE.muted,
-    lineHeight: 18,
-  },
-  govTallyBox: {
-    gap: 5,
-  },
-  govCountsRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-  },
-  govYesStat: {
-    fontSize: 12,
-    fontWeight: '700',
-    color: PALETTE.forest,
-    fontFamily: MONO_FONT,
-  },
-  govEligibleStat: {
-    fontSize: 11,
-    color: PALETTE.muted,
-    fontFamily: MONO_FONT,
-  },
-  govNoStat: {
-    fontSize: 12,
-    fontWeight: '700',
-    color: PALETTE.danger,
-    fontFamily: MONO_FONT,
-  },
-  govTrack: {
-    height: 8,
-    borderRadius: 999,
-    backgroundColor: PALETTE.surfaceMuted,
-    flexDirection: 'row',
-    overflow: 'hidden',
-  },
-  govYesBar: {
-    backgroundColor: PALETTE.forest,
-    height: '100%',
-  },
-  govNoBar: {
-    backgroundColor: PALETTE.danger,
-    height: '100%',
-  },
-  govAliasesText: {
-    fontSize: 11,
-    color: PALETTE.muted,
-  },
-  govButtonsRow: {
-    flexDirection: 'row',
-    gap: 8,
-  },
-  govVoteYesBtn: {
-    flex: 1,
-    minHeight: TOUCH_MIN,
-    borderRadius: 10,
-    backgroundColor: PALETTE.mintSoft,
-    borderWidth: 1,
-    borderColor: PALETTE.forest,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 6,
-    paddingHorizontal: 10,
-  },
-  govVoteYesBtnActive: {
-    backgroundColor: PALETTE.mint,
-    borderWidth: 1.5,
-  },
-  govVoteYesText: {
-    fontSize: 13,
-    fontWeight: '700',
-    color: PALETTE.charcoal,
-  },
-  govVoteNoBtn: {
-    flex: 1,
-    minHeight: TOUCH_MIN,
-    borderRadius: 10,
-    backgroundColor: PALETTE.card,
-    borderWidth: 1,
-    borderColor: PALETTE.borderStrong,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 6,
-    paddingHorizontal: 10,
-  },
-  govVoteNoBtnActive: {
-    backgroundColor: PALETTE.dangerSoft,
-    borderColor: PALETTE.danger,
-    borderWidth: 1.5,
-  },
-  govVoteNoText: {
-    fontSize: 13,
-    fontWeight: '700',
-    color: PALETTE.ink,
-  },
-  govVoteNoTextActive: {
-    color: PALETTE.danger,
-  },
-  govFooterText: {
-    fontSize: 11,
-    color: PALETTE.muted,
-    fontFamily: MONO_FONT,
-  },
-  pollCard: {
-    backgroundColor: PALETTE.surface,
-    borderRadius: 12,
-    padding: 12,
-    borderWidth: 1,
-    borderColor: PALETTE.borderStrong,
-    gap: 10,
-  },
-  pollHeader: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-  },
-  pollQuestion: {
-    flex: 1,
-    fontSize: 15,
-    fontWeight: '700',
-    color: PALETTE.charcoal,
-  },
-  pollOptionsList: {
-    gap: 8,
-  },
-  pollOptionBtn: {
-    minHeight: TOUCH_MIN,
-    borderRadius: 10,
-    borderWidth: 1,
-    borderColor: PALETTE.borderStrong,
-    backgroundColor: PALETTE.card,
-    overflow: 'hidden',
-    justifyContent: 'center',
+    backgroundColor: PIECES.glass,
+    borderRadius: 16,
     paddingHorizontal: 12,
     paddingVertical: 8,
-    position: 'relative',
+    gap: 2,
   },
-  pollOptionVoted: {
-    borderColor: PALETTE.forest,
-    borderWidth: 1.5,
+  quoteAuthor: { fontSize: 13, fontWeight: '700', color: PIECES.ink },
+  quoteBody: { fontSize: 14, color: PIECES.ink2 },
+  deletedText: { fontSize: 15, fontStyle: 'italic' },
+  bodyWrap: { gap: 10 },
+  voteBox: { gap: 8, marginTop: 2 },
+  voteTitle: { fontSize: 21, lineHeight: 25, color: PIECES.ink, fontWeight: '600' },
+  voteSub: { fontSize: 13, lineHeight: 18, color: PIECES.ink2 },
+  voteRow: {
+    minHeight: 52,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: 16,
+    borderRadius: 22,
+    backgroundColor: 'rgba(17,17,17,0.16)',
+    overflow: 'hidden',
   },
-  pollFillBar: {
+  voteRowMine: { borderWidth: 3, borderColor: PIECES.ink },
+  voteFill: {
     position: 'absolute',
     left: 0,
     top: 0,
     bottom: 0,
-    backgroundColor: PALETTE.mintSoft,
+    backgroundColor: PIECES.glass,
   },
-  pollOptionContent: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    gap: 8,
-  },
-  pollLabelWrap: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-    flex: 1,
-  },
-  pollOptionLabel: {
-    fontSize: 14,
-    fontWeight: '600',
-    color: PALETTE.ink,
-    flex: 1,
-  },
-  pollVoteCount: {
-    fontSize: 12,
-    fontWeight: '700',
-    color: PALETTE.forest,
-    fontFamily: MONO_FONT,
-  },
-  pollVotersText: {
-    fontSize: 11,
-    color: PALETTE.muted,
-    marginTop: 3,
-    marginLeft: 26,
-  },
-  pollFooter: {
-    fontSize: 11,
-    color: PALETTE.muted,
-    fontFamily: MONO_FONT,
-  },
-  attachmentsList: {
-    gap: 6,
-  },
+  voteLabel: { flex: 1, fontSize: 16, fontWeight: '600', color: PIECES.ink },
+  voteCount: { fontSize: 16, fontFamily: 'DMMono_500Medium', color: PIECES.ink },
+  attachmentsList: { gap: 8 },
   fileChip: {
+    minHeight: 44,
     flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-    backgroundColor: PALETTE.surface,
-    paddingHorizontal: 12,
-    paddingVertical: 10,
-    borderRadius: 10,
-    borderWidth: 1,
-    borderColor: PALETTE.border,
-  },
-  fileChipText: {
-    fontSize: 13,
-    color: PALETTE.ink,
-    flex: 1,
-  },
-  footerBar: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
     alignItems: 'center',
     justifyContent: 'space-between',
-    gap: 8,
-    marginTop: 2,
+    gap: 10,
+    backgroundColor: PIECES.glass,
+    borderRadius: 16,
+    paddingHorizontal: 14,
   },
-  reactionsWrap: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 6,
-  },
+  fileChipText: { flex: 1, fontSize: 15, fontWeight: '600', color: PIECES.ink },
+  fileSize: { fontSize: 13, fontFamily: 'DMMono_400Regular', color: PIECES.ink2 },
+  receipt: { fontSize: 13, fontFamily: 'DMMono_500Medium' },
+  footerBar: { flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', gap: 6 },
   reactionPill: {
-    minHeight: TOUCH_MIN,
-    minWidth: TOUCH_MIN,
+    minHeight: 44,
     flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'center',
     gap: 5,
-    paddingHorizontal: 10,
-    borderRadius: 999,
-    backgroundColor: PALETTE.surface,
-    borderWidth: 1,
-    borderColor: PALETTE.border,
+    paddingHorizontal: 12,
+    borderRadius: 18,
+    backgroundColor: PIECES.glass,
   },
-  reactionPillActive: {
-    backgroundColor: PALETTE.mintSoft,
-    borderColor: PALETTE.forest,
-  },
-  reactionEmoji: {
-    fontSize: 15,
-  },
-  reactionCount: {
-    fontSize: 12,
-    fontWeight: '700',
-    color: PALETTE.ink,
-    fontFamily: MONO_FONT,
-  },
-  reactionCountActive: {
-    color: PALETTE.forest,
-  },
-  quickFooterActions: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-    marginLeft: 'auto',
-  },
-  quickReplyChip: {
+  reactionPillActive: { backgroundColor: PIECES.ink },
+  reactionEmoji: { fontSize: 15 },
+  reactionCount: { fontSize: 14, fontWeight: '700', color: PIECES.ink },
+  reactionCountActive: { color: PIECES.sheet },
+  quickChip: {
     minHeight: TOUCH_MIN,
-    paddingHorizontal: 10,
-    borderRadius: 10,
-    backgroundColor: PALETTE.surface,
-    borderWidth: 1,
-    borderColor: PALETTE.border,
-    flexDirection: 'row',
+    paddingHorizontal: 14,
+    borderRadius: 22,
+    backgroundColor: PIECES.glass,
     alignItems: 'center',
     justifyContent: 'center',
-    gap: 4,
   },
-  quickReplyText: {
-    fontSize: 12,
-    fontWeight: '600',
-    color: PALETTE.ink,
-  },
-  quickDmChip: {
-    minHeight: TOUCH_MIN,
-    paddingHorizontal: 10,
-    borderRadius: 10,
-    backgroundColor: PALETTE.mintSoft,
-    borderWidth: 1,
-    borderColor: PALETTE.mintBorder,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 4,
-  },
-  quickDmText: {
-    fontSize: 12,
-    fontWeight: '700',
-    color: PALETTE.forest,
-    fontFamily: MONO_FONT,
-  },
+  quickChipText: { fontSize: 14, fontWeight: '600', color: PIECES.ink },
 });

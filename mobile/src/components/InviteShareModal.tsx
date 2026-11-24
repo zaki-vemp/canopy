@@ -7,9 +7,9 @@ import {
   ScrollView,
   Share,
   StyleSheet,
-  Text,
   View,
 } from 'react-native';
+import { Text } from '../theme/ui';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useMutation } from '@tanstack/react-query';
 import { Ionicons } from '@expo/vector-icons';
@@ -19,13 +19,11 @@ import {
   revokePodInvite,
 } from '../api/client';
 import type { PodDetail, PodInviteDto } from '../types/canopy';
-import { PALETTE, TOUCH_MIN, capacityTierBadge } from '../theme/palette';
+import { PIECES, PIECE_HEX, TOUCH_MIN, capacityTierBadge } from '../theme/palette';
+import { Sheet } from './Sheet';
+import { Btn, Chip } from './Pieces';
 
-const MONO_FONT = Platform.select({
-  ios: 'Menlo',
-  android: 'monospace',
-  default: 'monospace',
-});
+const MONO_FONT = 'DMMono_500Medium';
 
 const EXPIRY_OPTIONS: ReadonlyArray<{ hours: number; label: string }> = [
   { hours: 168, label: '7d' },
@@ -59,7 +57,7 @@ async function copyToWebClipboard(text: string): Promise<boolean> {
 }
 
 function formatExpiryLabel(invite: PodInviteDto): string {
-  if (invite.isRevoked) return 'Revoked';
+  if (invite.isRevoked) return 'Cancelled';
   if (invite.isExpired) return 'Expired';
   if (!invite.expiresAt) return 'Never expires';
   const ts = Date.parse(invite.expiresAt);
@@ -141,7 +139,7 @@ export function InviteShareModal({
     },
     onError: (err) => {
       setErrorMsg(
-        err instanceof Error ? err.message : 'Could not create pod invite.'
+        err instanceof Error ? err.message : 'Could not make the invite.'
       );
     },
   });
@@ -153,11 +151,11 @@ export function InviteShareModal({
       setInvite((prev) =>
         prev ? { ...prev, isRevoked: true, canAccept: false } : null
       );
-      showToast('Invite revoked');
+      showToast('Invite cancelled');
     },
     onError: (err) => {
       setErrorMsg(
-        err instanceof Error ? err.message : 'Could not revoke pod invite.'
+        err instanceof Error ? err.message : 'Could not cancel the invite.'
       );
     },
   });
@@ -185,7 +183,7 @@ export function InviteShareModal({
       maxUses,
       expiresInHours: nextHours,
       regenerate: true,
-      toast: 'Updated expiry',
+      toast: 'Expiry changed',
     });
   };
 
@@ -196,14 +194,14 @@ export function InviteShareModal({
       maxUses: nextUses,
       expiresInHours,
       regenerate: true,
-      toast: 'Updated max uses',
+      toast: 'Uses changed',
     });
   };
 
   const handleShare = async () => {
     if (!pod || !invite || invite.isRevoked) return;
     const webUrl = buildWebInviteUrl(invite.code);
-    const message = `Join anonymous pod #${pod.code} (${pod.interestLabel}) on Canopy — random animal aliases, zero real names:\n${webUrl}\nInvite code: ${invite.code}`;
+    const message = `Join the ${pod.interestLabel} room on Canopy. Everyone sits under an alias, no real names:\n${webUrl}\nInvite code: ${invite.code}`;
 
     if (Platform.OS === 'web') {
       const copied = await copyToWebClipboard(webUrl);
@@ -224,7 +222,7 @@ export function InviteShareModal({
       if (webNav?.share) {
         try {
           await webNav.share({
-            title: `Join #${pod.code} on Canopy`,
+            title: `Join a ${pod.interestLabel} room on Canopy`,
             text: message,
             url: webUrl,
           });
@@ -232,19 +230,19 @@ export function InviteShareModal({
           // user dismissed share sheet
         }
       } else if (!copied) {
-        showToast('Select the link above to copy');
+        showToast('Select the link above to copy it');
       }
       return;
     }
 
     try {
       await Share.share({
-        title: `Join #${pod.code} on Canopy`,
+        title: `Join a ${pod.interestLabel} room on Canopy`,
         message,
       });
     } catch (err) {
       setErrorMsg(
-        err instanceof Error ? err.message : 'Unable to open native share sheet.'
+        err instanceof Error ? err.message : 'Could not open the share sheet.'
       );
     }
   };
@@ -258,614 +256,185 @@ export function InviteShareModal({
     try {
       await Share.share({ message: value, title: label });
     } catch {
-      showToast('Long-press the code above to copy');
+      showToast('Press and hold the code to copy it');
     }
   };
 
   const webInviteUrl = invite ? buildWebInviteUrl(invite.code) : '';
   const busy = upsertInviteMutation.isPending || revokeMutation.isPending;
 
+  const roomLabel = pod?.interestLabel ?? 'room';
+
   return (
-    <Modal
+    <Sheet
       visible={visible}
-      animationType="slide"
-      presentationStyle="pageSheet"
-      onRequestClose={onClose}
+      title={`Invite to ${roomLabel}`}
+      lead={
+        pod
+          ? `${capacityTierBadge(
+              invite?.memberCount ?? pod.memberCount,
+              invite?.maxMembers ?? pod.maxMembers
+            )}. People who join get a fresh alias. No real names, genders or flags show.`
+          : undefined
+      }
+      onClose={onClose}
     >
-      <SafeAreaView style={styles.safeArea} edges={['top', 'bottom']}>
-        {/* Charcoal Header */}
-        <View style={styles.header}>
-          <View style={styles.headerTextCol}>
-            <Text style={styles.headerTitle}>
-              Invite Peers to #{pod?.code ?? 'pod'}
-            </Text>
-            <Text style={styles.headerSub}>
-              {pod
-                ? `${pod.interestLabel} · ${capacityTierBadge(
-                    invite?.memberCount ?? pod.memberCount,
-                    invite?.maxMembers ?? pod.maxMembers
-                  )}`
-                : 'Peer-blind room invite'}
-            </Text>
-          </View>
-          <Pressable
-            accessibilityRole="button"
-            accessibilityLabel="Close invite modal"
-            onPress={onClose}
-            style={styles.closeBtn}
-          >
-            <Ionicons name="close" size={22} color={PALETTE.card} />
-          </Pressable>
+      {toastMsg ? (
+        <View style={styles.toastBanner} accessibilityRole="alert">
+          <Text style={styles.bannerText}>{toastMsg}</Text>
         </View>
+      ) : null}
 
-        <ScrollView
-          style={styles.flex}
-          contentContainerStyle={styles.content}
-          keyboardShouldPersistTaps="handled"
-        >
-          {/* Blind Guarantee Note */}
-          <View style={styles.guaranteeCard}>
-            <Ionicons
-              name="shield-checkmark-outline"
-              size={18}
-              color={PALETTE.forest}
-            />
-            <Text style={styles.guaranteeText}>
-              Recipients join with a random animal alias — zero real names,
-              genders, or flags shown
+      {errorMsg ? (
+        <View style={styles.errorBanner} accessibilityRole="alert">
+          <Text style={styles.bannerText}>{errorMsg}</Text>
+        </View>
+      ) : null}
+
+      {upsertInviteMutation.isPending && !invite ? (
+        <View style={styles.loadingWrap}>
+          <ActivityIndicator color={PIECES.ink} />
+          <Text style={styles.muted}>Making your invite...</Text>
+        </View>
+      ) : invite && !invite.isRevoked ? (
+        <>
+          <View style={styles.codeBlock}>
+            <Text style={styles.fieldLabel}>Code</Text>
+            <Text selectable style={styles.inviteCodeText}>
+              {invite.code}
             </Text>
+            <Text style={styles.metaStatsText}>
+              {invite.maxUses > 0
+                ? `${invite.usesCount} of ${invite.maxUses} uses`
+                : `${invite.usesCount} uses, no limit`}
+              . {formatExpiryLabel(invite)}.
+            </Text>
+            <Btn
+              label="Copy code"
+              icon="copy-outline"
+              kind="white"
+              onPress={() => handleCopyValue(invite.code, 'Canopy invite code')}
+            />
           </View>
 
-          {toastMsg ? (
-            <View style={styles.toastBanner}>
-              <Ionicons
-                name="checkmark-circle"
-                size={16}
-                color={PALETTE.forest}
-              />
-              <Text style={styles.toastText}>{toastMsg}</Text>
-            </View>
-          ) : null}
-
-          {errorMsg ? (
-            <View style={styles.errorBanner}>
-              <Ionicons name="alert-circle" size={16} color={PALETTE.danger} />
-              <Text style={styles.errorText}>{errorMsg}</Text>
-            </View>
-          ) : null}
-
-          {/* Invite Code + Web Link Card */}
-          <View style={styles.codeCard}>
-            {upsertInviteMutation.isPending && !invite ? (
-              <View style={styles.loadingWrap}>
-                <ActivityIndicator color={PALETTE.forest} />
-                <Text style={styles.loadingText}>
-                  Preparing blind invite link...
-                </Text>
-              </View>
-            ) : invite && !invite.isRevoked ? (
-              <>
-                <View style={styles.fieldGroup}>
-                  <View style={styles.fieldHeaderRow}>
-                    <Text style={styles.fieldLabel}>Invite Code</Text>
-                    <Text style={styles.metaStatsText}>
-                      {invite.maxUses > 0
-                        ? `${invite.usesCount}/${invite.maxUses} uses`
-                        : `${invite.usesCount} uses · Unlimited`}{' '}
-                      · {formatExpiryLabel(invite)}
-                    </Text>
-                  </View>
-                  <View style={styles.codeDisplayRow}>
-                    <Text selectable style={styles.inviteCodeText}>
-                      {invite.code}
-                    </Text>
-                    <Pressable
-                      accessibilityRole="button"
-                      accessibilityLabel="Copy invite code"
-                      onPress={() =>
-                        handleCopyValue(invite.code, 'Canopy Invite Code')
-                      }
-                      style={styles.copyIconBtn}
-                    >
-                      <Ionicons
-                        name="copy-outline"
-                        size={17}
-                        color={PALETTE.charcoal}
-                      />
-                      <Text style={styles.copyBtnLabel}>Copy</Text>
-                    </Pressable>
-                  </View>
-                </View>
-
-                <View style={styles.fieldGroup}>
-                  <Text style={styles.fieldLabel}>Web Invite Link</Text>
-                  <View style={styles.linkDisplayRow}>
-                    <Text
-                      selectable
-                      style={styles.webLinkText}
-                      numberOfLines={2}
-                    >
-                      {webInviteUrl}
-                    </Text>
-                    <Pressable
-                      accessibilityRole="button"
-                      accessibilityLabel="Copy web invite link"
-                      onPress={() =>
-                        handleCopyValue(webInviteUrl, 'Canopy Invite Link')
-                      }
-                      style={styles.copyIconBtn}
-                    >
-                      <Ionicons
-                        name="link-outline"
-                        size={17}
-                        color={PALETTE.charcoal}
-                      />
-                      <Text style={styles.copyBtnLabel}>Copy</Text>
-                    </Pressable>
-                  </View>
-                </View>
-
-                <Pressable
-                  accessibilityRole="button"
-                  accessibilityLabel="Share invite"
-                  disabled={busy}
-                  onPress={handleShare}
-                  style={[styles.sharePrimaryBtn, busy && styles.disabledBtn]}
-                >
-                  <Ionicons
-                    name="share-social-outline"
-                    size={18}
-                    color={PALETTE.charcoal}
-                  />
-                  <Text style={styles.sharePrimaryText}>Share Invite</Text>
-                </Pressable>
-              </>
-            ) : (
-              <View style={styles.revokedBox}>
-                <Ionicons
-                  name="ban-outline"
-                  size={22}
-                  color={PALETTE.muted}
-                />
-                <Text style={styles.revokedTitle}>
-                  {invite?.isRevoked
-                    ? 'Active invite revoked'
-                    : 'No active invite loaded'}
-                </Text>
-                <Text style={styles.revokedSub}>
-                  Tap Regenerate below to mint a fresh invite code for #
-                  {pod?.code ?? 'pod'}.
-                </Text>
-              </View>
-            )}
+          <View style={styles.linkBlock}>
+            <Text style={styles.fieldLabel}>Link</Text>
+            <Text selectable style={styles.webLinkText} numberOfLines={2}>
+              {webInviteUrl}
+            </Text>
+            <Btn
+              label="Copy link"
+              icon="link-outline"
+              kind="white"
+              onPress={() => handleCopyValue(webInviteUrl, 'Canopy invite link')}
+            />
           </View>
 
-          {/* Expiry & Max-Uses Pills */}
-          <View style={styles.controlsCard}>
-            <View style={styles.controlSection}>
-              <Text style={styles.controlLabel}>Expires After</Text>
-              <View style={styles.pillsRow}>
-                {EXPIRY_OPTIONS.map((opt) => {
-                  const selected = expiresInHours === opt.hours;
-                  return (
-                    <Pressable
-                      key={opt.label}
-                      accessibilityRole="button"
-                      accessibilityState={{ selected }}
-                      disabled={busy}
-                      onPress={() => handleSelectExpiry(opt.hours)}
-                      style={[styles.pillBtn, selected && styles.pillBtnActive]}
-                    >
-                      <Text
-                        style={[
-                          styles.pillText,
-                          selected && styles.pillTextActive,
-                        ]}
-                      >
-                        {opt.label}
-                      </Text>
-                    </Pressable>
-                  );
-                })}
-              </View>
-            </View>
+          <Btn
+            label="Share invite"
+            icon="share-social-outline"
+            kind="blue"
+            big
+            wide
+            disabled={busy}
+            onPress={handleShare}
+          />
+        </>
+      ) : (
+        <View style={styles.revokedBox}>
+          <Text style={styles.revokedTitle}>
+            {invite?.isRevoked ? 'That invite is cancelled' : 'No invite yet'}
+          </Text>
+          <Text style={styles.muted}>
+            Press New code to make a fresh invite for this room.
+          </Text>
+        </View>
+      )}
 
-            <View style={styles.controlSection}>
-              <Text style={styles.controlLabel}>Max Uses</Text>
-              <View style={styles.pillsRow}>
-                {MAX_USES_OPTIONS.map((opt) => {
-                  const selected = maxUses === opt.uses;
-                  return (
-                    <Pressable
-                      key={opt.label}
-                      accessibilityRole="button"
-                      accessibilityState={{ selected }}
-                      disabled={busy}
-                      onPress={() => handleSelectMaxUses(opt.uses)}
-                      style={[styles.pillBtn, selected && styles.pillBtnActive]}
-                    >
-                      <Text
-                        style={[
-                          styles.pillText,
-                          selected && styles.pillTextActive,
-                        ]}
-                      >
-                        {opt.label}
-                      </Text>
-                    </Pressable>
-                  );
-                })}
-              </View>
-            </View>
+      <View style={styles.controlSection}>
+        <Text style={styles.controlLabel}>Expires after</Text>
+        <View style={styles.pillsRow}>
+          {EXPIRY_OPTIONS.map((opt) => (
+            <Chip
+              key={opt.label}
+              label={opt.label}
+              active={expiresInHours === opt.hours}
+              onPress={() => handleSelectExpiry(opt.hours)}
+            />
+          ))}
+        </View>
+      </View>
 
-            {/* Regenerate + Revoke Actions */}
-            <View style={styles.manageActionsRow}>
-              <Pressable
-                accessibilityRole="button"
-                accessibilityLabel="Regenerate invite code"
-                disabled={busy || !podId}
-                onPress={() =>
-                  upsertInviteMutation.mutate({
-                    maxUses,
-                    expiresInHours,
-                    regenerate: true,
-                    toast: 'Regenerated new invite code!',
-                  })
-                }
-                style={[styles.regenerateBtn, busy && styles.disabledBtn]}
-              >
-                {upsertInviteMutation.isPending ? (
-                  <ActivityIndicator size="small" color={PALETTE.mint} />
-                ) : (
-                  <>
-                    <Ionicons
-                      name="refresh"
-                      size={16}
-                      color={PALETTE.mint}
-                    />
-                    <Text style={styles.regenerateText}>Regenerate</Text>
-                  </>
-                )}
-              </Pressable>
+      <View style={styles.controlSection}>
+        <Text style={styles.controlLabel}>Uses</Text>
+        <View style={styles.pillsRow}>
+          {MAX_USES_OPTIONS.map((opt) => (
+            <Chip
+              key={opt.label}
+              label={opt.label}
+              active={maxUses === opt.uses}
+              onPress={() => handleSelectMaxUses(opt.uses)}
+            />
+          ))}
+        </View>
+      </View>
 
-              <Pressable
-                accessibilityRole="button"
-                accessibilityLabel="Revoke invite code"
-                disabled={busy || !invite || invite.isRevoked}
-                onPress={() => {
-                  if (invite && !invite.isRevoked) {
-                    revokeMutation.mutate(invite.code);
-                  }
-                }}
-                style={[
-                  styles.revokeBtn,
-                  (busy || !invite || invite.isRevoked) && styles.disabledBtn,
-                ]}
-              >
-                <Ionicons
-                  name="trash-outline"
-                  size={16}
-                  color={PALETTE.danger}
-                />
-                <Text style={styles.revokeText}>Revoke</Text>
-              </Pressable>
-            </View>
-          </View>
-        </ScrollView>
-      </SafeAreaView>
-    </Modal>
+      <View style={styles.pillsRow}>
+        <Btn
+          label="New code"
+          icon="refresh"
+          kind="ink"
+          loading={upsertInviteMutation.isPending}
+          disabled={busy || !podId}
+          onPress={() =>
+            upsertInviteMutation.mutate({
+              maxUses,
+              expiresInHours,
+              regenerate: true,
+              toast: 'New code made.',
+            })
+          }
+          a11yLabel="Make a new invite code"
+        />
+        <Btn
+          label="Cancel invite"
+          kind="off"
+          disabled={busy || !invite || invite.isRevoked}
+          onPress={() => {
+            if (invite && !invite.isRevoked) {
+              revokeMutation.mutate(invite.code);
+            }
+          }}
+          a11yLabel="Cancel this invite"
+        />
+      </View>
+    </Sheet>
   );
 }
 
 const styles = StyleSheet.create({
-  safeArea: {
-    flex: 1,
-    backgroundColor: PALETTE.surface,
-  },
-  flex: {
-    flex: 1,
-  },
-  header: {
-    backgroundColor: PALETTE.charcoal,
-    paddingHorizontal: 16,
-    paddingVertical: 12,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    gap: 10,
-  },
-  headerTextCol: {
-    flex: 1,
-    gap: 2,
-  },
-  headerTitle: {
-    color: PALETTE.card,
-    fontSize: 17,
-    fontWeight: '700',
-    fontFamily: MONO_FONT,
-  },
-  headerSub: {
-    color: PALETTE.mint,
-    fontSize: 12,
-    fontWeight: '600',
-  },
-  closeBtn: {
-    width: TOUCH_MIN,
-    height: TOUCH_MIN,
-    borderRadius: 12,
-    alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: '#2a2d2a',
-  },
-  content: {
-    padding: 14,
-    gap: 12,
-    paddingBottom: 28,
-  },
-  guaranteeCard: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 10,
-    backgroundColor: PALETTE.mintSoft,
-    borderWidth: 1,
-    borderColor: PALETTE.mintBorder,
-    borderRadius: 14,
-    padding: 12,
-  },
-  guaranteeText: {
-    flex: 1,
-    fontSize: 13,
-    lineHeight: 18,
-    fontWeight: '600',
-    color: PALETTE.forest,
-  },
-  toastBanner: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-    backgroundColor: PALETTE.mintSoft,
-    borderWidth: 1,
-    borderColor: PALETTE.forest,
-    borderRadius: 12,
-    paddingHorizontal: 12,
-    paddingVertical: 9,
-  },
-  toastText: {
-    fontSize: 13,
-    fontWeight: '700',
-    color: PALETTE.forest,
-  },
+  toastBanner: { paddingHorizontal: 18, paddingVertical: 12, borderRadius: 22, backgroundColor: PIECE_HEX.mint },
   errorBanner: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-    backgroundColor: PALETTE.dangerSoft,
-    borderRadius: 12,
-    padding: 12,
+    paddingHorizontal: 18,
+    paddingVertical: 14,
+    backgroundColor: PIECES.off,
+    borderTopLeftRadius: 20,
+    borderTopRightRadius: 20,
+    borderBottomRightRadius: 20,
+    borderBottomLeftRadius: 0,
   },
-  errorText: {
-    flex: 1,
-    fontSize: 13,
-    fontWeight: '600',
-    color: PALETTE.danger,
-  },
-  codeCard: {
-    backgroundColor: PALETTE.card,
-    borderRadius: 16,
-    padding: 14,
-    borderWidth: 1,
-    borderColor: PALETTE.border,
-    gap: 12,
-  },
-  loadingWrap: {
-    paddingVertical: 22,
-    alignItems: 'center',
-    gap: 8,
-  },
-  loadingText: {
-    fontSize: 13,
-    color: PALETTE.muted,
-  },
-  fieldGroup: {
-    gap: 6,
-  },
-  fieldHeaderRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    flexWrap: 'wrap',
-    gap: 4,
-  },
-  fieldLabel: {
-    fontSize: 11,
-    fontWeight: '700',
-    color: PALETTE.muted,
-    textTransform: 'uppercase',
-    letterSpacing: 0.4,
-    fontFamily: MONO_FONT,
-  },
-  metaStatsText: {
-    fontSize: 11,
-    fontWeight: '600',
-    color: PALETTE.forest,
-    fontFamily: MONO_FONT,
-  },
-  codeDisplayRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    gap: 8,
-    backgroundColor: PALETTE.codeBg,
-    borderRadius: 12,
-    borderWidth: 1,
-    borderColor: PALETTE.borderStrong,
-    paddingLeft: 12,
-    paddingRight: 6,
-    paddingVertical: 6,
-  },
-  inviteCodeText: {
-    flex: 1,
-    fontSize: 18,
-    fontWeight: '700',
-    color: PALETTE.charcoal,
-    fontFamily: MONO_FONT,
-    letterSpacing: 0.6,
-  },
-  linkDisplayRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    gap: 8,
-    backgroundColor: PALETTE.surface,
-    borderRadius: 12,
-    borderWidth: 1,
-    borderColor: PALETTE.border,
-    paddingLeft: 12,
-    paddingRight: 6,
-    paddingVertical: 6,
-  },
-  webLinkText: {
-    flex: 1,
-    fontSize: 12,
-    color: PALETTE.ink,
-    fontFamily: MONO_FONT,
-  },
-  copyIconBtn: {
-    minHeight: TOUCH_MIN,
-    paddingHorizontal: 10,
-    borderRadius: 10,
-    backgroundColor: PALETTE.card,
-    borderWidth: 1,
-    borderColor: PALETTE.borderStrong,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 4,
-  },
-  copyBtnLabel: {
-    fontSize: 12,
-    fontWeight: '700',
-    color: PALETTE.charcoal,
-  },
-  sharePrimaryBtn: {
-    minHeight: TOUCH_MIN,
-    borderRadius: 12,
-    backgroundColor: PALETTE.mint,
-    borderWidth: 1.5,
-    borderColor: PALETTE.forest,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 8,
-    marginTop: 2,
-  },
-  sharePrimaryText: {
-    fontSize: 15,
-    fontWeight: '700',
-    color: PALETTE.charcoal,
-  },
-  revokedBox: {
-    paddingVertical: 18,
-    alignItems: 'center',
-    gap: 6,
-  },
-  revokedTitle: {
-    fontSize: 15,
-    fontWeight: '700',
-    color: PALETTE.charcoal,
-  },
-  revokedSub: {
-    fontSize: 13,
-    lineHeight: 18,
-    color: PALETTE.muted,
-    textAlign: 'center',
-  },
-  controlsCard: {
-    backgroundColor: PALETTE.card,
-    borderRadius: 16,
-    padding: 14,
-    borderWidth: 1,
-    borderColor: PALETTE.border,
-    gap: 14,
-  },
-  controlSection: {
-    gap: 6,
-  },
-  controlLabel: {
-    fontSize: 11,
-    fontWeight: '700',
-    color: PALETTE.ink,
-    textTransform: 'uppercase',
-    letterSpacing: 0.4,
-    fontFamily: MONO_FONT,
-  },
-  pillsRow: {
-    flexDirection: 'row',
-    gap: 8,
-  },
-  pillBtn: {
-    flex: 1,
-    minHeight: TOUCH_MIN,
-    borderRadius: 11,
-    backgroundColor: PALETTE.surface,
-    borderWidth: 1,
-    borderColor: PALETTE.border,
-    alignItems: 'center',
-    justifyContent: 'center',
-    paddingHorizontal: 8,
-  },
-  pillBtnActive: {
-    backgroundColor: PALETTE.mint,
-    borderColor: PALETTE.forest,
-  },
-  pillText: {
-    fontSize: 13,
-    fontWeight: '600',
-    color: PALETTE.ink,
-  },
-  pillTextActive: {
-    fontWeight: '700',
-    color: PALETTE.charcoal,
-  },
-  manageActionsRow: {
-    flexDirection: 'row',
-    gap: 8,
-    marginTop: 2,
-  },
-  regenerateBtn: {
-    flex: 1,
-    minHeight: TOUCH_MIN,
-    borderRadius: 12,
-    backgroundColor: PALETTE.charcoal,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 6,
-    paddingHorizontal: 14,
-  },
-  regenerateText: {
-    color: PALETTE.mint,
-    fontSize: 13,
-    fontWeight: '700',
-  },
-  revokeBtn: {
-    minHeight: TOUCH_MIN,
-    paddingHorizontal: 16,
-    borderRadius: 12,
-    backgroundColor: PALETTE.dangerSoft,
-    borderWidth: 1,
-    borderColor: '#f3c1bd',
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 5,
-  },
-  revokeText: {
-    color: PALETTE.danger,
-    fontSize: 13,
-    fontWeight: '700',
-  },
-  disabledBtn: {
-    opacity: 0.45,
-  },
+  bannerText: { fontSize: 15, fontWeight: '600', color: PIECES.ink },
+  muted: { fontSize: 14, lineHeight: 20, color: PIECES.muted },
+  loadingWrap: { flexDirection: 'row', alignItems: 'center', gap: 10, padding: 8 },
+  codeBlock: { backgroundColor: PIECE_HEX.cobalt, borderRadius: 24, padding: 16, gap: 8, alignItems: 'flex-start' },
+  linkBlock: { backgroundColor: PIECE_HEX.birch, borderRadius: 24, padding: 16, gap: 8, alignItems: 'flex-start' },
+  fieldLabel: { fontSize: 14, fontWeight: '600', color: PIECES.ink },
+  inviteCodeText: { fontSize: 26, fontFamily: MONO_FONT, color: PIECES.ink },
+  metaStatsText: { fontSize: 13, color: PIECES.ink2 },
+  webLinkText: { fontSize: 14, fontFamily: MONO_FONT, color: PIECES.ink },
+  revokedBox: { gap: 6, padding: 6 },
+  revokedTitle: { fontSize: 20, fontWeight: '600', color: PIECES.ink },
+  controlSection: { gap: 8 },
+  controlLabel: { fontSize: 15, fontWeight: '600', color: PIECES.ink },
+  pillsRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
 });

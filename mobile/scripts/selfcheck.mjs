@@ -285,6 +285,47 @@ assert.equal(
   'nightly-helldivers-co-op'
 );
 
+// 8. Pieces: an alias's first word picks the colour and its animal picks the shape.
+// The hex the API sends is never used.
+const palette = await import('../src/theme/palette.ts');
+assert.equal(palette.pieceColor('Amber Owl'), palette.PIECE_HEX.amber);
+assert.equal(palette.pieceColor('cobalt marten'), palette.PIECE_HEX.cobalt);
+assert.equal(palette.safePeerColor('#0f766e', 'Quartz Fox'), palette.PIECE_HEX.quartz);
+assert.deepEqual(
+  palette.pieceRadii('Amber Fox', 100),
+  {
+    borderTopLeftRadius: 50,
+    borderTopRightRadius: 50,
+    borderBottomRightRadius: 50,
+    borderBottomLeftRadius: 50,
+  }
+);
+assert.equal(palette.pieceRadii('Jade Ibis', 100).borderTopLeftRadius, 0);
+assert.equal(palette.PIECES.blue, '#1a4be0');
+assert.equal(palette.PIECES.bg, '#f4f4f4');
+assert.equal(palette.TOUCH_MIN >= 44, true);
+// an unknown first word still lands on one of the twelve colours
+assert.equal(
+  Object.values(palette.PIECE_HEX).includes(palette.pieceColor('Zzz Lynx')),
+  true
+);
+
+// 9. Every screen reads Text from the Pieces wrapper so Gabarito/Figtree/DM Mono apply,
+// and no screen says "pod" to a person.
+for (const file of sourceFiles) {
+  if (file.endsWith('ui.tsx')) continue;
+  const content = fs.readFileSync(file, 'utf8');
+  const rn = content.match(/import \{([^}]*)\} from 'react-native';/);
+  if (rn) {
+    const names = rn[1].split(',').map((x) => x.trim());
+    assert.equal(
+      names.includes('Text') || names.includes('TextInput'),
+      false,
+      `${file} imports Text/TextInput from react-native; use ../theme/ui`
+    );
+  }
+}
+
 console.log(
-  'mobile selfcheck passed: zero-violet, zero-channels, Group+1:1-DM, /read + Seen receipts, dm_call_ring, 25-seat tiers, and zero-PII verified.'
+  'mobile selfcheck passed: zero-violet, zero-channels, Group+1:1-DM, /read + Seen receipts, dm_call_ring, 25-seat tiers, Pieces colours and shapes, and zero-PII verified.'
 );

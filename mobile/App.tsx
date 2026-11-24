@@ -5,15 +5,17 @@ import {
   Platform,
   Pressable,
   StyleSheet,
-  Text,
   View,
+  useWindowDimensions,
 } from 'react-native';
+import { Text } from './src/theme/ui';
 import { Audio } from 'expo-av';
 import { StatusBar } from 'expo-status-bar';
 import { SafeAreaProvider, SafeAreaView } from 'react-native-safe-area-context';
 import { QueryClient, QueryClientProvider, useQuery } from '@tanstack/react-query';
 import { useAtom, useSetAtom } from 'jotai';
 import { Ionicons } from '@expo/vector-icons';
+import { useFonts } from 'expo-font';
 import {
   ApiError,
   clearStoredToken,
@@ -37,12 +39,9 @@ import {
   unreadGroupByPodAtom,
 } from './src/state/atoms';
 import type { MobileTabKey } from './src/types/canopy';
-import {
-  PALETTE,
-  TOUCH_MIN,
-  aliasInitials,
-  safePeerColor,
-} from './src/theme/palette';
+import { PIECES, TOUCH_MIN } from './src/theme/palette';
+import { FONT_MAP } from './src/theme/fonts';
+import { Logo, Piece } from './src/components/Pieces';
 import { AuthScreen } from './src/screens/AuthScreen';
 import { PodsHubScreen } from './src/screens/PodsHubScreen';
 import { PodChatScreen } from './src/screens/PodChatScreen';
@@ -59,48 +58,14 @@ const queryClient = new QueryClient({
   },
 });
 
-const MONO_FONT = Platform.select({
-  ios: 'Menlo',
-  android: 'monospace',
-  default: 'monospace',
-});
+const MONO_FONT = 'DMMono_500Medium';
 
-const TABS: ReadonlyArray<{
-  key: MobileTabKey;
-  label: string;
-  icon: keyof typeof Ionicons.glyphMap;
-  iconActive: keyof typeof Ionicons.glyphMap;
-}> = [
-  {
-    key: 'pods',
-    label: 'Pods',
-    icon: 'grid-outline',
-    iconActive: 'grid',
-  },
-  {
-    key: 'chat',
-    label: 'Chat',
-    icon: 'chatbubbles-outline',
-    iconActive: 'chatbubbles',
-  },
-  {
-    key: 'voice',
-    label: 'Voice',
-    icon: 'mic-outline',
-    iconActive: 'mic',
-  },
-  {
-    key: 'search',
-    label: 'Search',
-    icon: 'search-outline',
-    iconActive: 'search',
-  },
-  {
-    key: 'account',
-    label: 'Account',
-    icon: 'person-circle-outline',
-    iconActive: 'person-circle',
-  },
+const WIDE_MIN = 900;
+
+const TABS: ReadonlyArray<{ key: MobileTabKey; label: string }> = [
+  { key: 'pods', label: 'Rooms' },
+  { key: 'chat', label: 'Chat' },
+  { key: 'voice', label: 'People' },
 ];
 
 function AuthenticatedWorkspace() {
@@ -211,25 +176,43 @@ function AuthenticatedWorkspace() {
     setActiveDmCall(null);
   };
 
+  const { width } = useWindowDimensions();
+  // Tablets, iPads and phones turned sideways get three panes at once.
+  const wide = width >= WIDE_MIN;
+  const sideWidth = Math.max(260, Math.min(360, Math.round(width * 0.28)));
+  const podsList = podsQuery.data?.pods ?? [];
+  const activePodForPeople =
+    podsList.find((p) => p.podId === activePodId) ?? podsList[0] ?? null;
+  const unreadRooms =
+    Object.values(unreadGroupMap).reduce((a, b) => a + b, 0) +
+    Object.values(unreadDmMap).reduce((a, b) => a + b, 0);
+
+  const accountScreen = (
+    <AccountScreen
+      onLeaveVoiceOnLogout={() => {
+        if (voiceSession) {
+          sendFrame({ type: 'voice_leave' });
+        }
+        if (activeDmCall) {
+          sendFrame({ type: 'dm_call_end', peerId: activeDmCall.peerId });
+        }
+      }}
+    />
+  );
+
   return (
     <SafeAreaView style={styles.workspaceSafe} edges={['top', 'bottom']}>
-      <StatusBar style="light" backgroundColor={PALETTE.charcoal} />
+      <StatusBar style="dark" backgroundColor={PIECES.sheet} />
 
-      {/* Charcoal Brand Top Bar */}
+      {/* White sheet top bar: the six-piece wordmark, a live-call chip, Saved and Account */}
       <View style={styles.brandBar}>
-        <View style={styles.brandLeft}>
-          <View style={styles.mintSquare} />
-          <Text style={styles.brandWordmark}>Canopy</Text>
-          <View style={styles.blindChip}>
-            <Text style={styles.blindChipText}>BLIND PODS</Text>
-          </View>
-        </View>
+        <Logo size={26} />
 
         <View style={styles.topRightRow}>
           {activeDmCall && activeDmCall.phase !== 'incoming' ? (
             <Pressable
               accessibilityRole="button"
-              accessibilityLabel={`Return to private 1:1 call with ${activeDmCall.peerAlias}`}
+              accessibilityLabel={`Return to private call with ${activeDmCall.peerAlias}`}
               onPress={() => {
                 setActivePodId(activeDmCall.podId);
                 setActiveDmPeerMap((prev) => ({
@@ -240,34 +223,73 @@ function AuthenticatedWorkspace() {
               }}
               style={styles.liveVoiceChip}
             >
-              <Ionicons
-                name="lock-closed"
-                size={12}
-                color={PALETTE.charcoal}
-              />
+              <Ionicons name="lock-closed" size={12} color={PIECES.sheet} />
               <Text style={styles.liveVoiceChipText} numberOfLines={1}>
-                1:1 · {activeDmCall.peerAlias}
+                {activeDmCall.peerAlias}
               </Text>
             </Pressable>
           ) : voiceSession ? (
             <Pressable
               accessibilityRole="button"
-              accessibilityLabel="Return to active pod audio call"
+              accessibilityLabel="Return to the room call"
               onPress={() => setActiveTab('voice')}
               style={styles.liveVoiceChip}
             >
-              <Ionicons
-                name="volume-high"
-                size={13}
-                color={PALETTE.charcoal}
-              />
-              <Text style={styles.liveVoiceChipText}>In Call</Text>
+              <Ionicons name="volume-high" size={13} color={PIECES.sheet} />
+              <Text style={styles.liveVoiceChipText}>In the call</Text>
             </Pressable>
           ) : null}
+
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel="Search and saved"
+            accessibilityState={{ selected: activeTab === 'search' }}
+            onPress={() => setActiveTab(activeTab === 'search' ? 'chat' : 'search')}
+            style={[styles.roundBtn, activeTab === 'search' && styles.roundBtnOn]}
+          >
+            <Ionicons
+              name="search"
+              size={20}
+              color={activeTab === 'search' ? PIECES.sheet : PIECES.ink}
+            />
+          </Pressable>
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel="Account"
+            accessibilityState={{ selected: activeTab === 'account' }}
+            onPress={() => setActiveTab(activeTab === 'account' ? 'pods' : 'account')}
+            style={[styles.roundBtn, activeTab === 'account' && styles.roundBtnOn]}
+          >
+            <Ionicons
+              name="person"
+              size={20}
+              color={activeTab === 'account' ? PIECES.sheet : PIECES.ink}
+            />
+          </Pressable>
         </View>
       </View>
 
-      {/* Active Screen Viewport */}
+      {/* Active screen sits on the grey table */}
+      {wide ? (
+        <View style={styles.panes}>
+          <View style={[styles.paneRooms, { width: sideWidth }]}>
+            <PodsHubScreen />
+          </View>
+          <View style={styles.paneChat}>
+            {activeTab === 'search' ? (
+              <SearchSavedScreen />
+            ) : activeTab === 'account' ? (
+              accountScreen
+            ) : (
+              <PodChatScreen sendFrame={sendFrame} />
+            )}
+          </View>
+          <View style={[styles.panePeople, { width: sideWidth }]}>
+            <VoiceLoungeScreen sendFrame={sendFrame} />
+          </View>
+        </View>
+      ) : (
+      <View style={styles.column}>
       <View style={styles.screenArea}>
         {activeTab === 'pods' ? <PodsHubScreen /> : null}
         {activeTab === 'chat' ? <PodChatScreen sendFrame={sendFrame} /> : null}
@@ -275,67 +297,61 @@ function AuthenticatedWorkspace() {
           <VoiceLoungeScreen sendFrame={sendFrame} />
         ) : null}
         {activeTab === 'search' ? <SearchSavedScreen /> : null}
-        {activeTab === 'account' ? (
-          <AccountScreen
-            onLeaveVoiceOnLogout={() => {
-              if (voiceSession) {
-                sendFrame({ type: 'voice_leave' });
-              }
-              if (activeDmCall) {
-                sendFrame({
-                  type: 'dm_call_end',
-                  peerId: activeDmCall.peerId,
-                });
-              }
-            }}
-          />
-        ) : null}
+        {activeTab === 'account' ? accountScreen : null}
       </View>
 
-      {/* 5-Tab Tactile Bottom Navigation Bar */}
+      {/* Three pills: Rooms, Chat, People */}
+      {wide ? null : (
       <View style={styles.tabBar}>
         {TABS.map((tab) => {
           const selected = activeTab === tab.key;
-          const showLiveDot =
+          const count =
+            tab.key === 'pods'
+              ? podsList.length
+              : tab.key === 'voice'
+              ? activePodForPeople?.memberCount ?? 0
+              : 0;
+          const showDot =
             (tab.key === 'voice' && !!voiceSession) ||
             (tab.key === 'chat' && (hasUnreadChat || !!activeDmCall));
-
           return (
             <Pressable
               key={tab.key}
               accessibilityRole="tab"
-              accessibilityLabel={tab.label}
+              accessibilityLabel={
+                count > 0 ? `${tab.label}, ${count}` : tab.label
+              }
               accessibilityState={{ selected }}
               onPress={() => setActiveTab(tab.key)}
-              style={styles.tabBtn}
+              style={[styles.tabBtn, selected && styles.tabBtnActive]}
             >
-              <View
-                style={[
-                  styles.tabIconPill,
-                  selected && styles.tabIconPillActive,
-                ]}
-              >
-                <Ionicons
-                  name={selected ? tab.iconActive : tab.icon}
-                  size={20}
-                  color={selected ? PALETTE.charcoal : PALETTE.muted}
-                />
-                {showLiveDot ? <View style={styles.tabLiveDot} /> : null}
-              </View>
-              <Text
-                style={[
-                  styles.tabLabel,
-                  selected && styles.tabLabelActive,
-                ]}
-              >
+              <Text style={[styles.tabLabel, selected && styles.tabLabelActive]}>
                 {tab.label}
               </Text>
+              {count > 0 ? (
+                <View style={[styles.tabBadge, selected && styles.tabBadgeOn]}>
+                  <Text
+                    style={[styles.tabBadgeText, selected && styles.tabBadgeTextOn]}
+                  >
+                    {tab.key === 'chat' ? unreadRooms : count}
+                  </Text>
+                </View>
+              ) : null}
+              {tab.key === 'chat' && showDot && unreadRooms === 0 ? (
+                <View style={[styles.tabLiveDot, selected && { backgroundColor: PIECES.sheet }]} />
+              ) : null}
+              {tab.key === 'voice' && showDot ? (
+                <View style={[styles.tabLiveDot, selected && { backgroundColor: PIECES.sheet }]} />
+              ) : null}
             </Pressable>
           );
         })}
       </View>
+      )}
+      </View>
+      )}
 
-      {/* Incoming Private 1:1 Member Call Modal (anywhere in active pod) */}
+      {/* Incoming private call: a coral piece card on the grey table */}
       <Modal
         visible={activeDmCall?.phase === 'incoming'}
         transparent
@@ -344,55 +360,34 @@ function AuthenticatedWorkspace() {
       >
         <View style={styles.incomingBackdrop}>
           <View style={styles.incomingCard}>
-            <View style={styles.incomingBadge}>
-              <Ionicons name="lock-closed" size={12} color={PALETTE.forest} />
-              <Text style={styles.incomingBadgeText}>
-                PRIVATE 1:1 MEMBER CALL
-              </Text>
-            </View>
-
-            <View
-              style={[
-                styles.incomingAvatar,
-                {
-                  backgroundColor: safePeerColor(
-                    activeDmCall?.peerColor,
-                    activeDmCall?.peerAlias ?? ''
-                  ),
-                },
-              ]}
-            >
-              <Text style={styles.incomingInitials}>
-                {aliasInitials(activeDmCall?.peerAlias ?? 'Peer')}
-              </Text>
-            </View>
-
+            <Text style={styles.incomingBadgeText}>Private call</Text>
+            <Piece alias={activeDmCall?.peerAlias ?? 'Slate Owl'} size={72} />
             <Text style={styles.incomingTitle}>
-              {activeDmCall?.peerAlias ?? 'Pod Peer'} is calling you
+              {activeDmCall?.peerAlias ?? 'Someone in the room'} is calling
             </Text>
             <Text style={styles.incomingSub}>
-              Hidden from all other pod members · Peer-blind 1-on-1 audio
+              Only the two of you hear this. Nobody else in the room sees it.
             </Text>
 
             <View style={styles.incomingBtnRow}>
               <Pressable
                 accessibilityRole="button"
-                accessibilityLabel="Decline incoming private call"
+                accessibilityLabel="Decline the private call"
                 onPress={handleDeclineIncomingDmCall}
                 style={styles.declineCallBtn}
               >
-                <Ionicons name="close" size={18} color={PALETTE.card} />
+                <Ionicons name="close" size={18} color={PIECES.ink} />
                 <Text style={styles.declineCallText}>Decline</Text>
               </Pressable>
 
               <Pressable
                 accessibilityRole="button"
-                accessibilityLabel="Accept incoming private call"
+                accessibilityLabel="Accept the private call"
                 onPress={handleAcceptIncomingDmCall}
                 style={styles.acceptCallBtn}
               >
-                <Ionicons name="call" size={18} color={PALETTE.charcoal} />
-                <Text style={styles.acceptCallText}>Accept</Text>
+                <Ionicons name="call" size={18} color={PIECES.sheet} />
+                <Text style={styles.acceptCallText}>Answer</Text>
               </Pressable>
             </View>
           </View>
@@ -447,8 +442,9 @@ function RootBootGate() {
     return (
       <SafeAreaView style={styles.bootCenter}>
         <StatusBar style="dark" />
-        <ActivityIndicator size="large" color={PALETTE.forest} />
-        <Text style={styles.bootText}>Restoring Canopy session...</Text>
+        <Logo size={30} />
+        <ActivityIndicator size="small" color={PIECES.ink} />
+        <Text style={styles.bootText}>Finding your rooms...</Text>
       </SafeAreaView>
     );
   }
@@ -466,6 +462,8 @@ function RootBootGate() {
 }
 
 export default function App() {
+  const [fontsLoaded] = useFonts(FONT_MAP);
+  if (!fontsLoaded) return null;
   return (
     <SafeAreaProvider>
       <QueryClientProvider client={queryClient}>
@@ -478,134 +476,135 @@ export default function App() {
 const styles = StyleSheet.create({
   bootCenter: {
     flex: 1,
-    backgroundColor: PALETTE.surface,
+    backgroundColor: PIECES.bg,
     alignItems: 'center',
     justifyContent: 'center',
-    gap: 10,
+    gap: 14,
   },
   bootText: {
-    fontSize: 14,
-    color: PALETTE.muted,
-    fontWeight: '600',
+    fontSize: 15,
+    color: PIECES.muted,
   },
   workspaceSafe: {
     flex: 1,
-    backgroundColor: PALETTE.charcoal,
+    backgroundColor: PIECES.bg,
   },
   brandBar: {
-    backgroundColor: PALETTE.charcoal,
-    paddingHorizontal: 14,
+    backgroundColor: PIECES.sheet,
+    paddingHorizontal: 16,
     paddingVertical: 10,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
+    gap: 8,
     borderBottomWidth: 1,
-    borderBottomColor: '#2a2e2a',
-    gap: 8,
-  },
-  brandLeft: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
+    borderBottomColor: PIECES.hair,
   },
   topRightRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 6,
+    gap: 8,
     flexShrink: 1,
   },
-  mintSquare: {
-    width: 12,
-    height: 12,
-    borderRadius: 3,
-    backgroundColor: PALETTE.mint,
+  roundBtn: {
+    width: TOUCH_MIN,
+    height: TOUCH_MIN,
+    borderRadius: TOUCH_MIN / 2,
+    backgroundColor: PIECES.bg,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
-  brandWordmark: {
-    color: PALETTE.card,
-    fontSize: 18,
-    fontWeight: '800',
-    letterSpacing: -0.3,
-  },
-  blindChip: {
-    backgroundColor: '#292d29',
-    paddingHorizontal: 7,
-    paddingVertical: 2,
-    borderRadius: 5,
-    borderWidth: 1,
-    borderColor: '#3a403a',
-  },
-  blindChipText: {
-    color: PALETTE.mint,
-    fontSize: 10,
-    fontWeight: '700',
-    fontFamily: MONO_FONT,
+  roundBtnOn: {
+    backgroundColor: PIECES.ink,
   },
   liveVoiceChip: {
-    minHeight: 36,
+    minHeight: TOUCH_MIN,
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 5,
-    backgroundColor: PALETTE.mint,
-    paddingHorizontal: 10,
-    borderRadius: 999,
+    gap: 6,
+    backgroundColor: PIECES.blue,
+    paddingHorizontal: 16,
+    borderRadius: 22,
     maxWidth: 160,
   },
   liveVoiceChipText: {
-    color: PALETTE.charcoal,
-    fontSize: 12,
-    fontWeight: '700',
+    color: PIECES.sheet,
+    fontSize: 14,
+    fontWeight: '600',
   },
   screenArea: {
     flex: 1,
-    backgroundColor: PALETTE.surface,
+    backgroundColor: PIECES.bg,
   },
+  column: { flex: 1, width: '100%', maxWidth: 680, alignSelf: 'center' },
+  panes: {
+    flex: 1,
+    flexDirection: 'row',
+    gap: 12,
+    padding: 12,
+    backgroundColor: PIECES.bg,
+  },
+  paneRooms: { borderRadius: 28, overflow: 'hidden' },
+  paneChat: { flex: 1, minWidth: 0, borderRadius: 28, overflow: 'hidden' },
+  panePeople: { borderRadius: 28, overflow: 'hidden' },
   tabBar: {
     flexDirection: 'row',
-    backgroundColor: PALETTE.card,
-    borderTopWidth: 1,
-    borderTopColor: PALETTE.border,
-    paddingVertical: 4,
-    paddingHorizontal: 4,
+    gap: 8,
+    backgroundColor: PIECES.bg,
+    paddingTop: 6,
+    paddingBottom: 8,
+    paddingHorizontal: 12,
   },
   tabBtn: {
     flex: 1,
-    minHeight: TOUCH_MIN + 8,
+    minHeight: 52,
+    flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
-    gap: 2,
+    gap: 8,
+    borderRadius: 26,
+    backgroundColor: PIECES.sheet,
   },
-  tabIconPill: {
-    width: 46,
-    height: 30,
-    borderRadius: 15,
-    alignItems: 'center',
-    justifyContent: 'center',
-    position: 'relative',
-  },
-  tabIconPillActive: {
-    backgroundColor: PALETTE.mint,
-  },
-  tabLiveDot: {
-    position: 'absolute',
-    top: 4,
-    right: 8,
-    width: 7,
-    height: 7,
-    borderRadius: 4,
-    backgroundColor: PALETTE.forest,
+  tabBtnActive: {
+    backgroundColor: PIECES.blue,
   },
   tabLabel: {
-    fontSize: 11,
+    fontSize: 16,
     fontWeight: '600',
-    color: PALETTE.muted,
+    color: PIECES.ink,
   },
   tabLabelActive: {
-    color: PALETTE.charcoal,
+    color: PIECES.sheet,
+  },
+  tabBadge: {
+    minWidth: 24,
+    height: 24,
+    paddingHorizontal: 6,
+    borderRadius: 12,
+    backgroundColor: PIECES.blue,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  tabBadgeOn: {
+    backgroundColor: PIECES.sheet,
+  },
+  tabBadgeText: {
+    fontSize: 13,
     fontWeight: '700',
+    color: PIECES.sheet,
+  },
+  tabBadgeTextOn: {
+    color: PIECES.blue,
+  },
+  tabLiveDot: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+    backgroundColor: PIECES.blue,
   },
   incomingBackdrop: {
     flex: 1,
-    backgroundColor: 'rgba(25, 27, 25, 0.68)',
+    backgroundColor: 'rgba(17, 17, 17, 0.55)',
     alignItems: 'center',
     justifyContent: 'center',
     padding: 20,
@@ -613,94 +612,62 @@ const styles = StyleSheet.create({
   incomingCard: {
     width: '100%',
     maxWidth: 360,
-    backgroundColor: PALETTE.card,
-    borderRadius: 20,
-    padding: 20,
-    borderWidth: 1.5,
-    borderColor: PALETTE.mintBorder,
+    backgroundColor: PIECES.sheet,
+    borderRadius: 28,
+    padding: 24,
     alignItems: 'center',
-    gap: 10,
-  },
-  incomingBadge: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 5,
-    backgroundColor: PALETTE.mintSoft,
-    borderWidth: 1,
-    borderColor: PALETTE.mintBorder,
-    paddingHorizontal: 10,
-    paddingVertical: 4,
-    borderRadius: 999,
+    gap: 12,
   },
   incomingBadgeText: {
-    fontSize: 10,
-    fontWeight: '800',
-    color: PALETTE.forest,
-    fontFamily: MONO_FONT,
-    letterSpacing: 0.5,
-  },
-  incomingAvatar: {
-    width: 60,
-    height: 60,
-    borderRadius: 30,
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginTop: 4,
-  },
-  incomingInitials: {
-    fontSize: 20,
-    fontWeight: '700',
-    color: PALETTE.card,
+    fontSize: 13,
+    color: PIECES.muted,
     fontFamily: MONO_FONT,
   },
   incomingTitle: {
-    fontSize: 18,
-    fontWeight: '700',
-    color: PALETTE.charcoal,
+    fontSize: 22,
+    color: PIECES.ink,
     textAlign: 'center',
   },
   incomingSub: {
-    fontSize: 13,
-    lineHeight: 18,
-    color: PALETTE.muted,
+    fontSize: 15,
+    lineHeight: 21,
+    color: PIECES.muted,
     textAlign: 'center',
   },
   incomingBtnRow: {
     flexDirection: 'row',
     gap: 10,
     width: '100%',
-    marginTop: 6,
+    marginTop: 8,
   },
   declineCallBtn: {
     flex: 1,
-    minHeight: 48,
-    borderRadius: 12,
-    backgroundColor: PALETTE.danger,
+    minHeight: 52,
+    borderRadius: 26,
+    backgroundColor: PIECES.bg,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
     gap: 6,
   },
   declineCallText: {
-    fontSize: 14,
-    fontWeight: '700',
-    color: PALETTE.card,
+    fontSize: 16,
+    fontWeight: '600',
+    color: PIECES.ink,
   },
   acceptCallBtn: {
     flex: 1,
-    minHeight: 48,
-    borderRadius: 12,
-    backgroundColor: PALETTE.mint,
-    borderWidth: 1.5,
-    borderColor: PALETTE.forest,
+    minHeight: 52,
+    borderRadius: 26,
+    backgroundColor: PIECES.blue,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
     gap: 6,
   },
   acceptCallText: {
-    fontSize: 14,
-    fontWeight: '700',
-    color: PALETTE.charcoal,
+    fontSize: 16,
+    fontWeight: '600',
+    color: PIECES.sheet,
   },
 });

@@ -6,10 +6,9 @@ import {
   Pressable,
   ScrollView,
   StyleSheet,
-  Text,
-  TextInput,
   View,
 } from 'react-native';
+import { Text, TextInput } from '../theme/ui';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useAtom, useSetAtom } from 'jotai';
 import { Ionicons } from '@expo/vector-icons';
@@ -22,7 +21,8 @@ import {
   setStoredToken,
 } from '../api/client';
 import { apiBaseUrlAtom, authTokenAtom, authUserAtom } from '../state/atoms';
-import { PALETTE, TOUCH_MIN } from '../theme/palette';
+import { PALETTE, PIECES, TOUCH_MIN } from '../theme/palette';
+import { Logo } from '../components/Pieces';
 
 export const GENDER_OPTIONS = [
   'Female',
@@ -49,11 +49,7 @@ export const NATIONALITY_CHIPS: ReadonlyArray<{
   { code: 'ZZ', label: 'OTHER' },
 ];
 
-const MONO_FONT = Platform.select({
-  ios: 'Menlo',
-  android: 'monospace',
-  default: 'monospace',
-});
+const MONO_FONT = 'DMMono_500Medium';
 
 export function AuthScreen() {
   const [mode, setMode] = useState<'login' | 'register'>('login');
@@ -130,6 +126,8 @@ export function AuthScreen() {
     }
   };
 
+  const registering = mode === 'register';
+
   return (
     <SafeAreaView style={styles.safe} edges={['top', 'bottom']}>
       <KeyboardAvoidingView
@@ -140,96 +138,60 @@ export function AuthScreen() {
           contentContainerStyle={styles.scrollContent}
           keyboardShouldPersistTaps="handled"
         >
-          {/* Brand Tile Header */}
-          <View style={styles.heroCard}>
-            <View style={styles.brandRow}>
-              <View style={styles.mintDot} />
-              <Text style={styles.brandTag}>CANOPY MOBILE · PEER-BLIND PODS</Text>
-            </View>
-            <Text style={styles.heroTitle}>
-              Interest rooms where nobody sees your real name.
-            </Text>
-            <Text style={styles.heroSubtitle}>
-              Join 25-member democratic pods — Compact (10), Standard (25), or
-              Club (50) — with YES/NO governance votes, Slack threads, voice
-              notes, and persistent voice lounges.
-            </Text>
-          </View>
-
-          {/* Segmented Mode Control */}
-          <View style={styles.segmentedBar}>
+          <View style={styles.logoRow}>
+            <Logo size={28} />
             <Pressable
-              accessibilityRole="tab"
-              accessibilityState={{ selected: mode === 'login' }}
+              accessibilityRole="button"
+              accessibilityLabel={registering ? 'Go to sign in' : 'Go to make an account'}
               onPress={() => {
-                setMode('login');
+                setMode(registering ? 'login' : 'register');
                 setErrorMsg(null);
               }}
-              style={[
-                styles.segmentBtn,
-                mode === 'login' && styles.segmentBtnActive,
-              ]}
+              style={styles.swapBtn}
             >
-              <Text
-                style={[
-                  styles.segmentText,
-                  mode === 'login' && styles.segmentTextActive,
-                ]}
-              >
-                Sign In
-              </Text>
-            </Pressable>
-            <Pressable
-              accessibilityRole="tab"
-              accessibilityState={{ selected: mode === 'register' }}
-              onPress={() => {
-                setMode('register');
-                setErrorMsg(null);
-              }}
-              style={[
-                styles.segmentBtn,
-                mode === 'register' && styles.segmentBtnActive,
-              ]}
-            >
-              <Text
-                style={[
-                  styles.segmentText,
-                  mode === 'register' && styles.segmentTextActive,
-                ]}
-              >
-                Create Account
+              <Text style={styles.swapBtnText}>
+                {registering ? 'Sign in' : 'Make an account'}
               </Text>
             </Pressable>
           </View>
 
-          {/* Main Auth Form Card */}
-          <View style={styles.formCard}>
-            {mode === 'register' ? (
-              <View style={styles.guaranteeCard}>
-                <View style={styles.guaranteeHeader}>
-                  <Ionicons
-                    name="shield-checkmark"
-                    size={18}
-                    color={PALETTE.forest}
-                  />
-                  <Text style={styles.guaranteeTitle}>Blind Pod Guarantee</Text>
-                </View>
-                <Text style={styles.guaranteeBody}>
-                  Stored privately for account verification only — rooms only
-                  show random animal aliases (like Cobalt Fox or Mint Owl).
-                </Text>
+          <View style={styles.sheet}>
+            <Text style={styles.title}>
+              {registering ? 'Make an account' : 'Sign in'}
+            </Text>
+            <Text style={styles.lead}>
+              {registering
+                ? 'The dark blocks stay in your account. Every room you join deals you a new coloured one.'
+                : 'Your rooms, votes and private chats are where you left them.'}
+            </Text>
+
+            {registering ? (
+              <View style={styles.privateRow}>
+                {['Full name', 'Email', 'Gender', 'Nationality'].map((k) => (
+                  <View key={k} style={styles.privateBlock}>
+                    <Text style={styles.privateName}>{k}</Text>
+                    <Text style={styles.privateNote}>Account only</Text>
+                  </View>
+                ))}
               </View>
             ) : null}
 
-            {mode === 'register' ? (
+            {errorMsg ? (
+              <View style={styles.errorBox} accessibilityRole="alert">
+                <Text style={styles.errorText}>{errorMsg}</Text>
+              </View>
+            ) : null}
+
+            {registering ? (
               <View style={styles.fieldGroup}>
-                <Text style={styles.label}>Full Name (Private)</Text>
+                <Text style={styles.label}>Full name</Text>
                 <TextInput
                   value={fullName}
                   onChangeText={setFullName}
                   placeholder="Aarav Sharma"
                   placeholderTextColor={PALETTE.muted}
                   autoCapitalize="words"
+                  accessibilityLabel="Full name"
                   style={styles.input}
                 />
               </View>
@@ -245,6 +207,7 @@ export function AuthScreen() {
                 keyboardType="email-address"
                 autoCapitalize="none"
                 autoCorrect={false}
+                accessibilityLabel="Email"
                 style={styles.input}
               />
             </View>
@@ -254,18 +217,19 @@ export function AuthScreen() {
               <TextInput
                 value={password}
                 onChangeText={setPassword}
-                placeholder="Minimum 6 characters"
+                placeholder={registering ? 'Six characters or more' : ''}
                 placeholderTextColor={PALETTE.muted}
                 secureTextEntry
                 autoCapitalize="none"
+                accessibilityLabel="Password"
                 style={styles.input}
               />
             </View>
 
-            {mode === 'register' ? (
+            {registering ? (
               <>
                 <View style={styles.fieldGroup}>
-                  <Text style={styles.label}>Gender (Private)</Text>
+                  <Text style={styles.label}>Gender</Text>
                   <View style={styles.pillsWrap}>
                     {GENDER_OPTIONS.map((opt) => {
                       const active = gender === opt;
@@ -292,7 +256,7 @@ export function AuthScreen() {
                 </View>
 
                 <View style={styles.fieldGroup}>
-                  <Text style={styles.label}>Nationality ISO-2 (Private)</Text>
+                  <Text style={styles.label}>Nationality</Text>
                   <View style={styles.pillsWrap}>
                     {NATIONALITY_CHIPS.map((chip) => {
                       const active = nationalityCode === chip.code;
@@ -302,10 +266,7 @@ export function AuthScreen() {
                           accessibilityRole="button"
                           accessibilityState={{ selected: active }}
                           onPress={() => setNationalityCode(chip.code)}
-                          style={[
-                            styles.isoChip,
-                            active && styles.pillActive,
-                          ]}
+                          style={[styles.isoChip, active && styles.pillActive]}
                         >
                           <Text
                             style={[
@@ -323,22 +284,9 @@ export function AuthScreen() {
               </>
             ) : null}
 
-            {errorMsg ? (
-              <View style={styles.errorBox}>
-                <Ionicons
-                  name="alert-circle"
-                  size={16}
-                  color={PALETTE.danger}
-                />
-                <Text style={styles.errorText}>{errorMsg}</Text>
-              </View>
-            ) : null}
-
             <Pressable
               accessibilityRole="button"
-              accessibilityLabel={
-                mode === 'login' ? 'Sign In' : 'Create Account'
-              }
+              accessibilityLabel={registering ? 'Make an account' : 'Sign in'}
               disabled={submitting}
               onPress={handleSubmit}
               style={({ pressed }) => [
@@ -347,46 +295,39 @@ export function AuthScreen() {
               ]}
             >
               {submitting ? (
-                <ActivityIndicator color={PALETTE.charcoal} />
+                <ActivityIndicator color={PALETTE.card} />
               ) : (
                 <Text style={styles.primaryBtnText}>
-                  {mode === 'login' ? 'Sign In to Pods' : 'Create Blind Account'}
+                  {registering ? 'Make an account' : 'Sign in'}
                 </Text>
               )}
             </Pressable>
           </View>
 
-          {/* Collapsible Server URL Setting */}
+          {/* Server URL: collapsed by default, for phones on Wi-Fi */}
           <View style={styles.serverCard}>
             <Pressable
               accessibilityRole="button"
-              accessibilityLabel="Toggle Server URL settings"
+              accessibilityLabel="Toggle server address"
               onPress={() => setServerSectionOpen((prev) => !prev)}
               style={styles.serverHeaderBtn}
             >
-              <View style={styles.serverHeaderLeft}>
-                <Ionicons
-                  name="server-outline"
-                  size={16}
-                  color={PALETTE.forest}
-                />
-                <Text style={styles.serverTitle}>
-                  Server URL · {apiBaseUrl}
-                </Text>
-              </View>
+              <Text style={styles.serverTitle} numberOfLines={1}>
+                Server · {apiBaseUrl}
+              </Text>
               <Ionicons
                 name={serverSectionOpen ? 'chevron-up' : 'chevron-down'}
                 size={18}
-                color={PALETTE.muted}
+                color={PALETTE.ink}
               />
             </Pressable>
 
             {serverSectionOpen ? (
               <View style={styles.serverBody}>
                 <Text style={styles.serverHint}>
-                  Default: {getDefaultApiBaseUrl()} (Android Emulator uses
-                  10.0.2.2:8090; physical Wi-Fi phones can enter your LAN IP,
-                  e.g. http://192.168.1.20:8090).
+                  Default: {getDefaultApiBaseUrl()}. The Android emulator uses
+                  10.0.2.2:8090; a phone on Wi-Fi needs your computer's address,
+                  like http://192.168.1.20:8090.
                 </Text>
                 <TextInput
                   value={serverDraft}
@@ -395,7 +336,8 @@ export function AuthScreen() {
                   placeholderTextColor={PALETTE.muted}
                   autoCapitalize="none"
                   autoCorrect={false}
-                  style={styles.serverInput}
+                  accessibilityLabel="Server address"
+                  style={styles.input}
                 />
                 <View style={styles.serverActionsRow}>
                   <Pressable
@@ -403,14 +345,14 @@ export function AuthScreen() {
                     onPress={handleSaveServerUrl}
                     style={styles.saveUrlBtn}
                   >
-                    <Text style={styles.saveUrlBtnText}>Save URL</Text>
+                    <Text style={styles.saveUrlBtnText}>Save</Text>
                   </Pressable>
                   <Pressable
                     accessibilityRole="button"
                     onPress={handleResetServerUrl}
                     style={styles.resetUrlBtn}
                   >
-                    <Text style={styles.resetUrlBtnText}>Reset Default</Text>
+                    <Text style={styles.resetUrlBtnText}>Reset</Text>
                   </Pressable>
                 </View>
                 {serverSavedBanner ? (
@@ -426,294 +368,126 @@ export function AuthScreen() {
 }
 
 const styles = StyleSheet.create({
-  safe: {
-    flex: 1,
-    backgroundColor: PALETTE.surface,
-  },
-  flex: {
-    flex: 1,
-  },
-  scrollContent: {
-    padding: 16,
-    gap: 14,
-  },
-  heroCard: {
-    backgroundColor: PALETTE.charcoal,
-    borderRadius: 18,
-    padding: 18,
-    gap: 8,
-  },
-  brandRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-  },
-  mintDot: {
-    width: 10,
-    height: 10,
-    borderRadius: 5,
-    backgroundColor: PALETTE.mint,
-  },
-  brandTag: {
-    color: PALETTE.mint,
-    fontSize: 11,
-    fontWeight: '700',
-    letterSpacing: 0.8,
-    fontFamily: MONO_FONT,
-  },
-  heroTitle: {
-    color: PALETTE.card,
-    fontSize: 22,
-    lineHeight: 28,
-    fontWeight: '700',
-  },
-  heroSubtitle: {
-    color: '#c9cfc9',
-    fontSize: 13,
-    lineHeight: 19,
-  },
-  segmentedBar: {
-    flexDirection: 'row',
-    backgroundColor: PALETTE.surfaceMuted,
-    borderRadius: 14,
-    padding: 4,
-    borderWidth: 1,
-    borderColor: PALETTE.border,
-  },
-  segmentBtn: {
-    flex: 1,
-    minHeight: TOUCH_MIN,
-    borderRadius: 10,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  segmentBtnActive: {
-    backgroundColor: PALETTE.card,
-    borderWidth: 1,
-    borderColor: PALETTE.borderStrong,
-  },
-  segmentText: {
-    fontSize: 14,
-    fontWeight: '600',
-    color: PALETTE.muted,
-  },
-  segmentTextActive: {
-    color: PALETTE.charcoal,
-    fontWeight: '700',
-  },
-  formCard: {
-    backgroundColor: PALETTE.card,
-    borderRadius: 16,
-    padding: 16,
-    borderWidth: 1,
-    borderColor: PALETTE.border,
-    gap: 14,
-  },
-  guaranteeCard: {
-    backgroundColor: PALETTE.mintSoft,
-    borderWidth: 1,
-    borderColor: PALETTE.mintBorder,
-    borderRadius: 12,
-    padding: 12,
-    gap: 4,
-  },
-  guaranteeHeader: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-  },
-  guaranteeTitle: {
-    fontSize: 13,
-    fontWeight: '700',
-    color: PALETTE.forest,
-  },
-  guaranteeBody: {
-    fontSize: 12,
-    lineHeight: 18,
-    color: PALETTE.ink,
-  },
-  fieldGroup: {
-    gap: 6,
-  },
-  label: {
-    fontSize: 13,
-    fontWeight: '700',
-    color: PALETTE.ink,
-  },
-  input: {
-    minHeight: TOUCH_MIN,
-    borderRadius: 12,
-    borderWidth: 1,
-    borderColor: PALETTE.borderStrong,
-    backgroundColor: PALETTE.surface,
-    paddingHorizontal: 14,
-    fontSize: 15,
-    color: PALETTE.ink,
-  },
-  pillsWrap: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 8,
-  },
-  pill: {
-    minHeight: TOUCH_MIN,
-    paddingHorizontal: 14,
-    borderRadius: 12,
-    backgroundColor: PALETTE.surface,
-    borderWidth: 1,
-    borderColor: PALETTE.border,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  isoChip: {
-    minHeight: TOUCH_MIN,
-    minWidth: 54,
-    paddingHorizontal: 12,
-    borderRadius: 12,
-    backgroundColor: PALETTE.surface,
-    borderWidth: 1,
-    borderColor: PALETTE.border,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  pillActive: {
-    backgroundColor: PALETTE.mint,
-    borderColor: PALETTE.forest,
-  },
-  pillText: {
-    fontSize: 13,
-    fontWeight: '600',
-    color: PALETTE.ink,
-  },
-  isoChipText: {
-    fontSize: 13,
-    fontWeight: '700',
-    color: PALETTE.ink,
-    fontFamily: MONO_FONT,
-  },
-  pillTextActive: {
-    color: PALETTE.charcoal,
-    fontWeight: '700',
-  },
-  errorBox: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-    backgroundColor: PALETTE.dangerSoft,
-    borderRadius: 10,
-    padding: 10,
-  },
-  errorText: {
-    flex: 1,
-    fontSize: 13,
-    color: PALETTE.danger,
-    fontWeight: '600',
-  },
-  primaryBtn: {
-    minHeight: 48,
-    borderRadius: 12,
-    backgroundColor: PALETTE.mint,
-    borderWidth: 1.5,
-    borderColor: PALETTE.forest,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  primaryBtnPressed: {
-    opacity: 0.85,
-  },
-  primaryBtnText: {
-    fontSize: 15,
-    fontWeight: '700',
-    color: PALETTE.charcoal,
-  },
-  serverCard: {
-    backgroundColor: PALETTE.card,
-    borderRadius: 14,
-    borderWidth: 1,
-    borderColor: PALETTE.border,
-    overflow: 'hidden',
-  },
-  serverHeaderBtn: {
-    minHeight: TOUCH_MIN,
-    paddingHorizontal: 14,
-    paddingVertical: 10,
+  safe: { flex: 1, backgroundColor: PALETTE.surface },
+  flex: { flex: 1 },
+  scrollContent: { padding: 16, paddingBottom: 32, gap: 16, width: '100%', maxWidth: 520, alignSelf: 'center' },
+  logoRow: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
+    minHeight: TOUCH_MIN,
   },
-  serverHeaderLeft: {
+  swapBtn: {
+    minHeight: TOUCH_MIN,
+    paddingHorizontal: 18,
+    borderRadius: 22,
+    backgroundColor: PALETTE.card,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  swapBtnText: { fontSize: 15, fontWeight: '600', color: PALETTE.ink },
+  sheet: {
+    backgroundColor: PALETTE.card,
+    borderRadius: 28,
+    padding: 22,
+    gap: 16,
+  },
+  title: { fontSize: 32, lineHeight: 36, color: PALETTE.ink, fontWeight: '700' },
+  lead: { fontSize: 16, lineHeight: 23, color: PALETTE.muted },
+  privateRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
+  privateBlock: {
+    width: '48%',
+    flexGrow: 1,
+    backgroundColor: PALETTE.ink,
+    borderRadius: 18,
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+    minHeight: 60,
+  },
+  privateName: { fontSize: 15, fontWeight: '600', color: PALETTE.card },
+  privateNote: { fontSize: 13, color: '#c9c9c9', marginTop: 2 },
+  fieldGroup: { gap: 8 },
+  label: { fontSize: 15, fontWeight: '600', color: PALETTE.ink },
+  input: {
+    minHeight: 56,
+    borderRadius: 28,
+    backgroundColor: PALETTE.surface,
+    paddingHorizontal: 22,
+    fontSize: 16,
+    color: PALETTE.ink,
+  },
+  pillsWrap: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
+  pill: {
+    minHeight: TOUCH_MIN,
+    paddingHorizontal: 16,
+    borderRadius: 22,
+    backgroundColor: PALETTE.surface,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  pillActive: { backgroundColor: PALETTE.ink },
+  pillText: { fontSize: 15, fontWeight: '500', color: PALETTE.ink },
+  pillTextActive: { color: PALETTE.card },
+  isoChip: {
+    minHeight: TOUCH_MIN,
+    minWidth: TOUCH_MIN + 8,
+    paddingHorizontal: 12,
+    borderRadius: 22,
+    backgroundColor: PALETTE.surface,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  isoChipText: { fontSize: 14, fontWeight: '500', color: PALETTE.ink, fontFamily: MONO_FONT },
+  errorBox: {
+    paddingHorizontal: 20,
+    paddingVertical: 14,
+    borderTopLeftRadius: 20,
+    borderTopRightRadius: 20,
+    borderBottomRightRadius: 20,
+    borderBottomLeftRadius: 0,
+    backgroundColor: PIECES.off,
+  },
+  errorText: { fontSize: 15, fontWeight: '600', color: PALETTE.ink },
+  primaryBtn: {
+    minHeight: 56,
+    borderRadius: 28,
+    backgroundColor: PALETTE.blue,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginTop: 4,
+  },
+  primaryBtnPressed: { backgroundColor: PALETTE.blueDown },
+  primaryBtnText: { fontSize: 18, color: PALETTE.card, fontWeight: '600' },
+  serverCard: { backgroundColor: PALETTE.card, borderRadius: 24, overflow: 'hidden' },
+  serverHeaderBtn: {
+    minHeight: TOUCH_MIN + 4,
+    paddingHorizontal: 20,
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 8,
-    flex: 1,
-  },
-  serverTitle: {
-    fontSize: 12,
-    fontWeight: '600',
-    color: PALETTE.ink,
-    fontFamily: MONO_FONT,
-    flex: 1,
-  },
-  serverBody: {
-    paddingHorizontal: 14,
-    paddingBottom: 14,
-    gap: 10,
-    borderTopWidth: 1,
-    borderTopColor: PALETTE.border,
-    paddingTop: 10,
-  },
-  serverHint: {
-    fontSize: 12,
-    lineHeight: 17,
-    color: PALETTE.muted,
-  },
-  serverInput: {
-    minHeight: TOUCH_MIN,
-    borderRadius: 10,
-    borderWidth: 1,
-    borderColor: PALETTE.borderStrong,
-    backgroundColor: PALETTE.surface,
-    paddingHorizontal: 12,
-    fontSize: 13,
-    fontFamily: MONO_FONT,
-    color: PALETTE.ink,
-  },
-  serverActionsRow: {
-    flexDirection: 'row',
+    justifyContent: 'space-between',
     gap: 8,
   },
+  serverTitle: { flex: 1, fontSize: 14, color: PALETTE.muted, fontFamily: MONO_FONT },
+  serverBody: { paddingHorizontal: 20, paddingBottom: 18, gap: 12 },
+  serverHint: { fontSize: 14, lineHeight: 20, color: PALETTE.muted },
+  serverActionsRow: { flexDirection: 'row', gap: 8 },
   saveUrlBtn: {
     flex: 1,
     minHeight: TOUCH_MIN,
-    borderRadius: 10,
-    backgroundColor: PALETTE.charcoal,
+    borderRadius: 22,
+    backgroundColor: PALETTE.ink,
     alignItems: 'center',
     justifyContent: 'center',
   },
-  saveUrlBtnText: {
-    color: PALETTE.mint,
-    fontSize: 13,
-    fontWeight: '700',
-  },
+  saveUrlBtnText: { fontSize: 15, fontWeight: '600', color: PALETTE.card },
   resetUrlBtn: {
+    flex: 1,
     minHeight: TOUCH_MIN,
-    paddingHorizontal: 14,
-    borderRadius: 10,
+    borderRadius: 22,
     backgroundColor: PALETTE.surface,
-    borderWidth: 1,
-    borderColor: PALETTE.borderStrong,
     alignItems: 'center',
     justifyContent: 'center',
   },
-  resetUrlBtnText: {
-    color: PALETTE.ink,
-    fontSize: 13,
-    fontWeight: '600',
-  },
-  savedBannerText: {
-    fontSize: 12,
-    color: PALETTE.forest,
-    fontWeight: '600',
-    fontFamily: MONO_FONT,
-  },
+  resetUrlBtnText: { fontSize: 15, fontWeight: '600', color: PALETTE.ink },
+  savedBannerText: { fontSize: 14, color: PALETTE.muted, fontFamily: MONO_FONT },
 });

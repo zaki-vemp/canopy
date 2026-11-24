@@ -1,10 +1,15 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { Pressable, StyleSheet, Text, View } from 'react-native';
+import {
+  Pressable,
+  StyleSheet,
+  View,
+} from 'react-native';
+import { Text } from '../theme/ui';
 import { Audio } from 'expo-av';
 import { Ionicons } from '@expo/vector-icons';
 import { buildAttachmentUrl } from '../api/client';
 import type { AttachmentItem } from '../types/canopy';
-import { PALETTE, TOUCH_MIN } from '../theme/palette';
+import { PIECES, TOUCH_MIN } from '../theme/palette';
 
 function formatMs(ms: number): string {
   const totalSec = Math.max(0, Math.round(ms / 1000));
@@ -102,7 +107,7 @@ export function VoiceNotePlayer({ attachment }: { attachment: AttachmentItem }) 
         <Ionicons
           name={isPlaying ? 'pause' : 'play'}
           size={20}
-          color={PALETTE.charcoal}
+          color={PIECES.sheet}
         />
       </Pressable>
 
@@ -117,7 +122,7 @@ export function VoiceNotePlayer({ attachment }: { attachment: AttachmentItem }) 
                   styles.waveBar,
                   {
                     height: h,
-                    backgroundColor: filled ? PALETTE.forest : PALETTE.borderStrong,
+                    backgroundColor: filled ? PIECES.ink : 'rgba(17,17,17,0.35)',
                   },
                 ]}
               />
@@ -126,7 +131,7 @@ export function VoiceNotePlayer({ attachment }: { attachment: AttachmentItem }) 
         </View>
         <View style={styles.metaRow}>
           <Text style={styles.metaText}>
-            Voice Note · {formatMs(isPlaying ? positionMs : durationMs)}
+            {formatMs(isPlaying ? positionMs : durationMs)}
           </Text>
           <Text style={styles.metaSize}>
             {Math.max(1, Math.round(attachment.sizeBytes / 1024))} KB
@@ -143,20 +148,13 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     gap: 12,
-    backgroundColor: PALETTE.surface,
-    borderWidth: 1,
-    borderColor: PALETTE.border,
-    borderRadius: 12,
-    padding: 10,
-    marginTop: 4,
+    marginTop: 2,
   },
   playButton: {
-    width: TOUCH_MIN,
-    height: TOUCH_MIN,
-    borderRadius: TOUCH_MIN / 2,
-    backgroundColor: PALETTE.mint,
-    borderWidth: 1,
-    borderColor: PALETTE.forest,
+    width: 48,
+    height: 48,
+    borderRadius: 24,
+    backgroundColor: PIECES.ink,
     alignItems: 'center',
     justifyContent: 'center',
   },
@@ -183,16 +181,17 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   metaText: {
-    fontSize: 12,
-    fontWeight: '600',
-    color: PALETTE.ink,
+    fontSize: 13,
+    fontFamily: 'DMMono_500Medium',
+    color: PIECES.ink,
   },
   metaSize: {
-    fontSize: 11,
-    color: PALETTE.muted,
+    fontSize: 12,
+    fontFamily: 'DMMono_500Medium',
+    color: PIECES.ink2,
   },
   errorText: {
-    fontSize: 11,
-    color: PALETTE.danger,
+    fontSize: 13,
+    color: PIECES.alarm,
   },
 });
