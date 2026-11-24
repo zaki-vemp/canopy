@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useState } from 'react';
-import styles from '@/app/app/workspace.module.css';
+import c from '@/app/app/chat.module.css';
 
 export type BlockToken =
   | { type: 'codeblock'; lang: string; code: string }
@@ -17,38 +17,6 @@ export type InlineToken =
   | { type: 'strike'; value: string }
   | { type: 'mention'; value: string }
   | { type: 'link'; href: string };
-
-const SAFE_FALLBACK_COLORS = [
-  '#1f6b3a',
-  '#1d5e6e',
-  '#8a5a19',
-  '#2f4858',
-  '#3b5d4f',
-  '#7a3e26',
-];
-
-export function safeAvatarColor(rawColor: string | undefined, seed = ''): string {
-  if (rawColor && /^#[0-9a-fA-F]{6}$/.test(rawColor)) {
-    const r = parseInt(rawColor.slice(1, 3), 16);
-    const g = parseInt(rawColor.slice(3, 5), 16);
-    const b = parseInt(rawColor.slice(5, 7), 16);
-    // Guard against violet/purple/indigo hues (high blue + moderate/high red, low green)
-    const isVioletish = b > 140 && b > g + 35 && r > g + 15;
-    if (!isVioletish) return rawColor;
-  }
-  let hash = 0;
-  for (let i = 0; i < seed.length; i++) {
-    hash = (hash * 31 + seed.charCodeAt(i)) >>> 0;
-  }
-  return SAFE_FALLBACK_COLORS[hash % SAFE_FALLBACK_COLORS.length];
-}
-
-export function aliasInitials(alias: string): string {
-  const parts = alias.trim().split(/\s+/).filter(Boolean);
-  if (parts.length === 0) return '??';
-  if (parts.length === 1) return parts[0].slice(0, 2).toUpperCase();
-  return `${parts[0][0]}${parts[1][0]}`.toUpperCase();
-}
 
 export function tokenizeBlocks(input: string): BlockToken[] {
   const blocks: BlockToken[] = [];
@@ -255,43 +223,40 @@ if (process.env.NODE_ENV !== 'production') {
   }
 }
 
-function SpoilerPill({ text }: { text: string }) {
-  const [revealed, setRevealed] = useState(false);
+function Spoiler({ text }: { text: string }) {
+  const [shown, setShown] = useState(false);
   return (
     <button
       type="button"
-      onClick={() => setRevealed((v) => !v)}
-      className={`${styles.mdSpoiler} ${revealed ? styles.mdSpoilerRevealed : ''}`}
-      aria-label={revealed ? 'Hide spoiler' : 'Reveal spoiler'}
-      title={revealed ? 'Click to hide spoiler' : 'Click to reveal spoiler'}
+      className={c.spoiler}
+      aria-pressed={shown}
+      aria-label={shown ? `Spoiler: ${text}. Hide it` : 'Spoiler. Show it'}
+      onClick={() => setShown((v) => !v)}
     >
-      {text}
+      <span>{text}</span>
     </button>
   );
 }
 
 function CodeFence({ lang, code }: { lang: string; code: string }) {
   const [copied, setCopied] = useState(false);
-  const handleCopy = () => {
-    navigator.clipboard?.writeText(code).then(() => {
-      setCopied(true);
-      setTimeout(() => setCopied(false), 1600);
-    });
-  };
   return (
-    <div className={styles.mdCodeBlock}>
-      <div className={styles.mdCodeHeader}>
+    <div className={c.codeBlock}>
+      <div>
         <span>{lang}</span>
         <button
           type="button"
-          onClick={handleCopy}
-          className={styles.mdCopyBtn}
-          aria-label="Copy code block"
+          onClick={() =>
+            navigator.clipboard?.writeText(code).then(() => {
+              setCopied(true);
+              setTimeout(() => setCopied(false), 1600);
+            })
+          }
         >
           {copied ? 'Copied' : 'Copy'}
         </button>
       </div>
-      <pre className={styles.mdPre}>
+      <pre>
         <code>{code}</code>
       </pre>
     </div>
@@ -317,12 +282,12 @@ function InlineStream({
               switch (tok.type) {
                 case 'code':
                   return (
-                    <code key={idx} className={styles.mdCodeInline}>
+                    <code key={idx} className={c.codeIn}>
                       {tok.value}
                     </code>
                   );
                 case 'spoiler':
-                  return <SpoilerPill key={idx} text={tok.value} />;
+                  return <Spoiler key={idx} text={tok.value} />;
                 case 'bold':
                   return <strong key={idx}>{tok.value}</strong>;
                 case 'italic':
@@ -331,7 +296,7 @@ function InlineStream({
                   return <del key={idx}>{tok.value}</del>;
                 case 'mention':
                   return (
-                    <span key={idx} className={styles.mdMention}>
+                    <span key={idx} className={c.mention}>
                       {tok.value}
                     </span>
                   );
@@ -342,7 +307,7 @@ function InlineStream({
                       href={tok.href}
                       target="_blank"
                       rel="noopener noreferrer"
-                      className={styles.mdLink}
+                      className={c.link}
                     >
                       {tok.href}
                     </a>
@@ -374,7 +339,7 @@ export function RichMarkdown({
         }
         if (block.type === 'blockquote') {
           return (
-            <blockquote key={idx} className={styles.mdBlockquote}>
+            <blockquote key={idx} className={c.blockquote}>
               <InlineStream
                 text={block.lines.join('\n')}
                 knownAliases={knownAliases}

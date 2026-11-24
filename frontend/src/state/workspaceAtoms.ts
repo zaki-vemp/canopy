@@ -35,7 +35,6 @@ export const inviteModalPodIdAtom = atom<string | null>(null);
 export const adminSettingsPodIdAtom = atom<string | null>(null);
 export const accountDrawerOpenAtom = atom<boolean>(false);
 export const mobileNavOpenAtom = atom<boolean>(false);
-export const mobileVoiceSheetOpenAtom = atom<boolean>(false);
 export const proposeSheetOpenAtom = atom<boolean>(false);
 export const kickedNoticeAtom = atom<string | null>(null);
 export const highlightedMessageIdAtom = atom<number | null>(null);

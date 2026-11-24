@@ -1,0 +1,75 @@
+.tabs { display: flex; gap: 4px; padding: 0 28px 8px; margin: -4px 0 0; overflow-x: auto; scrollbar-width: none; }
+.tabs button { flex: none; min-height: 44px; padding: 0 16px; border-radius: 22px; white-space: nowrap; font-size: 15px; color: var(--muted); transition: background 0.15s, color 0.15s; }
+.tabs button:hover { background: var(--bg); color: var(--ink); }
+.tabs button[aria-selected='true'] { background: var(--ink); color: #fff; }
+
+/* Hobbies are blocks you pick up. */
+.hobbies { display: grid; grid-template-columns: repeat(auto-fill, minmax(188px, 1fr)); gap: 10px; }
+.hobby { position: relative; min-height: 128px; padding: 18px 20px; border-radius: 28px; background: var(--c); display: flex; flex-direction: column; justify-content: space-between; gap: 12px; text-align: left; transition: translate 0.18s var(--ease), border-radius 0.18s var(--ease), box-shadow 0.15s; }
+.hobby:nth-child(6n + 1) { border-radius: 28px 28px 28px 0; }
+.hobby:nth-child(6n + 2) { border-radius: 64px 64px 28px 28px; }
+.hobby:nth-child(6n + 3) { border-radius: 28px 64px 64px 28px; }
+.hobby:nth-child(6n + 4) { border-radius: 28px; }
+.hobby:nth-child(6n + 5) { border-radius: 0 28px 28px 28px; }
+.hobby:nth-child(6n) { border-radius: 28px 28px 64px 64px; }
+.hobby:hover { translate: 0 -3px; }
+.hobby:active { translate: 0 0; }
+.hobby b { font: 500 20px/1.1 var(--fd); letter-spacing: -0.01em; text-wrap: balance; }
+.hobby:nth-child(6n + 2) b { padding-top: 12px; }
+.hobby small { font-size: 14px; line-height: 1.3; }
+.hobby:nth-child(6n) small { padding-left: 10px; }
+.hobby[aria-pressed='true'] { background: var(--ink); color: #fff; }
+.hobby[aria-pressed='true']::after { content: ''; position: absolute; right: 18px; bottom: 18px; width: 24px; height: 24px; border-radius: 50%; background: var(--c) url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23111' stroke-width='3' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M6.5 12.5l3.6 3.6 7.4-8'/%3E%3C/svg%3E") center / contain; }
+
+.rooms { display: grid; gap: 10px; }
+.room { display: grid; gap: 14px; padding: 20px 22px; border-radius: 28px 28px 28px 0; background: var(--c); }
+.room h3 { font: 500 22px/1.1 var(--fd); letter-spacing: -0.01em; }
+.room p { margin-top: 4px; font-size: 15px; }
+.roomHead { display: flex; gap: 20px; align-items: flex-start; justify-content: space-between; }
+.roomHead > div { min-width: 0; }
+.roomHead > span { flex: none; width: 112px; padding-top: 4px; }
+
+.invite { display: grid; gap: 8px; padding: 20px 22px; border-radius: 28px; background: var(--bg); }
+.invite input { background: var(--sheet); }
+
+.pro { display: grid; gap: 18px; padding: 28px; border-radius: 32px 32px 32px 0; background: var(--c-cobalt); }
+.pro h3 { font: 500 30px/1.05 var(--fd); letter-spacing: -0.015em; text-wrap: balance; max-width: 18ch; }
+.pro ul { display: grid; gap: 8px; }
+.pro li { padding: 14px 18px; border-radius: 18px; background: var(--glass); }
+
+.plan { display: grid; gap: 16px; padding: 20px 22px; border-radius: 28px 28px 28px 0; background: var(--c-birch); }
+.plan[data-pro] { background: var(--c-cobalt); }
+.plan h3 { font: 500 22px/1.1 var(--fd); }
+.plan p { margin-top: 4px; font-size: 15px; }
+
+.ticket { display: grid; gap: 14px; padding: 22px; border-radius: 28px 28px 28px 0; background: var(--c); }
+.ticket code { font: 400 18px/1.35 var(--fm); overflow-wrap: anywhere; }
+.ticket p { font-size: 15px; }
+
+.places { display: grid; gap: 4px; margin: 0 -12px; }
+.places > h3,
+.places > p { padding: 0 12px; }
+.places > h3 { padding-bottom: 6px; }
+.places > button { display: flex; align-items: center; gap: 14px; min-height: 60px; padding: 6px 12px; border-radius: 22px; }
+.places > button:hover,
+.places > button:focus-visible { background: var(--bg); }
+.places b { display: block; font: 500 17px/1.2 var(--fd); }
+.places small { display: block; font-size: 14px; color: var(--muted); }
+.roomMark { flex: none; width: 44px; height: 44px; display: grid; place-items: center; border-radius: 14px; background: var(--c); font: 500 18px/1 var(--fd); font-style: normal; }
+.places > button.hit { display: grid; gap: 2px; margin: 0 12px 6px; padding: 12px 18px; border-radius: 20px 20px 20px 0; background: var(--c); }
+.hit small { color: var(--ink); font-weight: 600; }
+.hit span { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; overflow-wrap: anywhere; }
+
+.handle { display: flex; align-items: center; height: 56px; padding-left: 22px; border-radius: 28px; background: var(--bg); font: 400 16px/1 var(--fm); }
+.handle input { flex: 1; min-width: 0; height: 100%; padding: 0 22px 0 4px; border: 0; border-radius: 28px; background: none; font: inherit; }
+
+@media (max-width: 639px) {
+  .tabs { padding: 0 18px 8px; }
+  .hobbies { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+  .hobby { min-height: 112px; padding: 14px 16px; border-radius: 24px; }
+  .hobby:nth-child(6n + 2) { border-radius: 44px 44px 24px 24px; }
+  .hobby:nth-child(6n + 3) { border-radius: 24px 44px 44px 24px; }
+  .hobby:nth-child(6n) { border-radius: 24px 24px 44px 44px; }
+  .hobby b { font-size: 18px; }
+  .roomHead > span { width: 88px; }
+}

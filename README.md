@@ -4,7 +4,7 @@ Peer-blind, interest-matched **25-member** democratic pods (`YES > NO` voting on
 
 - **Database (`db/`)**: MySQL 8.0 / PlanetScale Vitess (`utf8mb4_0900_ai_ci`, narrow `BIGINT UNSIGNED` PKs, `BINARY(16)` UUIDv7 public IDs, unified Group + 1:1 DM composite cursor index `idx_messages_convo_cursor`, Vitess-co-located `pod_read_cursors`, `FULLTEXT` search, `vschema.json`).
 - **Backend (`backend/`)**: Spring Boot 3.4 on Java 21 (auth, JWT security, private account demographics, `FREE`/`PREMIUM` plan tier, DM-gated attachments) + Kotlin 2.x (multi-pod blind matching with `Compact (10)` / `Standard (25)` / `Club (50)` capacities, `YES > NO` Democratic Pod Governance, Canopy Pro owned `ADMIN` groups & Publicized Directory, Pod Invite Links, Group Chat + strictly isolated 1:1 Member DMs, persistent read cursors & `dm_read` receipts, native WebSocket hub & Group + 1:1 DM WebRTC audio call signaling) via explicit `JdbcClient` SQL.
-- **Web Frontend (`frontend/`)**: Mobile-first Next.js 15 App Router, React 19, Jotai + TanStack Query/Virtual (zero Redux), WebAudio + WebRTC P2P Opus mesh (Pod Group Calls + Private 1:1 Ringing/Connected Member Calls), Messenger-style Group Chat + 1:1 Member DM list with persistent unread badges & `✓✓ Seen` receipts, Pod Vote cards, Publicized Groups directory, Pro Custom Group creator, and `tasteskill 2.5` (`white-mint-tiles`, `Familjen Grotesk` + `IBM Plex Mono`, zero violet).
+- **Web Frontend (`frontend/`)**: Mobile-first Next.js 15 App Router, React 19, Jotai + TanStack Query/Virtual (zero Redux), WebAudio + WebRTC P2P Opus mesh (Pod Group Calls + Private 1:1 Ringing/Connected Member Calls), and the **Pieces** design: every person is a coloured shape picked by their alias (`src/lib/pieces.ts`) and everything they send is a block in that colour. Tokens live in `src/app/globals.css` (`Gabarito` / `Figtree` / `DM Mono`, one blue, zero violet). The landing page is one static file, `public/landing.html`, served at `/`.
 - **Mobile App (`mobile/`)**: React Native + Expo SDK 52 (TypeScript, zero Redux — Jotai atoms + TanStack Query + native WebSocket + `expo-av` voice notes, Pod Group Calls & Private 1:1 Member Calls) sharing 1-for-1 DTO parity across Group Chat, 1:1 Member DMs, read receipts, 25-seat democratic voting, Pro custom/publicized groups, and pod invite links.
 
 ## Privacy Boundary
@@ -95,8 +95,9 @@ npx expo start
 # 1. Backend end-to-end JUnit suite (7-user blind match, opt-out rematch, threads, polls, WS, WebRTC, zero-PII checks)
 cd backend && mvn -B test
 
-# 2. Frontend TypeScript strict check
+# 2. Frontend TypeScript strict check and unit checks
 cd frontend && npx tsc --noEmit
+npx tsx src/lib/pieces.test.ts && npx tsx src/lib/stream.test.ts && npx tsx src/types/extractInviteCode.test.ts
 
 # 3. Reproducible MySQL EXPLAIN + EXPLAIN ANALYZE benchmark across all hot queries
 docker exec -i canopy-mysql mysql --table -ucanopy -pcanopy_dev_pw canopy < db/verify_explain.sql

@@ -63,14 +63,6 @@ export interface LeavePodRequest {
   forceNewPod?: boolean;
 }
 
-export function getPodTierLabel(
-  maxMembers: number
-): 'Compact' | 'Standard' | 'Club' {
-  if (maxMembers <= 10) return 'Compact';
-  if (maxMembers <= 25) return 'Standard';
-  return 'Club';
-}
-
 export interface PodDetail {
   podId: string;
   code: string;
@@ -382,29 +374,6 @@ export function deriveDmPreviewBody(
     return 'Sent an attachment';
   }
   return '';
-}
-
-export function sortMembersWithDmConversations(
-  members: PodMember[],
-  myPeerId: string,
-  dmConversations: DmConversationSummary[] = []
-): PodMember[] {
-  const dmByPeer = new Map<string, DmConversationSummary>();
-  for (const dm of dmConversations) {
-    dmByPeer.set(dm.peerId, dm);
-  }
-  return members
-    .filter((m) => !m.isSelf && m.peerId !== myPeerId)
-    .sort((a, b) => {
-      const dmA = dmByPeer.get(a.peerId);
-      const dmB = dmByPeer.get(b.peerId);
-      if (dmA && dmB) return dmB.lastMessageId - dmA.lastMessageId;
-      if (dmA) return -1;
-      if (dmB) return 1;
-      if (a.online !== b.online) return a.online ? -1 : 1;
-      if (a.inVoice !== b.inVoice) return a.inVoice ? -1 : 1;
-      return a.alias.localeCompare(b.alias);
-    });
 }
 
 export interface VoicePeer {

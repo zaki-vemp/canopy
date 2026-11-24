@@ -1244,7 +1244,7 @@ export function usePodWebSocket(): void {
               });
               setActivePodId(remainingPods[0]?.podId ?? null);
               setKickedNotice(
-                `You were removed from ${podLabel}. You can match into another 25-member pod anytime.`
+                `You were removed from ${podLabel}. Other rooms are still open to you.`
               );
               ws?.close();
               break;

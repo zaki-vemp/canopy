@@ -1,421 +1,223 @@
 'use client';
 
-import React, { Suspense, useEffect, useState } from 'react';
+import { Suspense, useState, type FormEvent } from 'react';
 import Link from 'next/link';
-import { useRouter, useSearchParams } from 'next/navigation';
-import { useQueryClient } from '@tanstack/react-query';
-import { useSetAtom } from 'jotai';
-import {
-  apiFetch,
-  ApiError,
-  enableTabIsolatedMode,
-  isTabIsolatedMode,
-  setAuthToken,
-} from '@/lib/api';
-import { authRevisionAtom } from '@/state/authAtoms';
-import { activePodIdAtom } from '@/state/workspaceAtoms';
-import {
-  extractInviteCode,
-  type AcceptInviteResponse,
-  type PodDetail,
-} from '@/types/canopy';
-import styles from '../auth.module.css';
+import { ApiError } from '@/lib/api';
+import { colorVar, dealAlias } from '@/lib/pieces';
+import { Door } from '@/components/door/Door';
+import { useEnter } from '@/components/door/useEnter';
+import ui from '@/components/pieces/ui.module.css';
+import s from '../auth.module.css';
 
-interface AuthResponse {
-  token: string;
-  user: {
-    userId: string;
-    email: string;
-    fullName: string;
-    gender: string;
-    nationalityCode: string;
-    planTier?: 'FREE' | 'PREMIUM';
-  };
-}
+const GENDERS = ['Female', 'Male', 'Non-binary', 'Prefer not to say'];
 
-const GENDER_OPTIONS = [
-  'Female',
-  'Male',
-  'Non-binary',
-  'Prefer not to say',
-] as const;
+const NATIONALITIES = [
+  ['IN', 'India'],
+  ['US', 'United States'],
+  ['GB', 'United Kingdom'],
+  ['DE', 'Germany'],
+  ['CA', 'Canada'],
+  ['AU', 'Australia'],
+  ['JP', 'Japan'],
+  ['SG', 'Singapore'],
+  ['BR', 'Brazil'],
+  ['FR', 'France'],
+  ['NL', 'Netherlands'],
+  ['SE', 'Sweden'],
+  ['KR', 'South Korea'],
+  ['AE', 'United Arab Emirates'],
+  ['ZA', 'South Africa'],
+  ['MX', 'Mexico'],
+  ['ES', 'Spain'],
+  ['IT', 'Italy'],
+  ['PL', 'Poland'],
+  ['XX', 'Somewhere else'],
+];
 
-const NATIONALITY_OPTIONS = [
-  { code: 'IN', label: 'India (IN)' },
-  { code: 'US', label: 'United States (US)' },
-  { code: 'GB', label: 'United Kingdom (GB)' },
-  { code: 'DE', label: 'Germany (DE)' },
-  { code: 'CA', label: 'Canada (CA)' },
-  { code: 'AU', label: 'Australia (AU)' },
-  { code: 'JP', label: 'Japan (JP)' },
-  { code: 'SG', label: 'Singapore (SG)' },
-  { code: 'BR', label: 'Brazil (BR)' },
-  { code: 'FR', label: 'France (FR)' },
-  { code: 'NL', label: 'Netherlands (NL)' },
-  { code: 'SE', label: 'Sweden (SE)' },
-  { code: 'KR', label: 'South Korea (KR)' },
-  { code: 'AE', label: 'United Arab Emirates (AE)' },
-  { code: 'ZA', label: 'South Africa (ZA)' },
-  { code: 'MX', label: 'Mexico (MX)' },
-  { code: 'ES', label: 'Spain (ES)' },
-  { code: 'IT', label: 'Italy (IT)' },
-  { code: 'PL', label: 'Poland (PL)' },
-  { code: 'XX', label: 'Other (XX)' },
-] as const;
-
-function RegisterFormContent() {
-  const router = useRouter();
-  const searchParams = useSearchParams();
-  const queryClient = useQueryClient();
-  const bumpAuthRevision = useSetAtom(authRevisionAtom);
-  const setActivePodId = useSetAtom(activePodIdAtom);
-  const freshParam = searchParams.get('fresh') === '1';
-  const inviteCode = extractInviteCode(searchParams.get('invite') || '');
-
-  const [tabIsolated, setTabIsolated] = useState(freshParam);
-  const [fullName, setFullName] = useState('');
-  const [email, setEmail] = useState('');
-  const [password, setPassword] = useState('');
-  const [gender, setGender] = useState<string>('Prefer not to say');
-  const [nationalityCode, setNationalityCode] = useState<string>('US');
-
-  const [errors, setErrors] = useState<Record<string, string>>({});
-  const [serverError, setServerError] = useState('');
-  const [submitting, setSubmitting] = useState(false);
-
-  useEffect(() => {
-    if (freshParam) {
-      enableTabIsolatedMode();
-      setTabIsolated(true);
-    } else if (isTabIsolatedMode()) {
-      setTabIsolated(true);
-    }
-  }, [freshParam]);
-
-  async function handleSubmit(e: React.FormEvent<HTMLFormElement>) {
-    e.preventDefault();
-    setServerError('');
-
-    const nextErrors: Record<string, string> = {};
-    if (!fullName.trim()) {
-      nextErrors.fullName = 'Enter your full name for private account verification.';
-    }
-    if (!email.trim() || !email.includes('@')) {
-      nextErrors.email = 'Enter a valid email address with an @.';
-    }
-    if (password.length < 6) {
-      nextErrors.password = 'Enter a password of at least 6 characters.';
-    }
-    if (!gender) {
-      nextErrors.gender = 'Choose a gender option.';
-    }
-    if (!nationalityCode) {
-      nextErrors.nationalityCode = 'Choose a nationality code.';
-    }
-
-    setErrors(nextErrors);
-    if (Object.keys(nextErrors).length > 0) {
-      return;
-    }
-
-    setSubmitting(true);
-    try {
-      const useTabOnly = freshParam || isTabIsolatedMode();
-      const endpoint = useTabOnly
-        ? '/api/auth/register?tabOnly=true'
-        : '/api/auth/register';
-      const res = await apiFetch<AuthResponse>(endpoint, {
-        method: 'POST',
-        body: JSON.stringify({
-          email: email.trim(),
-          password,
-          fullName: fullName.trim(),
-          gender,
-          nationalityCode,
-        }),
-      });
-      setAuthToken(res.token, useTabOnly);
-      queryClient.clear();
-      bumpAuthRevision((r) => r + 1);
-      if (inviteCode) {
-        try {
-          const acceptRes = await apiFetch<AcceptInviteResponse>(
-            `/api/invites/${encodeURIComponent(inviteCode)}/accept`,
-            { method: 'POST' }
-          );
-          queryClient.setQueryData<{ pods: PodDetail[] }>(['pods'], {
-            pods: acceptRes.pods,
-          });
-          setActivePodId(acceptRes.pod.podId);
-          router.push(useTabOnly ? '/app?fresh=1' : '/app');
-          return;
-        } catch {
-          router.push(
-            `/invite/${encodeURIComponent(inviteCode)}${
-              useTabOnly ? '?fresh=1' : ''
-            }`
-          );
-          return;
-        }
-      }
-      setActivePodId(null);
-      router.push(useTabOnly ? '/app?fresh=1' : '/app');
-    } catch (err) {
-      if (err instanceof ApiError) {
-        setServerError(err.message);
-      } else {
-        setServerError('Could not create your account. Check that the backend is running.');
-      }
-    } finally {
-      setSubmitting(false);
-    }
-  }
-
-  const nextParams = new URLSearchParams();
-  if (inviteCode) nextParams.set('invite', inviteCode);
-  if (tabIsolated) nextParams.set('fresh', '1');
-  const qs = nextParams.toString();
-  const loginHref = `/login${qs ? `?${qs}` : ''}`;
-
+function Kept({ name, typed }: { name: string; typed: string }) {
   return (
-    <div className={styles.authGrid}>
-      <div className={styles.introCol}>
-        <span className={styles.kicker}>
-          <span className={styles.kickerDot} aria-hidden="true" />
-          25 seats per room &middot; 0 public profiles
-        </span>
-        <h1 className={styles.title}>Create your Canopy account</h1>
-        <p className={styles.lead}>
-          Verify once, pick your interests, and match into 25-member democratic rooms where Yes-or-No votes run the pod, or launch custom admin groups on Canopy Pro.
-        </p>
-
-        <div className={styles.guaranteeBox} role="note" aria-label="Blind Pod Guarantee">
-          <div className={styles.guaranteeTitle}>Blind Pod Guarantee</div>
-          <p className={styles.guaranteeText}>
-            Stored privately for account verification only. People in your democratic pods and Pro custom groups never see your name, email, gender, or nationality — only a random per-room alias like Cobalt Fox.
-          </p>
-        </div>
-
-        {inviteCode && (
-          <div className={styles.inviteBanner} role="status">
-            <span>Signing in to join invited pod</span>
-            <span className={styles.inviteBannerCode}>invite/{inviteCode}</span>
-          </div>
-        )}
-
-        {tabIsolated && (
-          <div className={styles.tabBadge}>
-            <strong>Tab-isolated session active:</strong> This account token stays inside this browser tab&apos;s <code>sessionStorage</code> so you can test multiple independent peers side by side.
-          </div>
-        )}
-      </div>
-
-      <div className={styles.card}>
-        <form className={styles.form} onSubmit={handleSubmit} noValidate>
-          {serverError && (
-            <p className={styles.formAlert} role="alert">
-              {serverError}
-            </p>
-          )}
-
-          <div className={styles.field}>
-            <label className={styles.label} htmlFor="reg-name">
-              Full name
-            </label>
-            <input
-              id="reg-name"
-              name="fullName"
-              type="text"
-              autoComplete="name"
-              className={styles.input}
-              value={fullName}
-              onChange={(e) => setFullName(e.target.value)}
-              aria-invalid={Boolean(errors.fullName)}
-              aria-describedby={errors.fullName ? 'reg-name-err' : undefined}
-            />
-            {errors.fullName && (
-              <p id="reg-name-err" className={styles.fieldError}>
-                {errors.fullName}
-              </p>
-            )}
-          </div>
-
-          <div className={styles.field}>
-            <label className={styles.label} htmlFor="reg-email">
-              Email address
-            </label>
-            <input
-              id="reg-email"
-              name="email"
-              type="email"
-              autoComplete="email"
-              inputMode="email"
-              className={styles.input}
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
-              aria-invalid={Boolean(errors.email)}
-              aria-describedby={errors.email ? 'reg-email-err' : undefined}
-            />
-            {errors.email && (
-              <p id="reg-email-err" className={styles.fieldError}>
-                {errors.email}
-              </p>
-            )}
-          </div>
-
-          <div className={styles.field}>
-            <label className={styles.label} htmlFor="reg-password">
-              Password
-            </label>
-            <input
-              id="reg-password"
-              name="password"
-              type="password"
-              autoComplete="new-password"
-              className={styles.input}
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              aria-invalid={Boolean(errors.password)}
-              aria-describedby={errors.password ? 'reg-password-err' : undefined}
-            />
-            {errors.password && (
-              <p id="reg-password-err" className={styles.fieldError}>
-                {errors.password}
-              </p>
-            )}
-          </div>
-
-          <div className={styles.row2}>
-            <div className={styles.field}>
-              <label className={styles.label} htmlFor="reg-gender">
-                Gender
-              </label>
-              <select
-                id="reg-gender"
-                name="gender"
-                className={styles.select}
-                value={gender}
-                onChange={(e) => setGender(e.target.value)}
-                aria-invalid={Boolean(errors.gender)}
-                aria-describedby={errors.gender ? 'reg-gender-err' : undefined}
-              >
-                {GENDER_OPTIONS.map((opt) => (
-                  <option key={opt} value={opt}>
-                    {opt}
-                  </option>
-                ))}
-              </select>
-              {errors.gender && (
-                <p id="reg-gender-err" className={styles.fieldError}>
-                  {errors.gender}
-                </p>
-              )}
-            </div>
-
-            <div className={styles.field}>
-              <label className={styles.label} htmlFor="reg-nationality">
-                Nationality
-              </label>
-              <select
-                id="reg-nationality"
-                name="nationalityCode"
-                className={styles.select}
-                value={nationalityCode}
-                onChange={(e) => setNationalityCode(e.target.value)}
-                aria-invalid={Boolean(errors.nationalityCode)}
-                aria-describedby={errors.nationalityCode ? 'reg-nat-err' : undefined}
-              >
-                {NATIONALITY_OPTIONS.map((opt) => (
-                  <option key={opt.code} value={opt.code}>
-                    {opt.label}
-                  </option>
-                ))}
-              </select>
-              {errors.nationalityCode && (
-                <p id="reg-nat-err" className={styles.fieldError}>
-                  {errors.nationalityCode}
-                </p>
-              )}
-            </div>
-          </div>
-
-          <button
-            type="submit"
-            className={styles.submitBtn}
-            disabled={submitting}
-          >
-            {submitting
-              ? inviteCode
-                ? 'Creating account & joining pod...'
-                : 'Creating account...'
-              : inviteCode
-                ? 'Create account & join invited pod'
-                : 'Create account and open dashboard'}
-          </button>
-        </form>
-
-        <p className={styles.switchLine}>
-          <span>Already verified?</span>
-          <Link href={loginHref} className={styles.inlineLink}>
-            Sign in to your account
-          </Link>
-        </p>
-      </div>
+    <div className={s.kept}>
+      <b>{name}</b>
+      <span className={typed ? s.dots : undefined}>
+        {typed ? '•'.repeat(Math.min(typed.length, 14)) : 'Account only'}
+      </span>
     </div>
   );
 }
 
-function TopLoginLink() {
-  const searchParams = useSearchParams();
-  const nextParams = new URLSearchParams();
-  const inviteCode = extractInviteCode(searchParams.get('invite') || '');
-  if (inviteCode) nextParams.set('invite', inviteCode);
-  if (searchParams.get('fresh') === '1') nextParams.set('fresh', '1');
-  const qs = nextParams.toString();
+function SignUp() {
+  const { enter, invite, tabOnly, withQuery } = useEnter();
+  const [fullName, setFullName] = useState('');
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [gender, setGender] = useState('Prefer not to say');
+  const [nationalityCode, setNationalityCode] = useState('US');
+  const [alias, setAlias] = useState('Jade Otter');
+  const [errors, setErrors] = useState<{ fullName?: string; email?: string; password?: string }>({});
+  const [problem, setProblem] = useState('');
+  const [busy, setBusy] = useState(false);
+
+  const submit = async (e: FormEvent) => {
+    e.preventDefault();
+    setProblem('');
+    const next = {
+      fullName: fullName.trim() ? undefined : 'Type your name.',
+      email: email.includes('@') ? undefined : 'Type an email with an @ in it.',
+      password: password.length >= 6 ? undefined : 'Use six characters or more.',
+    };
+    setErrors(next);
+    if (next.fullName || next.email || next.password) return;
+    setBusy(true);
+    try {
+      await enter('/api/auth/register', {
+        email: email.trim(),
+        password,
+        fullName: fullName.trim(),
+        gender,
+        nationalityCode,
+      });
+    } catch (err) {
+      setProblem(
+        err instanceof ApiError ? err.message : 'Canopy did not answer. Check your connection and try again.'
+      );
+    } finally {
+      setBusy(false);
+    }
+  };
+
   return (
-    <Link href={`/login${qs ? `?${qs}` : ''}`} className={styles.ghostLink}>
-      Sign in
-    </Link>
+    <Door
+      action={
+        <Link className={`${ui.btn} ${ui.small}`} style={{ background: 'var(--sheet)' }} href={withQuery('/login')}>
+          Sign in
+        </Link>
+      }
+    >
+      <main className={s.two}>
+        <section className={s.keep} aria-label="What a room sees">
+          <Kept name="Full name" typed={fullName} />
+          <Kept name="Email" typed={email} />
+          <Kept name="Gender" typed="" />
+          <Kept name="Nationality" typed="" />
+          <button
+            type="button"
+            className={s.dealt}
+            style={colorVar(alias)}
+            onClick={() => setAlias(dealAlias())}
+            aria-label={`${alias}. An example alias. Deal another`}
+          >
+            <b>{alias}</b>
+            <span>This is all a room sees. Press to deal another.</span>
+          </button>
+        </section>
+
+        <section className={s.sheet}>
+          <div className={s.inner}>
+            <div>
+              <h1>Make an account</h1>
+              <p className={s.lead}>
+                {invite
+                  ? 'Then straight into the room you were invited to, under a fresh alias.'
+                  : 'The dark blocks stay in your account. Every room you join deals you a new coloured one.'}
+              </p>
+            </div>
+            {problem && (
+              <p className={ui.alert} role="alert">
+                {problem}
+              </p>
+            )}
+            <form className={s.form} onSubmit={submit} noValidate>
+              <label className={ui.field}>
+                <span>Full name</span>
+                <input
+                  className={ui.input}
+                  name="fullName"
+                  autoComplete="name"
+                  value={fullName}
+                  onChange={(e) => setFullName(e.target.value)}
+                  aria-invalid={Boolean(errors.fullName)}
+                  aria-describedby="name-error"
+                />
+                <span id="name-error" className={s.error} hidden={!errors.fullName}>
+                  {errors.fullName}
+                </span>
+              </label>
+              <label className={ui.field}>
+                <span>Email</span>
+                <input
+                  className={ui.input}
+                  type="email"
+                  name="email"
+                  autoComplete="email"
+                  value={email}
+                  onChange={(e) => setEmail(e.target.value)}
+                  aria-invalid={Boolean(errors.email)}
+                  aria-describedby="email-error"
+                />
+                <span id="email-error" className={s.error} hidden={!errors.email}>
+                  {errors.email}
+                </span>
+              </label>
+              <label className={ui.field}>
+                <span>Password</span>
+                <input
+                  className={ui.input}
+                  type="password"
+                  name="password"
+                  autoComplete="new-password"
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                  aria-invalid={Boolean(errors.password)}
+                  aria-describedby="password-error"
+                />
+                <span id="password-error" className={s.error} hidden={!errors.password}>
+                  {errors.password}
+                </span>
+              </label>
+              <div className={s.pair}>
+                <label className={ui.field}>
+                  <span>Gender</span>
+                  <select className={ui.input} name="gender" value={gender} onChange={(e) => setGender(e.target.value)}>
+                    {GENDERS.map((g) => (
+                      <option key={g}>{g}</option>
+                    ))}
+                  </select>
+                </label>
+                <label className={ui.field}>
+                  <span>Nationality</span>
+                  <select
+                    className={ui.input}
+                    name="nationalityCode"
+                    value={nationalityCode}
+                    onChange={(e) => setNationalityCode(e.target.value)}
+                  >
+                    {NATIONALITIES.map(([code, name]) => (
+                      <option key={code} value={code}>
+                        {name}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              </div>
+              <button type="submit" className={`${ui.btn} ${ui.big} ${ui.blue}`} disabled={busy}>
+                {busy ? 'Making it' : invite ? 'Make it and join' : 'Make an account'}
+              </button>
+            </form>
+            <p className={s.swap}>
+              Got one? <Link href={withQuery('/login')}>Sign in</Link>
+            </p>
+            {tabOnly && <p className={ui.hint}>This account stays signed in to this tab only.</p>}
+          </div>
+        </section>
+      </main>
+    </Door>
   );
 }
 
 export default function RegisterPage() {
   return (
-    <div className={styles.shell}>
-      <header className={styles.topbar}>
-        <div className={styles.topbarInner}>
-          <Link href="/" className={styles.brand}>
-            <svg
-              className={styles.brandMark}
-              viewBox="0 0 24 24"
-              aria-hidden="true"
-              fill="#a1ffcb"
-            >
-              <circle cx="6.5" cy="6.5" r="4.5" stroke="#232323" strokeWidth="1.2" />
-              <circle cx="17.5" cy="6.5" r="4.5" stroke="#232323" strokeWidth="1.2" />
-              <circle cx="6.5" cy="17.5" r="4.5" stroke="#232323" strokeWidth="1.2" />
-              <rect x="13" y="13" width="9" height="9" rx="1.5" stroke="#232323" strokeWidth="1.2" />
-            </svg>
-            Canopy
-          </Link>
-          <div className={styles.topActions}>
-            <Suspense
-              fallback={
-                <Link href="/login" className={styles.ghostLink}>
-                  Sign in
-                </Link>
-              }
-            >
-              <TopLoginLink />
-            </Suspense>
-          </div>
-        </div>
-      </header>
-      <main className={styles.main}>
-        <Suspense fallback={<p>Loading registration form...</p>}>
-          <RegisterFormContent />
-        </Suspense>
-      </main>
-    </div>
+    <Suspense>
+      <SignUp />
+    </Suspense>
   );
 }
