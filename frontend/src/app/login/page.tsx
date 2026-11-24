@@ -1,301 +1,127 @@
 'use client';
 
-import React, { Suspense, useEffect, useState } from 'react';
+import { Suspense, useState, type FormEvent } from 'react';
 import Link from 'next/link';
-import { useRouter, useSearchParams } from 'next/navigation';
-import { useQueryClient } from '@tanstack/react-query';
-import { useSetAtom } from 'jotai';
-import {
-  apiFetch,
-  ApiError,
-  enableTabIsolatedMode,
-  isTabIsolatedMode,
-  setAuthToken,
-} from '@/lib/api';
-import { authRevisionAtom } from '@/state/authAtoms';
-import { activePodIdAtom } from '@/state/workspaceAtoms';
-import {
-  extractInviteCode,
-  type AcceptInviteResponse,
-  type PodDetail,
-} from '@/types/canopy';
-import styles from '../auth.module.css';
+import { ApiError } from '@/lib/api';
+import { Door } from '@/components/door/Door';
+import { useEnter } from '@/components/door/useEnter';
+import ui from '@/components/pieces/ui.module.css';
+import s from '../auth.module.css';
 
-interface AuthResponse {
-  token: string;
-  user: {
-    userId: string;
-    email: string;
-    fullName: string;
-    gender: string;
-    nationalityCode: string;
-    planTier?: 'FREE' | 'PREMIUM';
-  };
-}
+const LETTERS = ['cobalt', 'amber', 'slate', 'coral', 'jade', ''];
 
-function LoginFormContent() {
-  const router = useRouter();
-  const searchParams = useSearchParams();
-  const queryClient = useQueryClient();
-  const bumpAuthRevision = useSetAtom(authRevisionAtom);
-  const setActivePodId = useSetAtom(activePodIdAtom);
-  const freshParam = searchParams.get('fresh') === '1';
-  const inviteCode = extractInviteCode(searchParams.get('invite') || '');
-
-  const [tabIsolated, setTabIsolated] = useState(freshParam);
+function SignIn() {
+  const { enter, invite, tabOnly, withQuery } = useEnter();
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
-  const [errors, setErrors] = useState<Record<string, string>>({});
-  const [serverError, setServerError] = useState('');
-  const [submitting, setSubmitting] = useState(false);
+  const [errors, setErrors] = useState<{ email?: string; password?: string }>({});
+  const [problem, setProblem] = useState('');
+  const [busy, setBusy] = useState(false);
 
-  useEffect(() => {
-    if (freshParam) {
-      enableTabIsolatedMode();
-      setTabIsolated(true);
-    } else if (isTabIsolatedMode()) {
-      setTabIsolated(true);
-    }
-  }, [freshParam]);
-
-  async function handleSubmit(e: React.FormEvent<HTMLFormElement>) {
+  const submit = async (e: FormEvent) => {
     e.preventDefault();
-    setServerError('');
-
-    const nextErrors: Record<string, string> = {};
-    if (!email.trim() || !email.includes('@')) {
-      nextErrors.email = 'Enter the email address for your account.';
-    }
-    if (!password) {
-      nextErrors.password = 'Enter your account password.';
-    }
-    setErrors(nextErrors);
-    if (Object.keys(nextErrors).length > 0) {
-      return;
-    }
-
-    setSubmitting(true);
+    setProblem('');
+    const next = {
+      email: email.includes('@') ? undefined : 'Type the email you signed up with.',
+      password: password ? undefined : 'Type your password.',
+    };
+    setErrors(next);
+    if (next.email || next.password) return;
+    setBusy(true);
     try {
-      const useTabOnly = freshParam || isTabIsolatedMode();
-      const endpoint = useTabOnly
-        ? '/api/auth/login?tabOnly=true'
-        : '/api/auth/login';
-      const res = await apiFetch<AuthResponse>(endpoint, {
-        method: 'POST',
-        body: JSON.stringify({
-          email: email.trim(),
-          password,
-        }),
-      });
-      setAuthToken(res.token, useTabOnly);
-      queryClient.clear();
-      bumpAuthRevision((r) => r + 1);
-      if (inviteCode) {
-        try {
-          const acceptRes = await apiFetch<AcceptInviteResponse>(
-            `/api/invites/${encodeURIComponent(inviteCode)}/accept`,
-            { method: 'POST' }
-          );
-          queryClient.setQueryData<{ pods: PodDetail[] }>(['pods'], {
-            pods: acceptRes.pods,
-          });
-          setActivePodId(acceptRes.pod.podId);
-          router.push(useTabOnly ? '/app?fresh=1' : '/app');
-          return;
-        } catch {
-          router.push(
-            `/invite/${encodeURIComponent(inviteCode)}${
-              useTabOnly ? '?fresh=1' : ''
-            }`
-          );
-          return;
-        }
-      }
-      setActivePodId(null);
-      router.push(useTabOnly ? '/app?fresh=1' : '/app');
+      await enter('/api/auth/login', { email: email.trim(), password });
     } catch (err) {
-      if (err instanceof ApiError) {
-        setServerError(err.message);
-      } else {
-        setServerError('Could not sign in. Check your credentials and connection.');
-      }
+      setProblem(
+        err instanceof ApiError ? err.message : 'Canopy did not answer. Check your connection and try again.'
+      );
     } finally {
-      setSubmitting(false);
+      setBusy(false);
     }
-  }
-
-  const nextParams = new URLSearchParams();
-  if (inviteCode) nextParams.set('invite', inviteCode);
-  if (tabIsolated) nextParams.set('fresh', '1');
-  const qs = nextParams.toString();
-  const registerHref = `/register${qs ? `?${qs}` : ''}`;
+  };
 
   return (
-    <div className={styles.authGrid}>
-      <div className={styles.introCol}>
-        <span className={styles.kicker}>
-          <span className={styles.kickerDot} aria-hidden="true" />
-          25 seats per room &middot; Peer-blind WebRTC voice
-        </span>
-        <h1 className={styles.title}>Sign in to Canopy</h1>
-        <p className={styles.lead}>
-          Return to your 25-member democratic rooms, private 1-on-1 member chats, live Yes-or-No pod votes, Canopy Pro groups, and Pod Audio Calls.
-        </p>
-
-        <div className={styles.guaranteeBox} role="note" aria-label="Blind Pod Guarantee">
-          <div className={styles.guaranteeTitle}>Blind Pod Guarantee</div>
-          <p className={styles.guaranteeText}>
-            Your name, email, gender, and nationality remain private to your login session and never appear in any democratic pod, Pro custom group, proposal vote, or voice roster.
-          </p>
-        </div>
-
-        {inviteCode && (
-          <div className={styles.inviteBanner} role="status">
-            <span>Signing in to join invited pod</span>
-            <span className={styles.inviteBannerCode}>invite/{inviteCode}</span>
-          </div>
-        )}
-
-        {tabIsolated && (
-          <div className={styles.tabBadge}>
-            <strong>Tab-isolated session active:</strong> Signing in here keeps the token scoped to this tab only.
-          </div>
-        )}
-      </div>
-
-      <div className={styles.card}>
-        <form className={styles.form} onSubmit={handleSubmit} noValidate>
-          {serverError && (
-            <p className={styles.formAlert} role="alert">
-              {serverError}
-            </p>
-          )}
-
-          <div className={styles.field}>
-            <label className={styles.label} htmlFor="login-email">
-              Email address
-            </label>
-            <input
-              id="login-email"
-              name="email"
-              type="email"
-              autoComplete="email"
-              inputMode="email"
-              className={styles.input}
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
-              aria-invalid={Boolean(errors.email)}
-              aria-describedby={errors.email ? 'login-email-err' : undefined}
-            />
-            {errors.email && (
-              <p id="login-email-err" className={styles.fieldError}>
-                {errors.email}
-              </p>
-            )}
-          </div>
-
-          <div className={styles.field}>
-            <label className={styles.label} htmlFor="login-password">
-              Password
-            </label>
-            <input
-              id="login-password"
-              name="password"
-              type="password"
-              autoComplete="current-password"
-              className={styles.input}
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              aria-invalid={Boolean(errors.password)}
-              aria-describedby={errors.password ? 'login-password-err' : undefined}
-            />
-            {errors.password && (
-              <p id="login-password-err" className={styles.fieldError}>
-                {errors.password}
-              </p>
-            )}
-          </div>
-
-          <button
-            type="submit"
-            className={styles.submitBtn}
-            disabled={submitting}
-          >
-            {submitting
-              ? inviteCode
-                ? 'Signing in & joining pod...'
-                : 'Signing in...'
-              : inviteCode
-                ? 'Sign in & join invited pod'
-                : 'Open the dashboard'}
-          </button>
-        </form>
-
-        <p className={styles.switchLine}>
-          <span>New to Canopy?</span>
-          <Link href={registerHref} className={styles.inlineLink}>
-            Create a new account
-          </Link>
-        </p>
-      </div>
-    </div>
-  );
-}
-
-function TopRegisterLink() {
-  const searchParams = useSearchParams();
-  const nextParams = new URLSearchParams();
-  const inviteCode = extractInviteCode(searchParams.get('invite') || '');
-  if (inviteCode) nextParams.set('invite', inviteCode);
-  if (searchParams.get('fresh') === '1') nextParams.set('fresh', '1');
-  const qs = nextParams.toString();
-  return (
-    <Link
-      href={`/register${qs ? `?${qs}` : ''}`}
-      className={styles.ghostLink}
+    <Door
+      action={
+        <Link className={`${ui.btn} ${ui.small}`} style={{ background: 'var(--sheet)' }} href={withQuery('/register')}>
+          Make an account
+        </Link>
+      }
     >
-      Create account
-    </Link>
+      <main className={s.two}>
+        <a className={s.letters} href="/" aria-label="Canopy home">
+          {[...'Canopy'].map((letter, i) => (
+            <span key={i} aria-hidden="true" style={LETTERS[i] ? ({ '--c': `var(--c-${LETTERS[i]})` } as React.CSSProperties) : undefined}>
+              {letter}
+            </span>
+          ))}
+        </a>
+        <section className={s.sheet}>
+          <div className={s.inner}>
+            <div>
+              <h1>Sign in</h1>
+              <p className={s.lead}>
+                {invite
+                  ? 'Then straight into the room you were invited to.'
+                  : 'Your rooms, votes and private chats are where you left them.'}
+              </p>
+            </div>
+            {problem && (
+              <p className={ui.alert} role="alert">
+                {problem}
+              </p>
+            )}
+            <form className={s.form} onSubmit={submit} noValidate>
+              <label className={ui.field}>
+                <span>Email</span>
+                <input
+                  className={ui.input}
+                  type="email"
+                  name="email"
+                  autoComplete="email"
+                  value={email}
+                  onChange={(e) => setEmail(e.target.value)}
+                  aria-invalid={Boolean(errors.email)}
+                  aria-describedby="email-error"
+                />
+                <span id="email-error" className={s.error} hidden={!errors.email}>
+                  {errors.email}
+                </span>
+              </label>
+              <label className={ui.field}>
+                <span>Password</span>
+                <input
+                  className={ui.input}
+                  type="password"
+                  name="password"
+                  autoComplete="current-password"
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                  aria-invalid={Boolean(errors.password)}
+                  aria-describedby="password-error"
+                />
+                <span id="password-error" className={s.error} hidden={!errors.password}>
+                  {errors.password}
+                </span>
+              </label>
+              <button type="submit" className={`${ui.btn} ${ui.big} ${ui.blue}`} disabled={busy}>
+                {busy ? 'Signing in' : invite ? 'Sign in and join' : 'Sign in'}
+              </button>
+            </form>
+            <p className={s.swap}>
+              New here? <Link href={withQuery('/register')}>Make an account</Link>
+            </p>
+            {tabOnly && <p className={ui.hint}>This sign-in stays in this tab only.</p>}
+          </div>
+        </section>
+      </main>
+    </Door>
   );
 }
 
 export default function LoginPage() {
   return (
-    <div className={styles.shell}>
-      <header className={styles.topbar}>
-        <div className={styles.topbarInner}>
-          <Link href="/" className={styles.brand}>
-            <svg
-              className={styles.brandMark}
-              viewBox="0 0 24 24"
-              aria-hidden="true"
-              fill="#a1ffcb"
-            >
-              <circle cx="6.5" cy="6.5" r="4.5" stroke="#232323" strokeWidth="1.2" />
-              <circle cx="17.5" cy="6.5" r="4.5" stroke="#232323" strokeWidth="1.2" />
-              <circle cx="6.5" cy="17.5" r="4.5" stroke="#232323" strokeWidth="1.2" />
-              <rect x="13" y="13" width="9" height="9" rx="1.5" stroke="#232323" strokeWidth="1.2" />
-            </svg>
-            Canopy
-          </Link>
-          <div className={styles.topActions}>
-            <Suspense
-              fallback={
-                <Link href="/register" className={styles.ghostLink}>
-                  Create account
-                </Link>
-              }
-            >
-              <TopRegisterLink />
-            </Suspense>
-          </div>
-        </div>
-      </header>
-      <main className={styles.main}>
-        <Suspense fallback={<p>Loading sign-in form...</p>}>
-          <LoginFormContent />
-        </Suspense>
-      </main>
-    </div>
+    <Suspense>
+      <SignIn />
+    </Suspense>
   );
 }

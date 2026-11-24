@@ -1,17 +1,38 @@
+/* Pieces: a white sheet on a grey table, one blue for anything you press, and
+   twelve alias colours for people and everything they send. Ink reads on all
+   twelve at 5.5:1 or better. */
 :root {
-  --m-bg: #ffffff;
-  --m-surface: #f3f3f3;
-  --m-surface-2: #e8e8e8;
-  --m-rail: #1a1c1a;
-  --m-sidebar: #f6f7f6;
-  --m-ink: #232323;
-  --m-muted: #686868;
-  --m-accent: #a1ffcb;
-  --m-accent-strong: #1f6b3a;
-  --m-danger: #b42318;
-  --m-border: rgba(35, 35, 35, 0.13);
-  --m-font-sans: 'Familjen Grotesk', system-ui, -apple-system, sans-serif;
-  --m-font-mono: 'IBM Plex Mono', ui-monospace, Menlo, Consolas, monospace;
+  --bg: #f4f4f4;
+  --sheet: #ffffff;
+  --ink: #111111;
+  --ink-2: #333333;
+  --muted: #5c5c5c;
+  --hair: #d8d8d8;
+  --blue: #1a4be0;
+  --blue-down: #143cb8;
+  --off: #f19079;
+  --off-up: #f7a692;
+  --alarm: #a3200d;
+  --glass: rgba(255, 255, 255, 0.6);
+
+  --c-amber: #e6a92e;
+  --c-cobalt: #7396f2;
+  --c-cedar: #c9855c;
+  --c-slate: #9cadb9;
+  --c-mint: #9bddbb;
+  --c-coral: #f19079;
+  --c-flint: #b4afa6;
+  --c-ochre: #cf9f45;
+  --c-birch: #eae0c8;
+  --c-jade: #5cbb91;
+  --c-teal: #55b5b3;
+  --c-quartz: #e8c7c9;
+
+  --fd: 'Gabarito', system-ui, sans-serif;
+  --ft: 'Figtree', system-ui, -apple-system, sans-serif;
+  --fm: 'DM Mono', ui-monospace, Menlo, Consolas, monospace;
+
+  --ease: cubic-bezier(0.22, 1, 0.36, 1);
 }
 
 * {
@@ -22,8 +43,74 @@ html,
 body {
   margin: 0;
   padding: 0;
-  font-family: var(--m-font-sans);
-  color: var(--m-ink);
-  background: var(--m-bg);
+  min-height: 100%;
+}
+
+body {
+  font: 400 16px/1.45 var(--ft);
+  color: var(--ink);
+  background: var(--bg);
   -webkit-font-smoothing: antialiased;
+  overflow-wrap: break-word;
+}
+
+button,
+input,
+select,
+textarea {
+  font: inherit;
+  color: inherit;
+}
+
+button {
+  cursor: pointer;
+  background: none;
+  border: 0;
+  padding: 0;
+  text-align: left;
+  touch-action: manipulation;
+}
+
+button:disabled {
+  cursor: default;
+}
+
+h1,
+h2,
+h3,
+h4,
+p,
+figure,
+blockquote,
+pre {
+  margin: 0;
+}
+
+ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+a {
+  color: inherit;
+}
+
+:focus-visible {
+  outline: 3px solid var(--ink);
+  outline-offset: 3px;
+}
+
+[hidden] {
+  display: none !important;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation: none !important;
+    transition: none !important;
+    scroll-behavior: auto !important;
+  }
 }

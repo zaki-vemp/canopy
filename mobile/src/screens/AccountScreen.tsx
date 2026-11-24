@@ -5,10 +5,9 @@ import {
   Pressable,
   ScrollView,
   StyleSheet,
-  Text,
-  TextInput,
   View,
 } from 'react-native';
+import { Text, TextInput } from '../theme/ui';
 import { useAtom, useSetAtom } from 'jotai';
 import { useQueryClient } from '@tanstack/react-query';
 import { Ionicons } from '@expo/vector-icons';
@@ -34,14 +33,11 @@ import {
   unreadDmByPodPeerAtom,
   unreadGroupByPodAtom,
 } from '../state/atoms';
-import { PALETTE, TOUCH_MIN } from '../theme/palette';
+import { PIECES, TOUCH_MIN } from '../theme/palette';
+import { Btn, Chip, fieldStyles } from '../components/Pieces';
 import { GENDER_OPTIONS, NATIONALITY_CHIPS } from './AuthScreen';
 
-const MONO_FONT = Platform.select({
-  ios: 'Menlo',
-  android: 'monospace',
-  default: 'monospace',
-});
+const MONO_FONT = 'DMMono_500Medium';
 
 export function AccountScreen({
   onLeaveVoiceOnLogout,
@@ -89,7 +85,7 @@ export function AccountScreen({
     setStatusMsg(null);
     setErrorMsg(null);
     if (!fullName.trim()) {
-      setErrorMsg('Full Name cannot be empty.');
+      setErrorMsg('Type your name.');
       return;
     }
     setSaving(true);
@@ -100,9 +96,9 @@ export function AccountScreen({
         nationalityCode,
       });
       setUser(res.user);
-      setStatusMsg('Private profile saved.');
+      setStatusMsg('Saved. Only your account sees this.');
     } catch (err) {
-      setErrorMsg(err instanceof Error ? err.message : 'Save failed.');
+      setErrorMsg(err instanceof Error ? err.message : 'Could not save.');
     } finally {
       setSaving(false);
     }
@@ -118,12 +114,12 @@ export function AccountScreen({
       setUser(res.user);
       setPlanNotice(
         res.user.planTier === 'PREMIUM'
-          ? 'Upgraded to Canopy Pro — custom Admin groups unlocked.'
-          : 'Switched account to Free plan.'
+          ? 'You are on Canopy Pro. You can make your own groups.'
+          : 'You are on the Free plan.'
       );
     } catch (err) {
       setErrorMsg(
-        err instanceof Error ? err.message : 'Could not update plan tier.'
+        err instanceof Error ? err.message : 'Could not change your plan.'
       );
     } finally {
       setUpdatingPlan(false);
@@ -134,14 +130,14 @@ export function AccountScreen({
     const updated = await setStoredApiBaseUrl(serverDraft);
     setApiBaseUrl(updated);
     setServerDraft(updated);
-    setServerStatus(`Saved Server URL: ${updated}`);
+    setServerStatus(`Saved: ${updated}`);
   };
 
   const handleResetServerUrl = async () => {
     const def = await resetStoredApiBaseUrl();
     setApiBaseUrl(def);
     setServerDraft(def);
-    setServerStatus(`Reset to default: ${def}`);
+    setServerStatus(`Back to ${def}`);
   };
 
   const handleLogout = async () => {
@@ -169,428 +165,203 @@ export function AccountScreen({
       contentContainerStyle={styles.content}
       keyboardShouldPersistTaps="handled"
     >
-      {/* Privacy Boundary Card */}
-      <View style={styles.privacyBanner}>
-        <Text style={styles.privacyBadgeText}>
-          🔒 Private to you · Hidden from all rooms
-        </Text>
-        <Text style={styles.privacyDescription}>
-          Peers inside your pods never see your email, real name, gender, or
-          nationality. Every pod assigns you an isolated room-scoped animal
-          alias and deterministic peer hash.
-        </Text>
-      </View>
+      <Text style={styles.pageTitle}>Account</Text>
 
-      {/* Membership Plan Card (Free vs Canopy Pro) */}
-      <View style={[styles.card, isPro && styles.proCardBorder]}>
-        <View style={styles.planHeaderRow}>
-          <Text style={styles.cardTitle}>Membership Plan</Text>
-          <View style={[styles.planBadge, isPro && styles.planBadgePro]}>
-            <Text
-              style={[styles.planBadgeText, isPro && styles.planBadgeTextPro]}
-            >
-              {isPro ? '👑 Canopy Pro' : 'Free'}
+      {/* The dark blocks: what stays in your account */}
+      <View style={styles.privateRow}>
+        {['Full name', 'Email', 'Gender', 'Nationality'].map((k) => (
+          <View key={k} style={styles.privateBlock}>
+            <Text style={styles.privateName}>{k}</Text>
+            <Text style={styles.privateNote}>
+              {k === 'Gender' || k === 'Nationality'
+                ? 'Never read by matching'
+                : 'Account only'}
             </Text>
           </View>
+        ))}
+      </View>
+      <Text style={styles.helperText}>
+        Rooms never see these. Every room you join deals you its own alias.
+      </Text>
+
+      {/* Plan */}
+      <View style={styles.card}>
+        <View style={styles.planHeaderRow}>
+          <Text style={styles.cardTitle}>Your plan</Text>
+          <Text style={[styles.planBadge, isPro && styles.planBadgePro]}>
+            {isPro ? 'Canopy Pro' : 'Free'}
+          </Text>
         </View>
         <Text style={styles.helperText}>
-          Free includes unlimited 25-member democratic pods, 1:1 private member
-          DMs, and pod audio calls. Canopy Pro unlocks creating &amp; owning
-          custom Admin groups (private invite-only or publicized in the
-          directory) with 100% peer-blind aliases.
+          Free covers rooms of 10, 25 or 50, private chats and the room call.
+          Canopy Pro lets you make and run your own group, invite only or
+          listed for anyone to join.
         </Text>
         {planNotice ? <Text style={styles.successText}>{planNotice}</Text> : null}
-        <Pressable
-          accessibilityRole="button"
-          accessibilityLabel={
-            isPro ? 'Switch to Free' : 'Upgrade to Canopy Pro'
-          }
-          disabled={updatingPlan}
+        <Btn
+          label={isPro ? 'Switch to Free' : 'Go Pro'}
+          kind={isPro ? 'glass' : 'blue'}
+          big
+          wide
+          loading={updatingPlan}
           onPress={handleTogglePlan}
-          style={isPro ? styles.secondaryBtn : styles.saveBtn}
-        >
-          {updatingPlan ? (
-            <ActivityIndicator color={PALETTE.charcoal} />
-          ) : (
-            <Text
-              style={isPro ? styles.secondaryBtnText : styles.saveBtnText}
-            >
-              {isPro ? 'Switch to Free' : 'Upgrade to Canopy Pro'}
-            </Text>
-          )}
-        </Pressable>
+          a11yLabel={isPro ? 'Switch to Free' : 'Upgrade to Canopy Pro'}
+        />
       </View>
 
-      {/* Private Profile Editor */}
+      {/* Private details */}
       <View style={styles.card}>
-        <Text style={styles.cardTitle}>Private Account Identity</Text>
+        <Text style={styles.cardTitle}>Your details</Text>
 
         <View style={styles.field}>
-          <Text style={styles.label}>Account Email (Read-Only)</Text>
+          <Text style={fieldStyles.label}>Email</Text>
           <View style={styles.readOnlyBox}>
             <Text style={styles.readOnlyText}>{user?.email ?? '—'}</Text>
           </View>
         </View>
 
         <View style={styles.field}>
-          <Text style={styles.label}>Full Name</Text>
+          <Text style={fieldStyles.label}>Full name</Text>
           <TextInput
             value={fullName}
             onChangeText={setFullName}
             placeholder="Your full name"
-            placeholderTextColor={PALETTE.muted}
-            style={styles.input}
+            placeholderTextColor={PIECES.muted}
+            accessibilityLabel="Full name"
+            style={fieldStyles.input}
           />
         </View>
 
         <View style={styles.field}>
-          <Text style={styles.label}>Gender</Text>
+          <Text style={fieldStyles.label}>Gender</Text>
           <View style={styles.pillsWrap}>
-            {GENDER_OPTIONS.map((opt) => {
-              const active = gender === opt;
-              return (
-                <Pressable
-                  key={opt}
-                  accessibilityRole="button"
-                  accessibilityState={{ selected: active }}
-                  onPress={() => setGender(opt)}
-                  style={[styles.pill, active && styles.pillActive]}
-                >
-                  <Text
-                    style={[styles.pillText, active && styles.pillTextActive]}
-                  >
-                    {opt}
-                  </Text>
-                </Pressable>
-              );
-            })}
+            {GENDER_OPTIONS.map((opt) => (
+              <Chip
+                key={opt}
+                label={opt}
+                active={gender === opt}
+                onPress={() => setGender(opt)}
+              />
+            ))}
           </View>
         </View>
 
         <View style={styles.field}>
-          <Text style={styles.label}>Nationality (ISO-2)</Text>
+          <Text style={fieldStyles.label}>Nationality</Text>
           <View style={styles.pillsWrap}>
-            {NATIONALITY_CHIPS.map((chip) => {
-              const active = nationalityCode === chip.code;
-              return (
-                <Pressable
-                  key={chip.code}
-                  accessibilityRole="button"
-                  accessibilityState={{ selected: active }}
-                  onPress={() => setNationalityCode(chip.code)}
-                  style={[styles.isoChip, active && styles.pillActive]}
-                >
-                  <Text
-                    style={[
-                      styles.isoChipText,
-                      active && styles.pillTextActive,
-                    ]}
-                  >
-                    {chip.label}
-                  </Text>
-                </Pressable>
-              );
-            })}
+            {NATIONALITY_CHIPS.map((chip) => (
+              <Chip
+                key={chip.code}
+                label={chip.label}
+                active={nationalityCode === chip.code}
+                onPress={() => setNationalityCode(chip.code)}
+                a11yLabel={chip.code === 'ZZ' ? 'Somewhere else' : chip.code}
+              />
+            ))}
           </View>
         </View>
 
-        {errorMsg ? <Text style={styles.errorText}>{errorMsg}</Text> : null}
+        {errorMsg ? (
+          <View style={styles.alertBox} accessibilityRole="alert">
+            <Text style={styles.alertText}>{errorMsg}</Text>
+          </View>
+        ) : null}
         {statusMsg ? <Text style={styles.successText}>{statusMsg}</Text> : null}
 
-        <Pressable
-          accessibilityRole="button"
-          accessibilityLabel="Save private profile"
-          disabled={saving}
+        <Btn
+          label="Save"
+          kind="blue"
+          big
+          wide
+          loading={saving}
           onPress={handleSaveProfile}
-          style={styles.saveBtn}
-        >
-          {saving ? (
-            <ActivityIndicator color={PALETTE.charcoal} />
-          ) : (
-            <Text style={styles.saveBtnText}>Save Private Profile</Text>
-          )}
-        </Pressable>
+          a11yLabel="Save your details"
+        />
       </View>
 
-      {/* Server URL Override Card */}
+      {/* Server address */}
       <View style={styles.card}>
-        <Text style={styles.cardTitle}>Backend Server URL</Text>
+        <Text style={styles.cardTitle}>Server</Text>
         <Text style={styles.helperText}>
-          Default for this platform: {getDefaultApiBaseUrl()}. Override with
-          your machine&apos;s LAN IP when testing on physical Wi-Fi devices.
+          This device talks to {getDefaultApiBaseUrl()} by default. On a phone
+          over Wi-Fi, use your computer's address instead.
         </Text>
         <TextInput
           value={serverDraft}
           onChangeText={setServerDraft}
           placeholder="http://localhost:8090"
-          placeholderTextColor={PALETTE.muted}
+          placeholderTextColor={PIECES.muted}
           autoCapitalize="none"
           autoCorrect={false}
-          style={[styles.input, styles.monoInput]}
+          accessibilityLabel="Server address"
+          style={[fieldStyles.input, styles.monoInput]}
         />
         <View style={styles.rowActions}>
-          <Pressable
-            accessibilityRole="button"
-            onPress={handleSaveServerUrl}
-            style={styles.darkBtn}
-          >
-            <Text style={styles.darkBtnText}>Update URL</Text>
-          </Pressable>
-          <Pressable
-            accessibilityRole="button"
-            onPress={handleResetServerUrl}
-            style={styles.secondaryBtn}
-          >
-            <Text style={styles.secondaryBtnText}>Reset Default</Text>
-          </Pressable>
+          <Btn label="Save address" kind="ink" onPress={handleSaveServerUrl} />
+          <Btn label="Reset" onPress={handleResetServerUrl} />
         </View>
-        {serverStatus ? (
-          <Text style={styles.successText}>{serverStatus}</Text>
-        ) : null}
+        {serverStatus ? <Text style={styles.successText}>{serverStatus}</Text> : null}
       </View>
 
-      {/* Sign Out */}
-      <Pressable
-        accessibilityRole="button"
-        accessibilityLabel="Sign out"
+      <Btn
+        label="Sign out"
+        kind="off"
+        big
+        wide
+        icon="log-out-outline"
         onPress={handleLogout}
-        style={styles.logoutBtn}
-      >
-        <Ionicons name="log-out-outline" size={18} color={PALETTE.danger} />
-        <Text style={styles.logoutBtnText}>Sign Out of Canopy</Text>
-      </Pressable>
+        a11yLabel="Sign out"
+      />
     </ScrollView>
   );
 }
 
 const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: PALETTE.surface,
+  container: { flex: 1, backgroundColor: PIECES.bg },
+  content: { padding: 12, gap: 12, paddingBottom: 28, width: '100%', maxWidth: 640, alignSelf: 'center' },
+  pageTitle: { fontSize: 32, color: PIECES.ink, fontWeight: '600', paddingHorizontal: 6, paddingTop: 4 },
+  privateRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
+  privateBlock: {
+    width: '48%',
+    flexGrow: 1,
+    backgroundColor: PIECES.ink,
+    borderRadius: 20,
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    minHeight: 64,
   },
-  content: {
-    padding: 16,
-    gap: 14,
-    paddingBottom: 32,
-  },
-  privacyBanner: {
-    backgroundColor: PALETTE.mintSoft,
-    borderWidth: 1,
-    borderColor: PALETTE.mintBorder,
-    borderRadius: 16,
-    padding: 14,
-    gap: 6,
-  },
-  privacyBadgeText: {
-    fontSize: 14,
-    fontWeight: '700',
-    color: PALETTE.forest,
-  },
-  privacyDescription: {
-    fontSize: 13,
-    lineHeight: 19,
-    color: PALETTE.ink,
-  },
-  card: {
-    backgroundColor: PALETTE.card,
-    borderRadius: 16,
-    borderWidth: 1,
-    borderColor: PALETTE.border,
-    padding: 16,
-    gap: 12,
-  },
-  proCardBorder: {
-    borderColor: PALETTE.forest,
-    borderWidth: 1.5,
-  },
-  planHeaderRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    gap: 8,
-  },
+  privateName: { fontSize: 16, fontWeight: '600', color: PIECES.sheet },
+  privateNote: { fontSize: 13, color: '#c9c9c9', marginTop: 2 },
+  card: { backgroundColor: PIECES.sheet, borderRadius: 28, padding: 18, gap: 14 },
+  cardTitle: { fontSize: 22, color: PIECES.ink, fontWeight: '600' },
+  planHeaderRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 8 },
   planBadge: {
-    backgroundColor: PALETTE.surfaceMuted,
-    borderWidth: 1,
-    borderColor: PALETTE.borderStrong,
-    paddingHorizontal: 10,
-    paddingVertical: 4,
-    borderRadius: 999,
-  },
-  planBadgePro: {
-    backgroundColor: PALETTE.charcoal,
-    borderColor: PALETTE.forest,
-  },
-  planBadgeText: {
-    fontSize: 12,
-    fontWeight: '700',
-    color: PALETTE.ink,
-    fontFamily: MONO_FONT,
-  },
-  planBadgeTextPro: {
-    color: PALETTE.mint,
-  },
-  cardTitle: {
-    fontSize: 16,
-    fontWeight: '700',
-    color: PALETTE.charcoal,
-  },
-  helperText: {
-    fontSize: 12,
-    lineHeight: 18,
-    color: PALETTE.muted,
-  },
-  field: {
-    gap: 6,
-  },
-  label: {
-    fontSize: 13,
-    fontWeight: '700',
-    color: PALETTE.ink,
-  },
-  readOnlyBox: {
-    minHeight: TOUCH_MIN,
-    borderRadius: 10,
-    backgroundColor: PALETTE.surfaceMuted,
-    borderWidth: 1,
-    borderColor: PALETTE.border,
-    paddingHorizontal: 12,
-    justifyContent: 'center',
-  },
-  readOnlyText: {
     fontSize: 14,
-    color: PALETTE.muted,
-    fontFamily: MONO_FONT,
-  },
-  input: {
-    minHeight: TOUCH_MIN,
-    borderRadius: 10,
-    backgroundColor: PALETTE.surface,
-    borderWidth: 1,
-    borderColor: PALETTE.borderStrong,
-    paddingHorizontal: 12,
-    fontSize: 15,
-    color: PALETTE.ink,
-  },
-  monoInput: {
-    fontFamily: MONO_FONT,
-    fontSize: 13,
-  },
-  pillsWrap: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 8,
-  },
-  pill: {
-    minHeight: TOUCH_MIN,
+    fontWeight: '600',
+    color: PIECES.ink,
+    backgroundColor: PIECES.bg,
+    borderRadius: 16,
     paddingHorizontal: 14,
-    borderRadius: 12,
-    backgroundColor: PALETTE.surface,
-    borderWidth: 1,
-    borderColor: PALETTE.border,
-    alignItems: 'center',
-    justifyContent: 'center',
+    paddingVertical: 7,
+    overflow: 'hidden',
   },
-  isoChip: {
-    minHeight: TOUCH_MIN,
-    minWidth: 54,
-    paddingHorizontal: 12,
-    borderRadius: 12,
-    backgroundColor: PALETTE.surface,
-    borderWidth: 1,
-    borderColor: PALETTE.border,
-    alignItems: 'center',
-    justifyContent: 'center',
+  planBadgePro: { backgroundColor: '#e6a92e' },
+  helperText: { fontSize: 14, lineHeight: 20, color: PIECES.muted, paddingHorizontal: 4 },
+  successText: { fontSize: 14, fontWeight: '600', color: PIECES.ink, backgroundColor: '#9bddbb', borderRadius: 16, paddingHorizontal: 14, paddingVertical: 10, overflow: 'hidden' },
+  alertBox: {
+    paddingHorizontal: 18,
+    paddingVertical: 14,
+    backgroundColor: PIECES.off,
+    borderTopLeftRadius: 20,
+    borderTopRightRadius: 20,
+    borderBottomRightRadius: 20,
+    borderBottomLeftRadius: 0,
   },
-  pillActive: {
-    backgroundColor: PALETTE.mint,
-    borderColor: PALETTE.forest,
-  },
-  pillText: {
-    fontSize: 13,
-    fontWeight: '600',
-    color: PALETTE.ink,
-  },
-  isoChipText: {
-    fontSize: 13,
-    fontWeight: '700',
-    color: PALETTE.ink,
-    fontFamily: MONO_FONT,
-  },
-  pillTextActive: {
-    color: PALETTE.charcoal,
-    fontWeight: '700',
-  },
-  errorText: {
-    fontSize: 13,
-    color: PALETTE.danger,
-    fontWeight: '600',
-  },
-  successText: {
-    fontSize: 13,
-    color: PALETTE.forest,
-    fontWeight: '600',
-  },
-  saveBtn: {
-    minHeight: TOUCH_MIN,
-    borderRadius: 12,
-    backgroundColor: PALETTE.mint,
-    borderWidth: 1.5,
-    borderColor: PALETTE.forest,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  saveBtnText: {
-    fontSize: 14,
-    fontWeight: '700',
-    color: PALETTE.charcoal,
-  },
-  rowActions: {
-    flexDirection: 'row',
-    gap: 8,
-  },
-  darkBtn: {
-    flex: 1,
-    minHeight: TOUCH_MIN,
-    borderRadius: 10,
-    backgroundColor: PALETTE.charcoal,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  darkBtnText: {
-    color: PALETTE.mint,
-    fontWeight: '700',
-    fontSize: 13,
-  },
-  secondaryBtn: {
-    minHeight: TOUCH_MIN,
-    paddingHorizontal: 14,
-    borderRadius: 10,
-    backgroundColor: PALETTE.surface,
-    borderWidth: 1,
-    borderColor: PALETTE.borderStrong,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  secondaryBtnText: {
-    color: PALETTE.ink,
-    fontWeight: '600',
-    fontSize: 13,
-  },
-  logoutBtn: {
-    minHeight: 48,
-    borderRadius: 14,
-    backgroundColor: PALETTE.dangerSoft,
-    borderWidth: 1,
-    borderColor: '#f5b8b4',
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 8,
-  },
-  logoutBtnText: {
-    color: PALETTE.danger,
-    fontWeight: '700',
-    fontSize: 15,
-  },
+  alertText: { fontSize: 15, fontWeight: '600', color: PIECES.ink },
+  field: { gap: 8 },
+  readOnlyBox: { minHeight: 56, borderRadius: 28, backgroundColor: PIECES.bg, paddingHorizontal: 22, justifyContent: 'center' },
+  readOnlyText: { fontSize: 16, color: PIECES.ink2 },
+  pillsWrap: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
+  monoInput: { fontFamily: MONO_FONT, fontSize: 15 },
+  rowActions: { flexDirection: 'row', gap: 8, flexWrap: 'wrap' },
 });

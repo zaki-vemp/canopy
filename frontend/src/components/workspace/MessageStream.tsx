@@ -1,18 +1,16 @@
 'use client';
 
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useInfiniteQuery, useQueryClient } from '@tanstack/react-query';
 import { useVirtualizer } from '@tanstack/react-virtual';
 import { useAtom, useSetAtom } from 'jotai';
-import { ArrowDown, Lock, Sparkles, Users } from 'lucide-react';
 import { apiFetch } from '@/lib/api';
-import {
-  highlightedMessageIdAtom,
-  unreadByConvoAtom,
-} from '@/state/workspaceAtoms';
+import { highlightedMessageIdAtom, unreadByConvoAtom } from '@/state/workspaceAtoms';
 import { markConversationReadInCaches } from '@/state/wsPodClient';
+import { follows, newDay, toRows } from '@/lib/stream';
+import { roomName } from '@/state/roomActions';
 import { MessageCard } from '@/components/workspace/MessageCard';
-import { aliasInitials, safeAvatarColor } from '@/components/workspace/markdown';
+import { Piece } from '@/components/pieces/Piece';
 import {
   conversationKey,
   messageQueryKey,
@@ -21,343 +19,250 @@ import {
   type PodMember,
   type RichMessage,
 } from '@/types/canopy';
-import styles from '@/app/app/workspace.module.css';
+import ui from '@/components/pieces/ui.module.css';
+import c from '@/app/app/chat.module.css';
 
-interface MessageStreamProps {
-  pod: PodDetail;
-  activePeer: PodMember | null;
-  knownAliases: string[];
+function Joined({ aliases }: { aliases: string[] }) {
+  const names = aliases.length > 3 ? aliases.slice(0, 2) : aliases;
+  const rest = aliases.length - names.length;
+  const list = rest > 0 ? [...names, `${rest} more`] : names;
+  return (
+    <div className={c.joined}>
+      <span>
+        {aliases.slice(0, 14).map((alias, i) => (
+          <Piece key={`${alias}-${i}`} alias={alias} size={38} />
+        ))}
+      </span>
+      <p>
+        {list.length > 1 ? `${list.slice(0, -1).join(', ')} and ${list[list.length - 1]}` : list[0]}{' '}
+        sat down
+      </p>
+    </div>
+  );
 }
 
 export function MessageStream({
   pod,
   activePeer,
   knownAliases,
-}: MessageStreamProps) {
+}: {
+  pod: PodDetail;
+  activePeer: PodMember | null;
+  knownAliases: string[];
+}) {
   const viewportRef = useRef<HTMLDivElement | null>(null);
   const queryClient = useQueryClient();
   const [highlightedId, setHighlightedId] = useAtom(highlightedMessageIdAtom);
-  const setUnreadMap = useSetAtom(unreadByConvoAtom);
+  const setUnread = useSetAtom(unreadByConvoAtom);
   const [nearBottom, setNearBottom] = useState(true);
   const lastPostedReadRef = useRef<Record<string, number>>({});
+  const anchorIdRef = useRef<number | null>(null);
 
-  const activePeerId = activePeer?.peerId ?? null;
-  const convoKey = conversationKey(pod.podId, activePeerId);
+  const peerId = activePeer?.peerId ?? null;
+  const convoKey = conversationKey(pod.podId, peerId);
 
-  const messagesQuery = useInfiniteQuery<MessagesPage, Error>({
-    queryKey: messageQueryKey(pod.podId, activePeerId),
+  const query = useInfiniteQuery<MessagesPage, Error>({
+    queryKey: messageQueryKey(pod.podId, peerId),
     initialPageParam: 0,
     queryFn: ({ pageParam }) =>
       apiFetch<MessagesPage>(
-        activePeerId
-          ? `/api/pods/${pod.podId}/dms/${encodeURIComponent(
-              activePeerId
-            )}/messages?beforeId=${pageParam}&limit=40`
-          : `/api/pods/${pod.podId}/messages?beforeId=${pageParam}&limit=40`
+        `/api/pods/${pod.podId}/${
+          peerId ? `dms/${encodeURIComponent(peerId)}/` : ''
+        }messages?beforeId=${pageParam}&limit=40`
       ),
-    getNextPageParam: (lastPage) =>
-      lastPage.nextBeforeId && lastPage.nextBeforeId > 0
-        ? lastPage.nextBeforeId
-        : undefined,
+    getNextPageParam: (last) => (last.nextBeforeId > 0 ? last.nextBeforeId : undefined),
   });
 
   const messages = useMemo<RichMessage[]>(() => {
-    if (!messagesQuery.data) return [];
-    const orderedPages = [...messagesQuery.data.pages].reverse();
     const seen = new Set<number>();
-    const out: RichMessage[] = [];
-    for (const page of orderedPages) {
-      for (const m of page.messages) {
-        if (!seen.has(m.id)) {
-          seen.add(m.id);
-          out.push(m);
-        }
-      }
-    }
-    return out;
-  }, [messagesQuery.data]);
+    return [...(query.data?.pages ?? [])]
+      .reverse()
+      .flatMap((page) => page.messages)
+      .filter((m) => !seen.has(m.id) && seen.add(m.id));
+  }, [query.data]);
+
+  const rows = useMemo(() => toRows(messages), [messages]);
 
   const virtualizer = useVirtualizer({
-    count: messages.length,
+    count: rows.length,
     getScrollElement: () => viewportRef.current,
+    getItemKey: (i) => rows[i].id,
     estimateSize: () => 92,
     overscan: 8,
   });
 
-  const initialScrolledConvoRef = useRef<string | null>(null);
-  const prevLastMsgIdRef = useRef<number | null>(null);
+  const openedConvoRef = useRef<string | null>(null);
+  const prevLastIdRef = useRef<number | null>(null);
 
   useEffect(() => {
-    prevLastMsgIdRef.current = null;
+    prevLastIdRef.current = null;
     setNearBottom(true);
   }, [convoKey]);
 
-  // Clear unread badge & advance server read cursor (deduplicated per conversation)
+  // Clear the badge and move the server's read cursor, once per newest message.
   useEffect(() => {
-    setUnreadMap((prev) =>
-      prev[convoKey] === 0 ? prev : { ...prev, [convoKey]: 0 }
-    );
-    markConversationReadInCaches(queryClient, pod.podId, activePeerId);
+    setUnread((prev) => (prev[convoKey] === 0 ? prev : { ...prev, [convoKey]: 0 }));
+    markConversationReadInCaches(queryClient, pod.podId, peerId);
 
-    if (messages.length === 0) return;
-    let latestId = 0;
-    for (const m of messages) {
-      if (m.id > latestId) latestId = m.id;
-    }
-    const prevPosted = lastPostedReadRef.current[convoKey] ?? 0;
-    if (latestId <= prevPosted) return;
-
+    const latestId = messages.reduce((max, m) => Math.max(max, m.id), 0);
+    const posted = lastPostedReadRef.current[convoKey] ?? 0;
+    if (latestId <= posted) return;
     lastPostedReadRef.current[convoKey] = latestId;
-    apiFetch<{ ok: boolean; lastReadMessageId: number }>(
-      `/api/pods/${pod.podId}/read`,
-      {
-        method: 'POST',
-        body: JSON.stringify({
-          peerId: activePeerId,
-          lastReadMessageId: latestId,
-        }),
-      }
-    ).catch(() => {
+    apiFetch<{ ok: boolean; lastReadMessageId: number }>(`/api/pods/${pod.podId}/read`, {
+      method: 'POST',
+      body: JSON.stringify({ peerId, lastReadMessageId: latestId }),
+    }).catch(() => {
       if (lastPostedReadRef.current[convoKey] === latestId) {
-        lastPostedReadRef.current[convoKey] = prevPosted;
+        lastPostedReadRef.current[convoKey] = posted;
       }
     });
-  }, [
-    activePeerId,
-    convoKey,
-    messages,
-    pod.podId,
-    queryClient,
-    setUnreadMap,
-  ]);
+  }, [convoKey, messages, peerId, pod.podId, queryClient, setUnread]);
 
   useEffect(() => {
-    if (messages.length === 0) return;
-    const lastMsg = messages[messages.length - 1];
+    const last = messages[messages.length - 1];
+    if (!last) return;
 
-    if (initialScrolledConvoRef.current !== convoKey) {
-      initialScrolledConvoRef.current = convoKey;
-      prevLastMsgIdRef.current = lastMsg.id;
-      requestAnimationFrame(() => {
-        virtualizer.scrollToIndex(messages.length - 1, { align: 'end' });
-      });
-      return;
-    }
-
-    if (prevLastMsgIdRef.current !== lastMsg.id) {
-      prevLastMsgIdRef.current = lastMsg.id;
-      if (nearBottom || lastMsg.senderPeerId === pod.myPeerId) {
-        requestAnimationFrame(() => {
-          virtualizer.scrollToIndex(messages.length - 1, { align: 'end' });
-        });
+    if (anchorIdRef.current !== null) {
+      const idx = rows.findIndex((r) => r.id === anchorIdRef.current);
+      if (idx > 0) {
+        anchorIdRef.current = null;
+        requestAnimationFrame(() => virtualizer.scrollToIndex(idx, { align: 'start' }));
+        return;
       }
     }
-  }, [convoKey, messages, nearBottom, pod.myPeerId, virtualizer]);
+    const opening = openedConvoRef.current !== convoKey;
+    const grew = prevLastIdRef.current !== last.id;
+    openedConvoRef.current = convoKey;
+    prevLastIdRef.current = last.id;
+    if (opening || (grew && (nearBottom || last.senderPeerId === pod.myPeerId))) {
+      requestAnimationFrame(() =>
+        virtualizer.scrollToIndex(rows.length - 1, { align: 'end' })
+      );
+    }
+  }, [convoKey, messages, nearBottom, pod.myPeerId, rows, virtualizer]);
 
   useEffect(() => {
-    if (!highlightedId || messages.length === 0) return;
-    const idx = messages.findIndex((m) => m.id === highlightedId);
-    if (idx >= 0) {
-      virtualizer.scrollToIndex(idx, { align: 'center' });
-    }
+    if (!highlightedId || rows.length === 0) return;
+    const idx = rows.findIndex((r) => r.id === highlightedId);
+    if (idx >= 0) virtualizer.scrollToIndex(idx, { align: 'center' });
     const timer = setTimeout(() => setHighlightedId(null), 2800);
     return () => clearTimeout(timer);
-  }, [highlightedId, messages, setHighlightedId, virtualizer]);
+  }, [highlightedId, rows, setHighlightedId, virtualizer]);
 
-  const handleScroll = () => {
+  // A keyboard opening, a tray opening or a window resize must not push the newest block out of view.
+  const nearBottomRef = useRef(true);
+  nearBottomRef.current = nearBottom;
+  useEffect(() => {
     const el = viewportRef.current;
     if (!el) return;
-    const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
-    setNearBottom(distanceFromBottom < 220);
-  };
+    const watch = new ResizeObserver(() => {
+      if (nearBottomRef.current) el.scrollTop = el.scrollHeight;
+    });
+    watch.observe(el);
+    return () => watch.disconnect();
+  }, []);
 
-  const virtualItems = virtualizer.getVirtualItems();
-  const streamTitle = activePeer
-    ? `Private 1:1 chat with ${activePeer.alias}`
-    : `Pod Group Chat in ${pod.title || `#${pod.code}`}`;
+  const onScroll = () => {
+    const el = viewportRef.current;
+    if (el) setNearBottom(el.scrollHeight - el.scrollTop - el.clientHeight < 220);
+  };
 
   return (
     <div
       ref={viewportRef}
-      onScroll={handleScroll}
-      className={styles.streamViewport}
+      className={c.stream}
+      onScroll={onScroll}
       role="log"
       aria-live="polite"
-      aria-label={streamTitle}
+      aria-label={activePeer ? `Private chat with ${activePeer.alias}` : `${roomName(pod)}, group chat`}
     >
-      {messagesQuery.hasNextPage && (
-        <div className={styles.loadOlderWrap}>
-          <button
-            type="button"
-            className={styles.loadOlderBtn}
-            disabled={messagesQuery.isFetchingNextPage}
-            onClick={() => messagesQuery.fetchNextPage()}
-          >
-            {messagesQuery.isFetchingNextPage
-              ? 'Loading older messages...'
-              : 'Load older messages'}
+      {query.isLoading ? null : query.isError && messages.length === 0 ? (
+        <div className={c.hello}>
+          <p>The messages did not load: {query.error.message}</p>
+          <button type="button" className={ui.btn} onClick={() => query.refetch()}>
+            Try again
           </button>
         </div>
-      )}
-
-      {messagesQuery.isLoading ? (
-        <div className={styles.emptyState}>
-          <p style={{ color: '#686868', fontSize: 14 }}>
-            {activePeer
-              ? `Loading private chat with ${activePeer.alias}...`
-              : `Loading Pod Group Chat...`}
-          </p>
-        </div>
       ) : messages.length === 0 ? (
-        activePeer ? (
-          <div className={styles.emptyState}>
-            <div style={{ position: 'relative', display: 'inline-flex' }}>
-              <span
-                className={styles.convoAvatar}
-                style={{
-                  width: 56,
-                  height: 56,
-                  fontSize: 18,
-                  background: safeAvatarColor(activePeer.color, activePeer.alias),
-                }}
-              >
-                {aliasInitials(activePeer.alias)}
-              </span>
-              <span
-                style={{
-                  position: 'absolute',
-                  right: -4,
-                  bottom: -4,
-                  width: 24,
-                  height: 24,
-                  borderRadius: 999,
-                  background: '#a1ffcb',
-                  color: '#144223',
-                  border: '2px solid #ffffff',
-                  display: 'inline-flex',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                }}
-              >
-                <Lock size={12} />
-              </span>
-            </div>
-            <h3 style={{ margin: 0, fontSize: 18 }}>
-              Private 1:1 Chat with {activePeer.alias}
-            </h3>
-            <p
-              style={{
-                margin: 0,
-                maxWidth: 420,
-                color: '#686868',
-                fontSize: 14,
-                lineHeight: 1.5,
-              }}
-            >
-              Messages, voice notes, and files here are visible{' '}
-              <strong>only</strong> to you ({pod.myAlias}) and{' '}
-              <strong>{activePeer.alias}</strong>. Real names, emails, genders,
-              and nationalities stay 100% hidden.
-            </p>
-          </div>
-        ) : (
-          <div className={styles.emptyState}>
-            <div
-              style={{
-                width: 52,
-                height: 52,
-                borderRadius: 14,
-                background: '#eafbef',
-                color: '#17522c',
-                display: 'inline-flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-                border: '1px solid rgba(31,107,58,0.24)',
-              }}
-            >
-              <Users size={24} />
-            </div>
-            <h3 style={{ margin: 0, fontSize: 18 }}>
-              Pod Group Chat · {pod.title || `#${pod.code}`}
-            </h3>
-            <p
-              style={{
-                margin: 0,
-                maxWidth: 440,
-                color: '#686868',
-                fontSize: 14,
-                lineHeight: 1.5,
-              }}
-            >
-              {pod.description ||
-                `Everyone in #${pod.code} chats under a peer-blind room alias. Say hi, share a voice note, run a /poll, or tap any member to message privately!`}
-            </p>
-            <div
-              style={{
-                display: 'inline-flex',
-                alignItems: 'center',
-                gap: 6,
-                fontSize: 12,
-                fontFamily: 'var(--m-font-mono)',
-                color: '#17522c',
-                background: '#ffffff',
-                padding: '6px 12px',
-                borderRadius: 999,
-                border: '1px solid rgba(31,107,58,0.22)',
-              }}
-            >
-              <Sparkles size={13} />
-              <span>Try /icebreaker, /poll, or /propose below</span>
-            </div>
-          </div>
-        )
+        <div className={c.hello}>
+          {activePeer ? (
+            <>
+              <Piece alias={activePeer.alias} size={72} />
+              <h2>Nothing here yet. Say hello to {activePeer.alias}.</h2>
+              <p>
+                You are {pod.myAlias} to them. Nobody else in the room can read this chat or see
+                that it exists.
+              </p>
+            </>
+          ) : (
+            <>
+              <Piece alias={pod.myAlias} size={72} />
+              <h2>You are {pod.myAlias} in here.</h2>
+              <p>{pod.description || 'Say hello, or deal an icebreaker and let the room do it.'}</p>
+            </>
+          )}
+        </div>
       ) : (
-        <div
-          style={{
-            height: `${virtualizer.getTotalSize()}px`,
-            width: '100%',
-            position: 'relative',
-          }}
-        >
-          {virtualItems.map((virtualRow) => {
-            const msg = messages[virtualRow.index];
-            if (!msg) return null;
-            return (
-              <div
-                key={msg.id}
-                data-index={virtualRow.index}
-                ref={virtualizer.measureElement}
-                style={{
-                  position: 'absolute',
-                  top: 0,
-                  left: 0,
-                  width: '100%',
-                  transform: `translateY(${virtualRow.start}px)`,
+        <div className={c.pile}>
+          {query.hasNextPage && (
+            <div className={c.older}>
+              <button
+                type="button"
+                className={`${ui.btn} ${ui.small}`}
+                disabled={query.isFetchingNextPage}
+                onClick={() => {
+                  anchorIdRef.current = messages[0]?.id ?? null;
+                  query.fetchNextPage();
                 }}
               >
-                <MessageCard
-                  message={msg}
-                  myPeerId={pod.myPeerId}
-                  knownAliases={knownAliases}
-                  highlighted={highlightedId === msg.id}
-                />
-              </div>
-            );
-          })}
+                {query.isFetchingNextPage ? 'Fetching' : 'Earlier messages'}
+              </button>
+            </div>
+          )}
+          <div className={c.streamInner} style={{ height: virtualizer.getTotalSize() }}>
+            {virtualizer.getVirtualItems().map((row) => {
+              const item = rows[row.index];
+              if (!item) return null;
+              const { msg, joined } = item;
+              const prev = rows[row.index - 1]?.msg;
+              const day = newDay(prev, msg);
+              return (
+                <div
+                  key={row.key}
+                  data-index={row.index}
+                  ref={virtualizer.measureElement}
+                  className={c.streamRow}
+                  style={{ transform: `translateY(${row.start}px)` }}
+                >
+                  {day && <p className={c.system}>{day}</p>}
+                  {joined.length > 0 ? (
+                    <Joined aliases={joined} />
+                  ) : (
+                    <MessageCard
+                      message={msg}
+                      myPeerId={pod.myPeerId}
+                      knownAliases={knownAliases}
+                      highlighted={highlightedId === msg.id}
+                      follows={!day && follows(prev, msg)}
+                    />
+                  )}
+                </div>
+              );
+            })}
+          </div>
         </div>
       )}
 
       {!nearBottom && messages.length > 0 && (
         <button
           type="button"
-          className={styles.jumpLatestBtn}
+          className={`${ui.btn} ${ui.ink} ${c.jump}`}
           onClick={() => {
-            virtualizer.scrollToIndex(messages.length - 1, { align: 'end' });
+            virtualizer.scrollToIndex(rows.length - 1, { align: 'end' });
             setNearBottom(true);
           }}
         >
-          <ArrowDown size={14} />
-          <span>Jump to latest</span>
+          Newest
         </button>
       )}
     </div>

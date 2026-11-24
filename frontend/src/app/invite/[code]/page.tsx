@@ -1,6 +1,6 @@
 'use client';
 
-import React, { Suspense, useCallback, useEffect, useState } from 'react';
+import { Suspense, useCallback, useEffect, useState } from 'react';
 import Link from 'next/link';
 import { useParams, useRouter, useSearchParams } from 'next/navigation';
 import { useQueryClient } from '@tanstack/react-query';
@@ -14,469 +14,266 @@ import {
   getAuthToken,
   isTabIsolatedMode,
 } from '@/lib/api';
+import { colorVar } from '@/lib/pieces';
 import { activePodIdAtom } from '@/state/workspaceAtoms';
+import { setPods } from '@/state/roomActions';
+import { Door } from '@/components/door/Door';
+import { SeatDots } from '@/components/pieces/Piece';
 import {
   extractInviteCode,
-  getPodTierLabel,
   type AcceptInviteResponse,
   type MatchRequest,
   type PodDetail,
   type PodInviteDto,
 } from '@/types/canopy';
-import styles from '../../auth.module.css';
+import ui from '@/components/pieces/ui.module.css';
+import s from '../../auth.module.css';
 
-async function fetchPublicInvite(code: string): Promise<PodInviteDto> {
-  const res = await fetch(
-    `${API_BASE}/api/invites/${encodeURIComponent(code)}`,
-    { cache: 'no-store' }
-  );
+async function fetchInvite(code: string): Promise<PodInviteDto> {
+  const res = await fetch(`${API_BASE}/api/invites/${encodeURIComponent(code)}`, {
+    cache: 'no-store',
+  });
   if (!res.ok) {
-    let msg =
-      res.status === 404
-        ? 'This pod invite link was not found.'
-        : `Could not load invite (${res.status})`;
-    try {
-      const errJson = await res.json();
-      msg = errJson.error || errJson.message || msg;
-    } catch {
-      // ignore json parse failure
-    }
-    throw new ApiError(res.status, msg);
+    const body = await res.json().catch(() => null);
+    throw new ApiError(
+      res.status,
+      body?.error || body?.message || 'That invite could not be opened.'
+    );
   }
-  const data = (await res.json()) as { invite: PodInviteDto };
-  return data.invite;
+  return ((await res.json()) as { invite: PodInviteDto }).invite;
 }
 
-function InviteLandingContent() {
+function InviteContent() {
   const params = useParams<{ code: string }>();
+  const search = useSearchParams();
   const router = useRouter();
-  const searchParams = useSearchParams();
   const queryClient = useQueryClient();
   const setActivePodId = useSetAtom(activePodIdAtom);
-
   const code = extractInviteCode(params?.code || '');
-  const freshParam = searchParams.get('fresh') === '1';
+  const fresh = search.get('fresh') === '1';
 
-  const [ready, setReady] = useState(false);
-  const [tabIsolated, setTabIsolated] = useState(freshParam);
-  const [hasToken, setHasToken] = useState(false);
-  const [freshChoiceMode, setFreshChoiceMode] = useState(false);
-
+  const [tabOnly, setTabOnly] = useState(fresh);
+  const [signedIn, setSignedIn] = useState(false);
   const [invite, setInvite] = useState<PodInviteDto | null>(null);
   const [loading, setLoading] = useState(true);
-  const [loadError, setLoadError] = useState<string | null>(null);
-  const [actionError, setActionError] = useState<string | null>(null);
-  const [accepting, setAccepting] = useState(false);
-  const [matchingOpen, setMatchingOpen] = useState(false);
+  const [problem, setProblem] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
 
-  const loadInvite = useCallback(async () => {
-    if (!code) {
-      setLoadError('Invalid invite code.');
-      setLoading(false);
-      return;
-    }
-    setLoading(true);
-    setLoadError(null);
+  const load = useCallback(async () => {
     try {
-      const dto = await fetchPublicInvite(code);
-      setInvite(dto);
+      if (!code) throw new Error('That is not an invite code.');
+      setInvite(await fetchInvite(code));
     } catch (err) {
-      setLoadError(
-        err instanceof Error ? err.message : 'Could not load pod invite.'
-      );
+      setProblem(err instanceof Error ? err.message : 'That invite could not be opened.');
     } finally {
       setLoading(false);
     }
   }, [code]);
 
   useEffect(() => {
-    if (freshParam) {
-      enableTabIsolatedMode();
-      setTabIsolated(true);
-    } else if (isTabIsolatedMode()) {
-      setTabIsolated(true);
-    }
-    setHasToken(Boolean(getAuthToken()));
-    setReady(true);
-  }, [freshParam]);
+    if (fresh) enableTabIsolatedMode();
+    if (fresh || isTabIsolatedMode()) setTabOnly(true);
+    setSignedIn(Boolean(getAuthToken()));
+  }, [fresh]);
 
   useEffect(() => {
-    loadInvite();
-  }, [loadInvite]);
+    load();
+  }, [load]);
 
-  const handleSwitchToFreshTabAccount = () => {
+  const app = tabOnly ? '/app?fresh=1' : '/app';
+  const qs = new URLSearchParams();
+  if (code) qs.set('invite', code);
+  if (tabOnly) qs.set('fresh', '1');
+
+  const startFresh = () => {
     enableTabIsolatedMode();
     clearAuthToken();
-    setTabIsolated(true);
-    setHasToken(false);
-    setFreshChoiceMode(true);
-    setActionError(null);
+    setTabOnly(true);
+    setSignedIn(false);
+    setProblem(null);
   };
 
-  const handleAcceptInvite = async () => {
-    if (!code || accepting) return;
-    setAccepting(true);
-    setActionError(null);
+  const act = async (work: () => Promise<void>) => {
+    setBusy(true);
+    setProblem(null);
     try {
+      await work();
+      router.push(app);
+    } catch (err) {
+      if (err instanceof ApiError && err.status === 401) {
+        clearAuthToken();
+        setSignedIn(false);
+        setProblem('You were signed out. Sign in and come straight back.');
+      } else {
+        setProblem(err instanceof Error ? err.message : 'That did not work. Try again.');
+        load();
+      }
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const accept = () =>
+    act(async () => {
       const res = await apiFetch<AcceptInviteResponse>(
         `/api/invites/${encodeURIComponent(code)}/accept`,
         { method: 'POST' }
       );
-      queryClient.setQueryData<{ pods: PodDetail[] }>(['pods'], {
-        pods: res.pods,
-      });
-      queryClient.invalidateQueries({ queryKey: ['interests'] });
+      setPods(queryClient, res.pods);
       setActivePodId(res.pod.podId);
-      router.push(tabIsolated ? '/app?fresh=1' : '/app');
-    } catch (err) {
-      if (err instanceof ApiError && err.status === 401) {
-        clearAuthToken();
-        setHasToken(false);
-        setActionError(
-          'Your login session expired — sign in or create an account to join this pod.'
-        );
-      } else {
-        setActionError(
-          err instanceof Error ? err.message : 'Could not accept pod invite.'
-        );
-        loadInvite();
-      }
-    } finally {
-      setAccepting(false);
-    }
-  };
+    });
 
-  const handleMatchAnotherOpenPod = async () => {
-    if (!invite || matchingOpen) return;
-    if (!hasToken || freshChoiceMode) {
-      router.push(tabIsolated ? '/register?fresh=1' : '/register');
+  const joinAnother = () => {
+    if (!invite) return;
+    if (!signedIn) {
+      router.push(tabOnly ? '/register?fresh=1' : '/register');
       return;
     }
-    setMatchingOpen(true);
-    setActionError(null);
-    try {
-      const payload: MatchRequest = {
+    act(async () => {
+      const req: MatchRequest = {
         interest: invite.interestSlug,
         matchAll: false,
         allowAdditional: true,
       };
-      const res = await apiFetch<{ matched: PodDetail[]; pods: PodDetail[] }>(
-        '/api/pods/match',
-        {
-          method: 'POST',
-          body: JSON.stringify(payload),
-        }
-      );
-      queryClient.setQueryData<{ pods: PodDetail[] }>(['pods'], {
-        pods: res.pods,
+      const res = await apiFetch<{ matched: PodDetail[]; pods: PodDetail[] }>('/api/pods/match', {
+        method: 'POST',
+        body: JSON.stringify(req),
       });
-      queryClient.invalidateQueries({ queryKey: ['interests'] });
+      setPods(queryClient, res.pods);
       const target = res.matched[0] || res.pods[res.pods.length - 1];
-      if (target) {
-        setActivePodId(target.podId);
-      }
-      router.push(tabIsolated ? '/app?fresh=1' : '/app');
-    } catch (err) {
-      if (err instanceof ApiError && err.status === 401) {
-        clearAuthToken();
-        setHasToken(false);
-        router.push(tabIsolated ? '/login?fresh=1' : '/login');
-      } else {
-        setActionError(
-          err instanceof Error
-            ? err.message
-            : 'Could not match into an open pod.'
-        );
-      }
-    } finally {
-      setMatchingOpen(false);
-    }
+      if (target) setActivePodId(target.podId);
+    });
   };
 
-  const inviteQuery = code
-    ? `invite=${encodeURIComponent(code)}${tabIsolated ? '&fresh=1' : ''}`
-    : tabIsolated
-      ? 'fresh=1'
-      : '';
-  const registerHref = `/register${inviteQuery ? `?${inviteQuery}` : ''}`;
-  const loginHref = `/login${inviteQuery ? `?${inviteQuery}` : ''}`;
-
-  if (!ready || loading) {
+  if (loading) {
     return (
-      <div className={styles.inviteWrap}>
-        <div className={styles.inviteCard}>
-          <span className={styles.kicker}>
-            <span className={styles.kickerDot} aria-hidden="true" />
-            Checking blind pod invite...
-          </span>
-          <p className={styles.lead} style={{ fontSize: 16 }}>
-            Loading pod seat count and room details...
-          </p>
+      <main className={s.docSheet}>
+        <div className={s.doc}>
+          <p className={s.lead}>Opening the invite</p>
         </div>
-      </div>
+      </main>
     );
   }
 
-  if (loadError || !invite) {
+  if (!invite) {
     return (
-      <div className={styles.inviteWrap}>
-        <div className={styles.inviteCard}>
-          <span className={styles.kicker}>Pod Invite Not Found</span>
-          <h1 className={styles.invitePodTitle}>Invite unavailable</h1>
-          <p className={styles.formAlert} role="alert">
-            {loadError || 'This invite code does not match an active blind pod.'}
-          </p>
-          <div className={styles.inviteActionsStack}>
-            <Link
-              href={
-                hasToken
-                  ? tabIsolated
-                    ? '/app?fresh=1'
-                    : '/app'
-                  : tabIsolated
-                    ? '/register?fresh=1'
-                    : '/register'
-              }
-              className={styles.mintPrimaryBtn}
-            >
-              {hasToken
-                ? 'Open Canopy Workspace'
-                : 'Browse Open 25-Member Blind Pods'}
+      <main className={s.two}>
+        <div className={s.room} style={{ '--c': 'var(--c-flint)' } as React.CSSProperties}>
+          <p>This invite leads nowhere</p>
+          <h2>No room</h2>
+        </div>
+        <section className={s.sheet}>
+          <div className={s.inner}>
+            <div>
+              <h1>The link is wrong or gone</h1>
+              <p className={s.lead}>{problem}</p>
+            </div>
+            <Link className={`${ui.btn} ${ui.big} ${ui.blue}`} href={signedIn ? app : '/register'}>
+              {signedIn ? 'Open Canopy' : 'Find a room instead'}
             </Link>
           </div>
-        </div>
-      </div>
+        </section>
+      </main>
     );
   }
 
-  const tierLabel = getPodTierLabel(invite.maxMembers);
-  const maxUsesReached =
-    !invite.canAccept &&
-    !invite.isRevoked &&
-    !invite.isExpired &&
-    !invite.isFull;
-  const unavailable =
-    invite.isRevoked || invite.isExpired || invite.isFull || maxUsesReached;
-  const showSignedInAccept = hasToken && !freshChoiceMode;
+  const spent =
+    !invite.canAccept && !invite.isRevoked && !invite.isExpired && !invite.isFull;
+  const why = invite.isRevoked
+    ? 'Someone in the room cancelled this link.'
+    : invite.isExpired
+      ? 'This link has run out.'
+      : spent
+        ? `This link let in ${invite.maxUses === 1 ? 'one person' : `${invite.maxUses} people`}, which was its limit.`
+        : invite.isFull
+          ? 'Every seat is taken.'
+          : null;
 
   return (
-    <div className={styles.inviteWrap}>
-      <div className={styles.inviteCard}>
-        <div className={styles.invitePillsRow}>
-          <span className={styles.inviteInterestPill}>
-            {invite.interestLabel}
-          </span>
-          <span
-            className={`${styles.inviteOccupancyBadge} ${
-              invite.isFull ? styles.inviteOccupancyFull : ''
-            }`}
-          >
-            {invite.isFull
-              ? `${invite.memberCount}/${invite.maxMembers} full · ${tierLabel}`
-              : `${tierLabel} · ${invite.memberCount} / ${invite.maxMembers} seats`}
-          </span>
+    <main className={s.two}>
+      <div className={s.room} style={colorVar(invite.podCode)}>
+        <div>
+          <p>{invite.invitedByAlias} invited you to</p>
+          <h2>{invite.podTitle || invite.interestLabel}</h2>
         </div>
-
-        <div style={{ display: 'grid', gap: 8 }}>
-          <h1 className={styles.invitePodTitle}>
-            {invite.podTitle
-              ? `${invite.podTitle} (#${invite.podCode})`
-              : `#${invite.podCode}`}
-          </h1>
-          <p className={styles.invitedByLine}>
-            <span className={styles.kickerDot} aria-hidden="true" />
-            <span>
-              Invited by <strong>{invite.invitedByAlias}</strong>
-            </span>
+        <div className={s.seats}>
+          <SeatDots
+            taken={invite.memberCount}
+            total={invite.maxMembers}
+            columns={invite.maxMembers > 25 ? 17 : invite.maxMembers > 10 ? 13 : 10}
+          />
+          <p>
+            {invite.memberCount} of {invite.maxMembers} seats taken
           </p>
         </div>
-
-        <div
-          className={styles.guaranteeBox}
-          role="note"
-          aria-label="Blind Pod Guarantee"
-        >
-          <div className={styles.guaranteeTitle}>
-            25-Member Blind Pod Guarantee
-          </div>
-          <p className={styles.guaranteeText}>
-            You&apos;ll enter this 25-member blind pod with a random animal
-            alias — neither <strong>{invite.invitedByAlias}</strong> nor anyone
-            in <strong>#{invite.podCode}</strong> sees your real name, email,
-            gender, or nationality.
-          </p>
-        </div>
-
-        {tabIsolated && (
-          <div className={styles.tabBadge}>
-            <strong>Tab-isolated peer mode (?fresh=1):</strong> Joining from
-            this tab uses an independent session so you can test multi-peer chat
-            and voice side by side.
-          </div>
-        )}
-
-        {actionError && (
-          <p className={styles.formAlert} role="alert">
-            {actionError}
-          </p>
-        )}
-
-        {invite.isRevoked && (
-          <div className={styles.formAlert} role="status">
-            This invite link was revoked by a member of #{invite.podCode}. You
-            can still match into another open {invite.interestLabel} pod below.
-          </div>
-        )}
-
-        {!invite.isRevoked && invite.isExpired && (
-          <div className={styles.formAlert} role="status">
-            This invite link has expired. Ask a peer in #{invite.podCode} for a
-            fresh link or match into another open {invite.interestLabel} pod.
-          </div>
-        )}
-
-        {!invite.isRevoked && !invite.isExpired && maxUsesReached && (
-          <div className={styles.formAlert} role="status">
-            This invite link reached its maximum use limit ({invite.maxUses}{' '}
-            {invite.maxUses === 1 ? 'use' : 'uses'}). You can match into another
-            open {invite.interestLabel} pod below.
-          </div>
-        )}
-
-        {!invite.isRevoked && !invite.isExpired && invite.isFull && (
-          <div className={styles.formAlert} role="status">
-            #{invite.podCode} is currently {invite.memberCount}/
-            {invite.maxMembers} full. Jump into another open{' '}
-            {invite.interestLabel} room right away.
-          </div>
-        )}
-
-        {unavailable ? (
-          <div className={styles.inviteActionsStack}>
-            <button
-              type="button"
-              className={styles.mintPrimaryBtn}
-              onClick={handleMatchAnotherOpenPod}
-              disabled={matchingOpen}
-            >
-              {matchingOpen
-                ? `Matching ${invite.interestLabel} pod...`
-                : `Match into another open ${invite.interestLabel} pod`}
-            </button>
-            {invite.isFull && showSignedInAccept && (
-              <button
-                type="button"
-                className={styles.secondaryBtnLink}
-                onClick={handleAcceptInvite}
-                disabled={accepting}
-              >
-                {accepting
-                  ? 'Checking membership...'
-                  : `Already in #${invite.podCode}? Open Pod`}
-              </button>
-            )}
-          </div>
-        ) : showSignedInAccept ? (
-          <div className={styles.inviteActionsStack}>
-            <button
-              type="button"
-              className={styles.mintPrimaryBtn}
-              onClick={handleAcceptInvite}
-              disabled={accepting}
-            >
-              {accepting
-                ? `Joining #${invite.podCode}...`
-                : `Accept Invite & Join #${invite.podCode}`}
-            </button>
-            <button
-              type="button"
-              className={styles.quietSwitchBtn}
-              onClick={handleSwitchToFreshTabAccount}
-            >
-              Join with a fresh test account in this tab
-            </button>
-          </div>
-        ) : (
-          <div className={styles.inviteActionsStack}>
-            <Link href={registerHref} className={styles.mintPrimaryBtn}>
-              Create Account &amp; Join Pod
-            </Link>
-            <Link href={loginHref} className={styles.secondaryBtnLink}>
-              Sign In &amp; Join Pod
-            </Link>
-            {!tabIsolated && (
-              <button
-                type="button"
-                className={styles.quietSwitchBtn}
-                onClick={handleSwitchToFreshTabAccount}
-              >
-                Join with a fresh test account in this tab
-              </button>
-            )}
-          </div>
-        )}
       </div>
-    </div>
+
+      <section className={s.sheet}>
+        <div className={s.inner}>
+          <div>
+            <h1>{why ?? 'There is a seat for you'}</h1>
+            <p className={s.lead}>
+              {why
+                ? `There are other ${invite.interestLabel} rooms.`
+                : `You come in as a colour and an animal. Nobody in there learns your name, not even ${invite.invitedByAlias}.`}
+            </p>
+          </div>
+          {problem && (
+            <p className={ui.alert} role="alert">
+              {problem}
+            </p>
+          )}
+          <div className={s.buttons}>
+            {why ? (
+              <>
+                <button type="button" className={`${ui.btn} ${ui.big} ${ui.blue}`} disabled={busy} onClick={joinAnother}>
+                  Join another {invite.interestLabel} room
+                </button>
+                {invite.isFull && signedIn && (
+                  <button type="button" className={`${ui.btn} ${ui.big}`} disabled={busy} onClick={accept}>
+                    I am already in it
+                  </button>
+                )}
+              </>
+            ) : signedIn ? (
+              <>
+                <button type="button" className={`${ui.btn} ${ui.big} ${ui.blue}`} disabled={busy} onClick={accept}>
+                  {busy ? 'Taking your seat' : 'Take the seat'}
+                </button>
+                <button type="button" className={`${ui.btn} ${ui.big}`} onClick={startFresh}>
+                  Join as a different account
+                </button>
+              </>
+            ) : (
+              <>
+                <Link className={`${ui.btn} ${ui.big} ${ui.blue}`} href={`/register?${qs}`}>
+                  Make an account and join
+                </Link>
+                <Link className={`${ui.btn} ${ui.big}`} href={`/login?${qs}`}>
+                  Sign in and join
+                </Link>
+              </>
+            )}
+          </div>
+          {tabOnly && <p className={ui.hint}>Whatever you do here stays in this tab.</p>}
+        </div>
+      </section>
+    </main>
   );
 }
 
-export default function InviteLandingPage() {
+export default function InvitePage() {
   return (
-    <div className={styles.shell}>
-      <header className={styles.topbar}>
-        <div className={styles.topbarInner}>
-          <Link href="/" className={styles.brand}>
-            <svg
-              className={styles.brandMark}
-              viewBox="0 0 24 24"
-              aria-hidden="true"
-              fill="#a1ffcb"
-            >
-              <circle
-                cx="6.5"
-                cy="6.5"
-                r="4.5"
-                stroke="#232323"
-                strokeWidth="1.2"
-              />
-              <circle
-                cx="17.5"
-                cy="6.5"
-                r="4.5"
-                stroke="#232323"
-                strokeWidth="1.2"
-              />
-              <circle
-                cx="6.5"
-                cy="17.5"
-                r="4.5"
-                stroke="#232323"
-                strokeWidth="1.2"
-              />
-              <rect
-                x="13"
-                y="13"
-                width="9"
-                height="9"
-                rx="1.5"
-                stroke="#232323"
-                strokeWidth="1.2"
-              />
-            </svg>
-            Canopy
-          </Link>
-          <div className={styles.topActions}>
-            <Link href="/app" className={styles.ghostLink}>
-              Open workspace
-            </Link>
-          </div>
-        </div>
-      </header>
-      <main className={styles.main}>
-        <Suspense fallback={<p>Loading pod invite...</p>}>
-          <InviteLandingContent />
-        </Suspense>
-      </main>
-    </div>
+    <Door
+      action={
+        <Link className={`${ui.btn} ${ui.small}`} style={{ background: 'var(--sheet)' }} href="/app">
+          Open Canopy
+        </Link>
+      }
+    >
+      <Suspense>
+        <InviteContent />
+      </Suspense>
+    </Door>
   );
 }

@@ -371,11 +371,11 @@ async function setupLocalAudioPipeline(
       micSource.connect(outgoingInputGain);
     } catch {
       usingFallbackSynth = true;
-      fallbackBanner = 'Mic unavailable — joined with synth voice test';
+      fallbackBanner = 'No microphone, so the others hear a test tone.';
     }
   } else {
     usingFallbackSynth = true;
-    fallbackBanner = 'Mic unavailable — joined with synth voice test';
+    fallbackBanner = 'No microphone, so the others hear a test tone.';
   }
 
   let pulseTick = 0;
@@ -851,17 +851,17 @@ export function useVoiceEngineController(): void {
               if (event.reason === 'declined') {
                 store.set(
                   dmCallNoticeAtom,
-                  `${peerAlias} declined the private 1:1 call.`
+                  `${peerAlias} declined the call.`
                 );
               } else if (event.reason === 'disconnected') {
                 store.set(
                   dmCallNoticeAtom,
-                  `Private call with ${peerAlias} ended (disconnected).`
+                  `The call with ${peerAlias} dropped.`
                 );
               } else if (curDm.status === 'connected') {
                 store.set(
                   dmCallNoticeAtom,
-                  `Private call with ${peerAlias} ended.`
+                  `The call with ${peerAlias} ended.`
                 );
               }
             }

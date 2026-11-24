@@ -6,7 +6,7 @@ Native mobile client for **Canopy** — peer-blind multi-pod rooms with **1 Pod 
 - **Expo SDK 52** (`react-native` `0.76.7`, `react` `18.3.1`, TypeScript `strict: true`)
 - **State & Caching**: `jotai` + `@tanstack/react-query` (zero Redux)
 - **Realtime & Audio**: Native `WebSocket` (`/ws/pods/{podId}?token=...`) + `expo-av`
-- **Design System**: Canopy `white-mint-tiles` (`#191b19`, `#f5f6f5`, `#ffffff`, `#232323`, `#a1ffcb`, `#1f6b3a`, zero violet, `>=44pt` touch targets)
+- **Design System**: Canopy **Pieces**, the same tokens as the web app: white sheets (`#ffffff`) on a `#f4f4f4` table, `#111111` ink, one blue (`#1a4be0`) for anything pressed, the twelve alias colours for people and what they send, `Gabarito` / `Figtree` / `DM Mono`, zero violet, `>=44pt` touch targets. A person's colour and shape come from their alias in `src/theme/palette.ts`, never from the hex the API sends. Phones get three tabs (Rooms, Chat, People); tablets, iPads and phones turned sideways (900pt wide or more) get all three side by side.
 
 ## Prerequisites
 Ensure the Canopy Spring Boot backend (`:8090`) and MySQL (`:3308`) are running from the repo root.

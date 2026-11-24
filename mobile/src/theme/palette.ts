@@ -1,59 +1,122 @@
-// Canopy white-mint-tiles design tokens (Zero Violet)
+// Pieces design tokens, mirrored from frontend/src/app/globals.css.
+// White sheets on a #f4f4f4 table, #111111 ink, one blue (#1a4be0) for anything
+// pressed, and twelve alias colours for people and what they send. Zero violet.
+//
+// The PALETTE keys below are older names that screens already use; they now map
+// onto Pieces values so every screen picks the new look up from one place.
+export const PIECES = {
+  bg: '#f4f4f4',
+  sheet: '#ffffff',
+  ink: '#111111',
+  ink2: '#333333',
+  muted: '#5c5c5c',
+  hair: '#d8d8d8',
+  blue: '#1a4be0',
+  blueDown: '#143cb8',
+  off: '#f19079',
+  alarm: '#a3200d',
+  glass: 'rgba(255,255,255,0.6)',
+} as const;
+
+export const PIECE_HEX = {
+  amber: '#e6a92e',
+  cobalt: '#7396f2',
+  cedar: '#c9855c',
+  slate: '#9cadb9',
+  mint: '#9bddbb',
+  coral: '#f19079',
+  flint: '#b4afa6',
+  ochre: '#cf9f45',
+  birch: '#eae0c8',
+  jade: '#5cbb91',
+  teal: '#55b5b3',
+  quartz: '#e8c7c9',
+} as const;
+
 export const PALETTE = {
-  charcoal: '#191b19',
-  surface: '#f3f3f3',
-  surfaceMuted: '#e8ebe8',
-  card: '#ffffff',
-  ink: '#232323',
-  muted: '#686868',
-  mint: '#a1ffcb',
-  mintSoft: '#e6fbee',
-  mintBorder: '#7be4ac',
-  forest: '#1f6b3a',
-  danger: '#b42318',
-  dangerSoft: '#fdeceb',
-  border: '#dfe3df',
-  borderStrong: '#c8cec8',
-  codeBg: '#f0f2f0',
-  amber: '#9a5b13',
-  amberSoft: '#fef6e7',
-  teal: '#0f5c5c',
-  slate: '#37474f',
+  charcoal: PIECES.ink,
+  surface: PIECES.bg,
+  surfaceMuted: '#ebebeb',
+  card: PIECES.sheet,
+  ink: PIECES.ink,
+  muted: PIECES.muted,
+  mint: PIECE_HEX.mint,
+  mintSoft: PIECES.bg,
+  mintBorder: PIECES.hair,
+  forest: PIECES.blue,
+  danger: PIECES.alarm,
+  dangerSoft: '#fbe3dd',
+  border: PIECES.hair,
+  borderStrong: '#bdbdbd',
+  codeBg: '#ececec',
+  amber: '#7a5200',
+  amberSoft: '#fbefd2',
+  teal: '#1f6f6d',
+  slate: '#3a4a54',
+  blue: PIECES.blue,
+  blueDown: PIECES.blueDown,
+  off: PIECES.off,
 } as const;
 
 export const TOUCH_MIN = 44;
 
-const SAFE_PEER_PALETTE = [
-  '#1f6b3a',
-  '#0f5c5c',
-  '#2c5e4f',
-  '#8c5319',
-  '#37474f',
-  '#235742',
-  '#4d5e28',
-  '#7a3e26',
-];
+export type PieceColorName = keyof typeof PIECE_HEX;
+export const PIECE_NAMES = Object.keys(PIECE_HEX) as PieceColorName[];
 
-/**
- * Ensures zero purple/violet/indigo hues ever appear in peer pills or rings.
- */
-export function safePeerColor(rawColor?: string | null, fallbackSeed = ''): string {
-  if (rawColor && /^#[0-9a-fA-F]{6}$/.test(rawColor)) {
-    const r = parseInt(rawColor.slice(1, 3), 16);
-    const g = parseInt(rawColor.slice(3, 5), 16);
-    const b = parseInt(rawColor.slice(5, 7), 16);
-    // Reject violet/purple/indigo where blue dominates green and red+blue are elevated
-    const isVioletish = b > g + 25 && r > 65 && b > 110;
-    const isIndigoish = b > g + 45 && b > r + 20;
-    if (!isVioletish && !isIndigoish) {
-      return rawColor;
-    }
-  }
-  let hash = 0;
-  for (let i = 0; i < fallbackSeed.length; i++) {
-    hash = (hash * 31 + fallbackSeed.charCodeAt(i)) >>> 0;
-  }
-  return SAFE_PEER_PALETTE[hash % SAFE_PEER_PALETTE.length];
+// Corner radii as fractions of the piece size, in CSS order: tl tr br bl.
+const PIECE_SHAPES: Record<string, [number, number, number, number]> = {
+  fox: [0.5, 0.5, 0.5, 0.5],
+  heron: [0.5, 0.5, 0.28, 0.28],
+  otter: [0.28, 0.5, 0.5, 0.28],
+  owl: [0.28, 0.28, 0.28, 0.28],
+  finch: [0.28, 0.28, 0.28, 0],
+  lynx: [0.28, 0.28, 0.5, 0.5],
+  badger: [0.5, 0.28, 0.28, 0.5],
+  wren: [0.5, 0.28, 0.5, 0.28],
+  falcon: [0.28, 0.5, 0.28, 0.5],
+  ibis: [0, 0.28, 0.28, 0.28],
+  marten: [0.5, 0.5, 0.5, 0],
+  seal: [0.5, 0, 0.5, 0.5],
+};
+const ANIMALS = Object.keys(PIECE_SHAPES);
+
+function hash(seed: string): number {
+  let h = 0;
+  for (let i = 0; i < seed.length; i++) h = (h * 31 + seed.charCodeAt(i)) >>> 0;
+  return h;
+}
+
+// An alias is two words. The first picks the colour, the animal picks the
+// shape. The hex the API sends is ignored on purpose.
+export function pieceColor(alias: string): string {
+  const word = alias.trim().split(/\s+/)[0]?.toLowerCase() ?? '';
+  const name = (PIECE_NAMES as string[]).includes(word)
+    ? (word as PieceColorName)
+    : PIECE_NAMES[hash(alias) % PIECE_NAMES.length];
+  return PIECE_HEX[name];
+}
+
+export function pieceRadii(alias: string, size: number) {
+  const animal = alias.trim().split(/\s+/)[1]?.toLowerCase() ?? '';
+  const r = PIECE_SHAPES[animal] ?? PIECE_SHAPES[ANIMALS[hash(alias) % ANIMALS.length]];
+  return {
+    borderTopLeftRadius: r[0] * size,
+    borderTopRightRadius: r[1] * size,
+    borderBottomRightRadius: r[2] * size,
+    borderBottomLeftRadius: r[3] * size,
+  };
+}
+
+// Kept so older call sites keep compiling; the API colour is never used.
+export function safePeerColor(_rawColor?: string | null, alias = ''): string {
+  return pieceColor(alias);
+}
+
+// Away pieces are the colour washed 66% toward white.
+export function washed(hex: string): string {
+  const n = parseInt(hex.slice(1), 16);
+  const mix = (c: number) => Math.round(c * 0.34 + 255 * 0.66);
+  return `rgb(${mix((n >> 16) & 255)}, ${mix((n >> 8) & 255)}, ${mix(n & 255)})`;
 }
 
 export function capacityTierBadge(memberCount: number, maxMembers: number): string {
@@ -64,7 +127,7 @@ export function capacityTierBadge(memberCount: number, maxMembers: number): stri
 
 export function aliasInitials(alias: string): string {
   const parts = alias.trim().split(/\s+/).filter(Boolean);
-  if (parts.length === 0) return '??';
+  if (parts.length === 0) return '?';
   if (parts.length === 1) return parts[0].slice(0, 2).toUpperCase();
   return `${parts[0][0]}${parts[1][0]}`.toUpperCase();
 }
