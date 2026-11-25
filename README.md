@@ -177,7 +177,7 @@ npm run start
 ## Free Cloud Test
 
 - **Backend**: `backend/Dockerfile` on a Render free Web Service (root directory `backend`, language Docker, health check `/api/health`). Environment: `DB_URL`, `DB_USER`, `DB_PASSWORD`, `CANOPY_JWT_SECRET` (`openssl rand -hex 32`), `CANOPY_CORS_ORIGINS`. Run one instance only: rooms live in its memory. Uploaded files are lost on restart.
-- **Database**: TiDB Cloud Starter, `DB_URL=jdbc:mysql://HOST:4000/canopy?sslMode=VERIFY_IDENTITY&useUnicode=true&characterEncoding=utf8&connectionCollation=utf8mb4_0900_ai_ci&allowMultiQueries=true&serverTimezone=UTC`. TiDB has no `MATCH ... AGAINST`, so search uses `LIKE` there (`DbFeatures`). To run the integration tests on another database, set `CANOPY_TEST_DB_URL`.
+- **Database**: TiDB Cloud Starter, `DB_URL=jdbc:mysql://HOST:4000/canopy?sslMode=VERIFY_IDENTITY&useUnicode=true&characterEncoding=utf8&connectionCollation=utf8mb4_0900_ai_ci&allowMultiQueries=true&serverTimezone=UTC`. TiDB has no `MATCH ... AGAINST`, so search uses `LIKE` there (`DbFeatures`). To run the integration tests on another database, set `CANOPY_TEST_DB_URL`. Each TiDB server hands out its own block of ids, so tables are created with `AUTO_ID_CACHE=1` there; a database made before that needs `db/tidb/001_single_id_counter.sql` once, with the backend stopped.
 - **Web**: static files on Firebase Hosting. From `frontend/`:
 
 ```bash

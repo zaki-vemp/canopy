@@ -262,9 +262,9 @@ public class DatabaseInitializer implements ApplicationRunner {
             Path.of("db/migrations/001_init.sql")
         ));
         if (ddl != null && ddl.contains("pod_read_cursors") && !ddl.contains("CREATE TABLE IF NOT EXISTS pod_channels")) {
-            executeSql(withoutUnsupported(ddl));
+            executeSql(forThisDatabase(ddl));
         } else {
-            executeSql(withoutUnsupported(FALLBACK_DDL));
+            executeSql(forThisDatabase(FALLBACK_DDL));
         }
         ensureSchemaUpgrades();
 
@@ -356,8 +356,12 @@ public class DatabaseInitializer implements ApplicationRunner {
             """);
     }
 
-    private String withoutUnsupported(String ddl) {
-        return dbFeatures.fullText() ? ddl : ddl.replaceAll(",\\s*FULLTEXT KEY \\w+ \\([^)]*\\)", "");
+    // TiDB has no full-text index, and by default each of its servers hands out its own block of ids.
+    // Messages are ordered by id, so there the ids have to come from one counter.
+    private String forThisDatabase(String ddl) {
+        return dbFeatures.fullText() ? ddl : ddl
+            .replaceAll(",\\s*FULLTEXT KEY \\w+ \\([^)]*\\)", "")
+            .replace("ENGINE=InnoDB", "ENGINE=InnoDB AUTO_ID_CACHE=1");
     }
 
     private void ensureColumn(String table, String column, String definition) {
