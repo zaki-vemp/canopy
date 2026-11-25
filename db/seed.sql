@@ -14,7 +14,6 @@ VALUES
   ('language-practice', 'Spoken Languages', 'social'),
   ('electronic-art', 'Synth & Visual Art', 'creative'),
   ('philosophy', 'Open Philosophy', 'social')
-AS seeded
 ON DUPLICATE KEY UPDATE
-  label = seeded.label,
-  category = seeded.category;
+  label = VALUES(label),
+  category = VALUES(category);

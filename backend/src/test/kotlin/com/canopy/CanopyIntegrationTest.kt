@@ -40,7 +40,7 @@ import java.util.concurrent.TimeUnit
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
 @TestPropertySource(
     properties = [
-        "spring.datasource.url=jdbc:mysql://127.0.0.1:3308/canopy_test?useUnicode=true&characterEncoding=utf8&connectionCollation=utf8mb4_0900_ai_ci&allowMultiQueries=true&serverTimezone=UTC"
+        "spring.datasource.url=\${CANOPY_TEST_DB_URL:jdbc:mysql://127.0.0.1:3308/canopy_test?useUnicode=true&characterEncoding=utf8&connectionCollation=utf8mb4_0900_ai_ci&allowMultiQueries=true&serverTimezone=UTC}"
     ]
 )
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)

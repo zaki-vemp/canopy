@@ -5,6 +5,7 @@ node_modules/
 # Next.js (frontend/)
 frontend/.next/
 frontend/out/
+frontend/.firebase/
 frontend/mockups/
 *.tsbuildinfo
 

@@ -241,16 +241,17 @@ public class DatabaseInitializer implements ApplicationRunner {
           ('language-practice', 'Spoken Languages', 'social'),
           ('electronic-art', 'Synth & Visual Art', 'creative'),
           ('philosophy', 'Open Philosophy', 'social')
-        AS seeded
         ON DUPLICATE KEY UPDATE
-          label = seeded.label,
-          category = seeded.category;
+          label = VALUES(label),
+          category = VALUES(category);
         """;
 
     private final JdbcTemplate jdbcTemplate;
+    private final DbFeatures dbFeatures;
 
-    public DatabaseInitializer(JdbcTemplate jdbcTemplate) {
+    public DatabaseInitializer(JdbcTemplate jdbcTemplate, DbFeatures dbFeatures) {
         this.jdbcTemplate = jdbcTemplate;
+        this.dbFeatures = dbFeatures;
     }
 
     @Override
@@ -261,9 +262,9 @@ public class DatabaseInitializer implements ApplicationRunner {
             Path.of("db/migrations/001_init.sql")
         ));
         if (ddl != null && ddl.contains("pod_read_cursors") && !ddl.contains("CREATE TABLE IF NOT EXISTS pod_channels")) {
-            executeSql(ddl);
+            executeSql(withoutUnsupported(ddl));
         } else {
-            executeSql(FALLBACK_DDL);
+            executeSql(withoutUnsupported(FALLBACK_DDL));
         }
         ensureSchemaUpgrades();
 
@@ -335,11 +336,13 @@ public class DatabaseInitializer implements ApplicationRunner {
             "idx_messages_pod_pinned",
             "CREATE INDEX idx_messages_pod_pinned ON messages (pod_id, dm_user_low_id, is_pinned, id DESC)"
         );
-        ensureIndex(
-            "messages",
-            "ft_messages_body",
-            "CREATE FULLTEXT INDEX ft_messages_body ON messages (body)"
-        );
+        if (dbFeatures.fullText()) {
+            ensureIndex(
+                "messages",
+                "ft_messages_body",
+                "CREATE FULLTEXT INDEX ft_messages_body ON messages (body)"
+            );
+        }
         jdbcTemplate.execute("""
             CREATE TABLE IF NOT EXISTS pod_read_cursors (
               pod_id BIGINT UNSIGNED NOT NULL,
@@ -351,6 +354,10 @@ public class DatabaseInitializer implements ApplicationRunner {
               KEY idx_read_cursors_peer (pod_id, peer_user_id, user_id)
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
             """);
+    }
+
+    private String withoutUnsupported(String ddl) {
+        return dbFeatures.fullText() ? ddl : ddl.replaceAll(",\\s*FULLTEXT KEY \\w+ \\([^)]*\\)", "");
     }
 
     private void ensureColumn(String table, String column, String definition) {

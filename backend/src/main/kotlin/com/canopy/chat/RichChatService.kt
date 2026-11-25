@@ -2,6 +2,7 @@ package com.canopy.chat
 
 import com.fasterxml.jackson.core.type.TypeReference
 import com.fasterxml.jackson.databind.ObjectMapper
+import com.canopy.config.DbFeatures
 import com.canopy.pods.DmSummaryDto
 import com.canopy.pods.PodProposalReader
 import com.canopy.pods.parsePublicIdOrBadRequest
@@ -29,7 +30,8 @@ class RichChatService(
     transactionManager: PlatformTransactionManager,
     private val objectMapper: ObjectMapper,
     private val podRealtimeHub: PodRealtimeHub,
-    private val podProposalReader: PodProposalReader
+    private val podProposalReader: PodProposalReader,
+    private val dbFeatures: DbFeatures
 ) {
     private val txTemplate = TransactionTemplate(transactionManager)
     private val rng = SecureRandom()
@@ -880,7 +882,7 @@ class RichChatService(
             .filter { it.length >= 3 && it.lowercase() !in INNODB_STOPWORDS }
             .take(8)
 
-        val rows = if (ftTokens.isNotEmpty() && wordTokens.all { it.length >= 3 || it.lowercase() in INNODB_STOPWORDS }) {
+        val rows = if (dbFeatures.fullText() && ftTokens.isNotEmpty() && wordTokens.all { it.length >= 3 || it.lowercase() in INNODB_STOPWORDS }) {
             val booleanQuery = ftTokens.joinToString(" ") { "+$it*" }
             jdbcClient.sql(
                 """
@@ -900,24 +902,26 @@ class RichChatService(
                 .list()
         } else {
             // ponytail: <3 char token fallback uses pod-scoped LIKE; move to Meilisearch if pods exceed 100k messages
-            val escaped = trimmed
-                .replace("\\", "\\\\")
-                .replace("%", "\\%")
-                .replace("_", "\\_")
+            // Without a full-text index every word is looked up on its own, so word order does not matter.
+            val needles = if (dbFeatures.fullText()) listOf(trimmed) else ftTokens.ifEmpty { listOf(trimmed) }
+            val patterns = needles.map {
+                "%" + it.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
+            }
+            val bodyMatches = patterns.indices.joinToString("\n                  ") { "AND m.body LIKE :like$it" }
             jdbcClient.sql(
                 """
                 $baseMessageSelect
                 WHERE m.pod_id = :podId
                   AND m.is_deleted = 0
                   AND (m.dm_user_low_id = 0 OR m.dm_user_low_id = :myUserId OR m.dm_user_high_id = :myUserId)
-                  AND m.body LIKE :likePattern
+                  $bodyMatches
                 ORDER BY m.id DESC
                 LIMIT 50
                 """.trimIndent()
             )
                 .param("podId", podInternalId)
                 .param("myUserId", principal.userId())
-                .param("likePattern", "%$escaped%")
+                .params(patterns.withIndex().associate { (i, p) -> "like$i" to p })
                 .query(rawMessageMapper)
                 .list()
         }

@@ -1,0 +1,21 @@
+{
+  "hosting": {
+    "public": "out",
+    "cleanUrls": true,
+    "ignore": ["**/.*", "**/node_modules/**", "names.json"],
+    "rewrites": [
+      { "source": "/", "destination": "/landing.html" },
+      { "source": "/invite/*", "destination": "/invite/_.html" }
+    ],
+    "headers": [
+      {
+        "source": "**",
+        "headers": [
+          { "key": "X-Robots-Tag", "value": "noindex" },
+          { "key": "X-Content-Type-Options", "value": "nosniff" },
+          { "key": "X-Frame-Options", "value": "DENY" }
+        ]
+      }
+    ]
+  }
+}
