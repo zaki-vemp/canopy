@@ -6,8 +6,10 @@ import {
 } from 'react-native';
 import { Text } from '../theme/ui';
 import { Audio } from 'expo-av';
+import { useAtomValue } from 'jotai';
 import { Ionicons } from '@expo/vector-icons';
 import { buildAttachmentUrl } from '../api/client';
+import { activeDmCallAtom, activeVoiceSessionAtom } from '../state/atoms';
 import type { AttachmentItem } from '../types/canopy';
 import { PIECES, TOUCH_MIN } from '../theme/palette';
 
@@ -21,6 +23,8 @@ function formatMs(ms: number): string {
 const WAVE_HEIGHTS = [10, 18, 14, 24, 20, 12, 22, 16, 26, 14, 19, 12, 20, 15];
 
 export function VoiceNotePlayer({ attachment }: { attachment: AttachmentItem }) {
+  const session = useAtomValue(activeVoiceSessionAtom);
+  const dmCall = useAtomValue(activeDmCallAtom);
   const soundRef = useRef<Audio.Sound | null>(null);
   const [isPlaying, setIsPlaying] = useState(false);
   const [positionMs, setPositionMs] = useState(0);
@@ -39,10 +43,13 @@ export function VoiceNotePlayer({ attachment }: { attachment: AttachmentItem }) 
   const handleTogglePlay = async () => {
     setErrorMsg(null);
     try {
-      await Audio.setAudioModeAsync({
-        allowsRecordingIOS: false,
-        playsInSilentModeIOS: true,
-      });
+      // During a call the call owns the audio route; changing it would cut the voices.
+      if (!session && !dmCall) {
+        await Audio.setAudioModeAsync({
+          allowsRecordingIOS: false,
+          playsInSilentModeIOS: true,
+        });
+      }
 
       if (soundRef.current) {
         const status = await soundRef.current.getStatusAsync();
@@ -144,11 +151,13 @@ export function VoiceNotePlayer({ attachment }: { attachment: AttachmentItem }) 
 }
 
 const styles = StyleSheet.create({
+  // The wave has no width of its own, so the card sets one for the bubble to wrap.
   card: {
+    width: 220,
+    maxWidth: '100%',
     flexDirection: 'row',
     alignItems: 'center',
     gap: 12,
-    marginTop: 2,
   },
   playButton: {
     width: 48,

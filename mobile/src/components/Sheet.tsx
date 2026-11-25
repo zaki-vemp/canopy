@@ -8,6 +8,7 @@ import {
   StyleSheet,
   View,
 } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { Text } from '../theme/ui';
 import { PIECES, TOUCH_MIN } from '../theme/palette';
@@ -29,6 +30,8 @@ export function Sheet({
   children: React.ReactNode;
   footer?: React.ReactNode;
 }) {
+  // A modal reaches the bottom edge, under the home bar.
+  const { bottom } = useSafeAreaInsets();
   return (
     <Modal
       visible={visible}
@@ -62,12 +65,17 @@ export function Sheet({
           </View>
           <ScrollView
             style={styles.body}
-            contentContainerStyle={styles.bodyContent}
+            contentContainerStyle={[
+              styles.bodyContent,
+              !footer && { paddingBottom: 12 + bottom },
+            ]}
             keyboardShouldPersistTaps="handled"
           >
             {children}
           </ScrollView>
-          {footer ? <View style={styles.footer}>{footer}</View> : null}
+          {footer ? (
+            <View style={[styles.footer, { paddingBottom: 20 + bottom }]}>{footer}</View>
+          ) : null}
         </KeyboardAvoidingView>
       </View>
     </Modal>
@@ -100,7 +108,8 @@ const styles = StyleSheet.create({
     paddingTop: 20,
     paddingBottom: 8,
   },
-  headerText: { flex: 1, gap: 6 },
+  // The title's first line sits level with the close button.
+  headerText: { flex: 1, gap: 6, paddingTop: (TOUCH_MIN - 30) / 2 },
   title: { fontSize: 26, lineHeight: 30, color: PIECES.ink, fontWeight: '600' },
   lead: { fontSize: 15, lineHeight: 21, color: PIECES.muted },
   close: {
@@ -116,7 +125,6 @@ const styles = StyleSheet.create({
   footer: {
     paddingHorizontal: 20,
     paddingTop: 8,
-    paddingBottom: 20,
     backgroundColor: PIECES.sheet,
   },
 });

@@ -58,6 +58,8 @@ const COMMANDS: SlashCommand[] = [
   { cmd: '/icebreaker', insert: '/icebreaker', does: 'Deal a question written for this hobby', roomOnly: true },
   { cmd: '/status', insert: '/status ', does: 'A line under your alias, in this room' },
   { cmd: '/shrug', insert: '/shrug ', does: '¯\\_(ツ)_/¯ after your message' },
+  { cmd: '/coin', insert: '/coin', does: 'Flip a fair coin' },
+  { cmd: '/roll', insert: '/roll ', does: 'Roll fair dice, like /roll 2d6 or /roll 20' },
   { cmd: '/invite', insert: '/invite', does: 'A link that lets people into this room', roomOnly: true },
   { cmd: '/rematch', insert: '/rematch', does: 'Out of this room, into another', roomOnly: true },
   { cmd: '/leave', insert: '/leave', does: 'Out of this room', roomOnly: true },
@@ -374,7 +376,7 @@ export function Composer({
   };
 
   const applyCommand = (x: SlashCommand) => {
-    if (x.cmd === '/propose' || x.cmd === '/invite' || x.cmd === '/icebreaker') {
+    if (x.cmd === '/propose' || x.cmd === '/invite' || x.cmd === '/icebreaker' || x.cmd === '/coin') {
       setDraft('');
       emitTyping(false);
       if (x.cmd === '/propose') openVote();

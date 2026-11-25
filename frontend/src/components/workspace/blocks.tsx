@@ -163,7 +163,15 @@ export function VoteBlock({
   );
 }
 
-export function PollBlock({ poll, podId }: { poll: PollData; podId: string }) {
+export function PollBlock({
+  poll,
+  podId,
+  canClose = false,
+}: {
+  poll: PollData;
+  podId: string;
+  canClose?: boolean;
+}) {
   const queryClient = useQueryClient();
   const total = poll.options.reduce((n, o) => n + o.votes, 0);
   const vote = useMutation({
@@ -171,6 +179,15 @@ export function PollBlock({ poll, podId }: { poll: PollData; podId: string }) {
       apiFetch<{ message: RichMessage }>(`/api/polls/${poll.pollId}/vote`, {
         method: 'POST',
         body: JSON.stringify({ optionIndex }),
+      }),
+    onSuccess: (res) => {
+      if (res?.message) patchMessageAcrossCaches(queryClient, podId, res.message, true);
+    },
+  });
+  const close = useMutation({
+    mutationFn: () =>
+      apiFetch<{ message: RichMessage }>(`/api/polls/${poll.pollId}/close`, {
+        method: 'POST',
       }),
     onSuccess: (res) => {
       if (res?.message) patchMessageAcrossCaches(queryClient, podId, res.message, true);
@@ -187,7 +204,7 @@ export function PollBlock({ poll, podId }: { poll: PollData; podId: string }) {
           className={c.opt}
           style={pct(o.votes, total)}
           aria-pressed={o.meVoted}
-          disabled={poll.isClosed || vote.isPending}
+          disabled={poll.isClosed || vote.isPending || close.isPending}
           title={o.voters.join(', ') || undefined}
           onClick={() => vote.mutate(o.index)}
         >
@@ -195,10 +212,22 @@ export function PollBlock({ poll, podId }: { poll: PollData; podId: string }) {
           <span>{o.votes}</span>
         </button>
       ))}
-      <p className={c.pollF}>
-        {total === 0 ? 'No votes yet' : `${total} ${total === 1 ? 'vote' : 'votes'}`}
-        {poll.isClosed ? ', closed' : ''}
-      </p>
+      <div className={ui.row} style={{ justifyContent: 'space-between', alignItems: 'center' }}>
+        <p className={c.pollF}>
+          {total === 0 ? 'No votes yet' : `${total} ${total === 1 ? 'vote' : 'votes'}`}
+          {poll.isClosed ? ', closed' : ''}
+        </p>
+        {canClose && !poll.isClosed && (
+          <button
+            type="button"
+            className={`${ui.btn} ${ui.small} ${ui.glass}`}
+            disabled={close.isPending}
+            onClick={() => close.mutate()}
+          >
+            Close poll
+          </button>
+        )}
+      </div>
     </div>
   );
 }

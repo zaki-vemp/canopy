@@ -1,9 +1,9 @@
 'use client';
 
 import { useEffect, useMemo } from 'react';
-import { useQuery } from '@tanstack/react-query';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useAtom, useAtomValue, useSetAtom } from 'jotai';
-import { Bookmark, Plus, UserRound } from 'lucide-react';
+import { BellOff, Bookmark, CheckCheck, Plus, UserRound } from 'lucide-react';
 import { apiFetch } from '@/lib/api';
 import { colorVar, initials } from '@/lib/pieces';
 import {
@@ -37,9 +37,10 @@ export function RoomsPanel({
   activePeerId: string | null;
   members: PodMember[];
 }) {
+  const queryClient = useQueryClient();
   const openConversation = useOpenConversation();
   const openRooms = useOpenRooms();
-  const unread = useAtomValue(unreadByConvoAtom);
+  const [unread, setUnread] = useAtom(unreadByConvoAtom);
   const setPeerRead = useSetAtom(peerReadByConvoAtom);
   const voicePeersByPod = useAtomValue(voicePeersByPodAtom);
   const voice = useAtomValue(voiceSessionAtom);
@@ -86,6 +87,7 @@ export function RoomsPanel({
     unread[conversationKey(podId, peerId)] ?? stored ?? 0;
 
   const roomUnread = (p: PodDetail) => {
+    if (p.myMuted) return 0;
     const group = unread[conversationKey(p.podId, null)] ?? p.unreadGroupCount ?? 0;
     if (p.podId === pod?.podId) return activePeerId === null ? 0 : group;
     return (p.dmConversations ?? []).reduce(
@@ -93,6 +95,28 @@ export function RoomsPanel({
       group
     );
   };
+
+  const totalUnread = pods.reduce((sum, p) => sum + roomUnread(p), 0);
+
+  const markAllRead = useMutation({
+    mutationFn: () =>
+      apiFetch<{ ok: boolean; updatedConversations: number }>('/api/pods/read-all', {
+        method: 'POST',
+      }),
+    onSuccess: () => {
+      setUnread({});
+      queryClient.setQueryData<{ pods: PodDetail[] }>(['pods'], (old) =>
+        old && {
+          pods: old.pods.map((p) => ({
+            ...p,
+            unreadGroupCount: 0,
+            dmConversations: (p.dmConversations ?? []).map((dm) => ({ ...dm, unreadCount: 0 })),
+          })),
+        }
+      );
+      queryClient.invalidateQueries({ queryKey: ['dms'] });
+    },
+  });
 
   const hasCall = (p: PodDetail) =>
     (voice.status === 'connected' && voice.podId === p.podId) ||
@@ -119,14 +143,29 @@ export function RoomsPanel({
 
   return (
     <aside className={s.left} aria-label="Rooms and private chats">
-      <button
-        type="button"
-        className={s.logoBtn}
-        onClick={() => openRooms(pods.length > 0 ? 'pods' : 'match')}
-        aria-label="Canopy: all your rooms"
-      >
-        <Logo />
-      </button>
+      <div className={s.leftHead}>
+        <button
+          type="button"
+          className={s.logoBtn}
+          onClick={() => openRooms(pods.length > 0 ? 'pods' : 'match')}
+          aria-label="Canopy: all your rooms"
+        >
+          <Logo />
+        </button>
+        {totalUnread > 0 && (
+          <button
+            type="button"
+            className={`${ui.btn} ${ui.small}`}
+            disabled={markAllRead.isPending}
+            onClick={() => markAllRead.mutate()}
+            title="Mark all rooms read"
+            aria-label="Mark all rooms read"
+          >
+            <CheckCheck size={16} aria-hidden="true" />
+            <b>Read all</b>
+          </button>
+        )}
+      </div>
 
       <div className={s.scroll}>
         {pods.map((p) => {
@@ -139,7 +178,7 @@ export function RoomsPanel({
               className={s.rm}
               style={colorVar(p.myAlias)}
               aria-current={current}
-              title={`${roomName(p)}, ${p.code}`}
+              title={`${roomName(p)}, ${p.code}${p.myMuted ? ' (muted)' : ''}`}
               onClick={() => openConversation(p.podId, null)}
             >
               <i>
@@ -150,11 +189,13 @@ export function RoomsPanel({
                 <b>{roomName(p)}</b>
                 <small>as {p.myAlias}</small>
               </span>
-              {count > 0 && (
+              {p.myMuted ? (
+                <BellOff size={16} className={s.mutedMark} aria-label="Muted" />
+              ) : count > 0 ? (
                 <em className={ui.badge} aria-label={`${count} new`}>
                   {count}
                 </em>
-              )}
+              ) : null}
             </button>
           );
         })}

@@ -64,6 +64,7 @@ CREATE TABLE IF NOT EXISTS pod_members (
   custom_status VARCHAR(80) NOT NULL DEFAULT '',
   in_voice TINYINT UNSIGNED NOT NULL DEFAULT 0,
   role VARCHAR(12) NOT NULL DEFAULT 'MEMBER',
+  is_muted TINYINT UNSIGNED NOT NULL DEFAULT 0,
   joined_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY (pod_id, user_id),
   KEY idx_pod_members_user (user_id, pod_id)

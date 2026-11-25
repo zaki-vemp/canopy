@@ -1,19 +1,18 @@
 import React, { useEffect, useState } from 'react';
 import {
   ActivityIndicator,
+  Keyboard,
   Modal,
-  Platform,
   Pressable,
   StyleSheet,
   View,
   useWindowDimensions,
 } from 'react-native';
 import { Text } from './src/theme/ui';
-import { Audio } from 'expo-av';
 import { StatusBar } from 'expo-status-bar';
 import { SafeAreaProvider, SafeAreaView } from 'react-native-safe-area-context';
 import { QueryClient, QueryClientProvider, useQuery } from '@tanstack/react-query';
-import { useAtom, useSetAtom } from 'jotai';
+import { useAtom, useAtomValue, useSetAtom } from 'jotai';
 import { Ionicons } from '@expo/vector-icons';
 import { useFonts } from 'expo-font';
 import {
@@ -39,9 +38,11 @@ import {
   unreadGroupByPodAtom,
 } from './src/state/atoms';
 import type { MobileTabKey } from './src/types/canopy';
-import { PIECES, TOUCH_MIN } from './src/theme/palette';
+import { GUTTER, PIECES, TOUCH_MIN } from './src/theme/palette';
 import { FONT_MAP } from './src/theme/fonts';
-import { Logo, Piece } from './src/components/Pieces';
+import { Badge, Logo, Piece } from './src/components/Pieces';
+import { CallBar } from './src/components/CallBar';
+import { useCalls } from './src/voice/useCalls';
 import { AuthScreen } from './src/screens/AuthScreen';
 import { PodsHubScreen } from './src/screens/PodsHubScreen';
 import { PodChatScreen } from './src/screens/PodChatScreen';
@@ -62,18 +63,32 @@ const MONO_FONT = 'DMMono_500Medium';
 
 const WIDE_MIN = 900;
 
-const TABS: ReadonlyArray<{ key: MobileTabKey; label: string }> = [
-  { key: 'pods', label: 'Rooms' },
+// Within a room on a phone, Chat and People are the two room tabs.
+const ROOM_TABS: ReadonlyArray<{ key: 'chat' | 'voice'; label: string }> = [
   { key: 'chat', label: 'Chat' },
   { key: 'voice', label: 'People' },
 ];
+
+// A phone with the keyboard up has no room to spare for tabs.
+function useKeyboardOpen(): boolean {
+  const [open, setOpen] = useState(false);
+  useEffect(() => {
+    const shown = Keyboard.addListener('keyboardDidShow', () => setOpen(true));
+    const hidden = Keyboard.addListener('keyboardDidHide', () => setOpen(false));
+    return () => {
+      shown.remove();
+      hidden.remove();
+    };
+  }, []);
+  return open;
+}
 
 function AuthenticatedWorkspace() {
   const [activeTab, setActiveTab] = useAtom(activeTabAtom);
   const [activePodId, setActivePodId] = useAtom(activePodIdAtom);
   const setActiveDmPeerMap = useSetAtom(activeDmPeerByPodAtom);
-  const [voiceSession, setVoiceSession] = useAtom(activeVoiceSessionAtom);
-  const [activeDmCall, setActiveDmCall] = useAtom(activeDmCallAtom);
+  const voiceSession = useAtomValue(activeVoiceSessionAtom);
+  const activeDmCall = useAtomValue(activeDmCallAtom);
   const [unreadGroupMap, setUnreadGroupMap] = useAtom(unreadGroupByPodAtom);
   const [unreadDmMap, setUnreadDmMap] = useAtom(unreadDmByPodPeerAtom);
   const setPeerLastReadMap = useSetAtom(peerLastReadByPodPeerAtom);
@@ -135,116 +150,78 @@ function AuthenticatedWorkspace() {
   ]);
 
   const { sendFrame } = usePodSocket(activePodId);
+  const calls = useCalls(sendFrame);
 
-  const hasUnreadChat =
-    Object.values(unreadGroupMap).some((c) => c > 0) ||
-    Object.values(unreadDmMap).some((c) => c > 0);
-
-  const handleAcceptIncomingDmCall = async () => {
-    if (!activeDmCall || activeDmCall.phase !== 'incoming') return;
-    if (voiceSession) {
-      sendFrame({ type: 'voice_leave' });
-      setVoiceSession(null);
-    }
-    try {
-      if (Platform.OS !== 'web') {
-        await Audio.requestPermissionsAsync();
-        await Audio.setAudioModeAsync({
-          allowsRecordingIOS: true,
-          playsInSilentModeIOS: true,
-        });
-      }
-    } catch {
-      // fallback to listen/synth mode cleanly
-    }
-
-    sendFrame({ type: 'dm_call_accept', callerPeerId: activeDmCall.peerId });
-    const targetPod = activeDmCall.podId;
-    const callerPeerId = activeDmCall.peerId;
-    setActiveDmCall({
-      ...activeDmCall,
-      phase: 'connected',
-    });
-    setActivePodId(targetPod);
-    setActiveDmPeerMap((prev) => ({ ...prev, [targetPod]: callerPeerId }));
-    setActiveTab('chat');
-  };
-
-  const handleDeclineIncomingDmCall = () => {
+  const handleAcceptIncomingDmCall = () => {
     if (!activeDmCall) return;
-    sendFrame({ type: 'dm_call_decline', callerPeerId: activeDmCall.peerId });
-    setActiveDmCall(null);
+    setActiveDmPeerMap((prev) => ({ ...prev, [activeDmCall.podId]: activeDmCall.peerId }));
+    setActiveTab('chat');
+    calls.answerPrivateCall();
   };
 
-  const { width } = useWindowDimensions();
+  const { width, height } = useWindowDimensions();
   // Tablets, iPads and phones turned sideways get three panes at once.
   const wide = width >= WIDE_MIN;
+  const short = height < 520;
+  const keyboardOpen = useKeyboardOpen();
   const sideWidth = Math.max(260, Math.min(360, Math.round(width * 0.28)));
   const podsList = podsQuery.data?.pods ?? [];
-  const activePodForPeople =
-    podsList.find((p) => p.podId === activePodId) ?? podsList[0] ?? null;
-  const unreadRooms =
-    Object.values(unreadGroupMap).reduce((a, b) => a + b, 0) +
-    Object.values(unreadDmMap).reduce((a, b) => a + b, 0);
+  const activePod = podsList.find((p) => p.podId === activePodId) ?? podsList[0] ?? null;
+  const inRoom = (activeTab === 'chat' || activeTab === 'voice') && podsList.length > 0;
+  // Inside a room on a phone, the room's own bar replaces the wordmark.
+  const showBrandBar = wide || !inRoom;
 
-  const accountScreen = (
-    <AccountScreen
-      onLeaveVoiceOnLogout={() => {
-        if (voiceSession) {
-          sendFrame({ type: 'voice_leave' });
-        }
-        if (activeDmCall) {
-          sendFrame({ type: 'dm_call_end', peerId: activeDmCall.peerId });
-        }
-      }}
-    />
+  const unreadForPod = (p: (typeof podsList)[number]) => {
+    if (p.myMuted) return 0;
+    const g = unreadGroupMap[p.podId] ?? p.unreadGroupCount ?? 0;
+    const d = (p.dmConversations ?? []).reduce(
+      (sum, dm) => sum + (unreadDmMap[dmConvoKey(p.podId, dm.peerId)] ?? dm.unreadCount ?? 0),
+      0
+    );
+    return g + d;
+  };
+  const activeRoomUnread = activePod ? unreadForPod(activePod) : 0;
+  const otherRoomsUnread = podsList.reduce(
+    (sum, p) => (p.podId === activePod?.podId ? sum : sum + unreadForPod(p)),
+    0
   );
 
+  const accountScreen = <AccountScreen onLeaveVoiceOnLogout={calls.hangUp} />;
+
   return (
-    <SafeAreaView style={styles.workspaceSafe} edges={['top', 'bottom']}>
+    <SafeAreaView style={styles.topSafe} edges={['top', 'left', 'right']}>
+    <SafeAreaView style={styles.workspaceSafe} edges={['bottom']}>
       <StatusBar style="dark" backgroundColor={PIECES.sheet} />
 
-      {/* White sheet top bar: the six-piece wordmark, a live-call chip, Saved and Account */}
-      <View style={styles.brandBar}>
-        <Logo size={26} />
-
-        <View style={styles.topRightRow}>
-          {activeDmCall && activeDmCall.phase !== 'incoming' ? (
+      {/* White sheet top bar: the six-piece wordmark, Saved and Account */}
+      {showBrandBar ? (
+      <View style={[styles.brandBar, short && styles.brandBarShort]}>
+        <View style={styles.brandLeftRow}>
+          {!wide && (activeTab === 'search' || activeTab === 'account') ? (
             <Pressable
               accessibilityRole="button"
-              accessibilityLabel={`Return to private call with ${activeDmCall.peerAlias}`}
-              onPress={() => {
-                setActivePodId(activeDmCall.podId);
-                setActiveDmPeerMap((prev) => ({
-                  ...prev,
-                  [activeDmCall.podId]: activeDmCall.peerId,
-                }));
-                setActiveTab('chat');
-              }}
-              style={styles.liveVoiceChip}
+              accessibilityLabel="Back to Rooms"
+              onPress={() => setActiveTab('pods')}
+              style={styles.roundBtn}
             >
-              <Ionicons name="lock-closed" size={12} color={PIECES.sheet} />
-              <Text style={styles.liveVoiceChipText} numberOfLines={1}>
-                {activeDmCall.peerAlias}
-              </Text>
-            </Pressable>
-          ) : voiceSession ? (
-            <Pressable
-              accessibilityRole="button"
-              accessibilityLabel="Return to the room call"
-              onPress={() => setActiveTab('voice')}
-              style={styles.liveVoiceChip}
-            >
-              <Ionicons name="volume-high" size={13} color={PIECES.sheet} />
-              <Text style={styles.liveVoiceChipText}>In the call</Text>
+              <Ionicons name="chevron-back" size={22} color={PIECES.ink} />
             </Pressable>
           ) : null}
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel="Canopy, your rooms"
+            onPress={() => setActiveTab('pods')}
+          >
+            <Logo size={26} />
+          </Pressable>
+        </View>
 
+        <View style={styles.topRightRow}>
           <Pressable
             accessibilityRole="button"
             accessibilityLabel="Search and saved"
             accessibilityState={{ selected: activeTab === 'search' }}
-            onPress={() => setActiveTab(activeTab === 'search' ? 'chat' : 'search')}
+            onPress={() => setActiveTab(activeTab === 'search' ? 'pods' : 'search')}
             style={[styles.roundBtn, activeTab === 'search' && styles.roundBtnOn]}
           >
             <Ionicons
@@ -268,6 +245,10 @@ function AuthenticatedWorkspace() {
           </Pressable>
         </View>
       </View>
+      ) : null}
+
+      {/* On a phone, Chat and People place the call under their own room bar. */}
+      {wide || !inRoom ? <CallBar calls={calls} /> : null}
 
       {/* Active screen sits on the grey table */}
       {wide ? (
@@ -275,52 +256,58 @@ function AuthenticatedWorkspace() {
           <View style={[styles.paneRooms, { width: sideWidth }]}>
             <PodsHubScreen />
           </View>
-          <View style={styles.paneChat}>
+          <View style={[styles.paneChat, short && styles.paneChatShort]}>
             {activeTab === 'search' ? (
               <SearchSavedScreen />
             ) : activeTab === 'account' ? (
               accountScreen
             ) : (
-              <PodChatScreen sendFrame={sendFrame} />
+              <PodChatScreen sendFrame={sendFrame} calls={calls} phone={false} />
             )}
           </View>
           <View style={[styles.panePeople, { width: sideWidth }]}>
-            <VoiceLoungeScreen sendFrame={sendFrame} />
+            <VoiceLoungeScreen calls={calls} phone={false} />
           </View>
         </View>
       ) : (
       <View style={styles.column}>
       <View style={styles.screenArea}>
         {activeTab === 'pods' ? <PodsHubScreen /> : null}
-        {activeTab === 'chat' ? <PodChatScreen sendFrame={sendFrame} /> : null}
+        {activeTab === 'chat' ? (
+          <PodChatScreen
+            sendFrame={sendFrame}
+            calls={calls}
+            phone
+            otherRoomsUnread={otherRoomsUnread}
+          />
+        ) : null}
         {activeTab === 'voice' ? (
-          <VoiceLoungeScreen sendFrame={sendFrame} />
+          <VoiceLoungeScreen
+            calls={calls}
+            phone
+            otherRoomsUnread={otherRoomsUnread}
+          />
         ) : null}
         {activeTab === 'search' ? <SearchSavedScreen /> : null}
         {activeTab === 'account' ? accountScreen : null}
       </View>
 
-      {/* Three pills: Rooms, Chat, People */}
-      {wide ? null : (
+      {/* Within a room: two pills — Chat and People */}
+      {inRoom && !keyboardOpen ? (
       <View style={styles.tabBar}>
-        {TABS.map((tab) => {
+        {ROOM_TABS.map((tab) => {
           const selected = activeTab === tab.key;
-          const count =
-            tab.key === 'pods'
-              ? podsList.length
-              : tab.key === 'voice'
-              ? activePodForPeople?.memberCount ?? 0
-              : 0;
-          const showDot =
-            (tab.key === 'voice' && !!voiceSession) ||
-            (tab.key === 'chat' && (hasUnreadChat || !!activeDmCall));
+          const unread = tab.key === 'chat' && !selected ? activeRoomUnread : 0;
+          const inCall =
+            tab.key === 'voice' &&
+            Boolean(voiceSession && activePod && voiceSession.podId === activePod.podId);
           return (
             <Pressable
               key={tab.key}
               accessibilityRole="tab"
-              accessibilityLabel={
-                count > 0 ? `${tab.label}, ${count}` : tab.label
-              }
+              accessibilityLabel={`${tab.label}${unread > 0 ? `, ${unread} unread` : ''}${
+                inCall ? ', in the call' : ''
+              }`}
               accessibilityState={{ selected }}
               onPress={() => setActiveTab(tab.key)}
               style={[styles.tabBtn, selected && styles.tabBtnActive]}
@@ -328,26 +315,15 @@ function AuthenticatedWorkspace() {
               <Text style={[styles.tabLabel, selected && styles.tabLabelActive]}>
                 {tab.label}
               </Text>
-              {count > 0 ? (
-                <View style={[styles.tabBadge, selected && styles.tabBadgeOn]}>
-                  <Text
-                    style={[styles.tabBadgeText, selected && styles.tabBadgeTextOn]}
-                  >
-                    {tab.key === 'chat' ? unreadRooms : count}
-                  </Text>
-                </View>
-              ) : null}
-              {tab.key === 'chat' && showDot && unreadRooms === 0 ? (
-                <View style={[styles.tabLiveDot, selected && { backgroundColor: PIECES.sheet }]} />
-              ) : null}
-              {tab.key === 'voice' && showDot ? (
+              {unread > 0 ? <Badge n={unread} onBlue={selected} /> : null}
+              {inCall ? (
                 <View style={[styles.tabLiveDot, selected && { backgroundColor: PIECES.sheet }]} />
               ) : null}
             </Pressable>
           );
         })}
       </View>
-      )}
+      ) : null}
       </View>
       )}
 
@@ -356,7 +332,7 @@ function AuthenticatedWorkspace() {
         visible={activeDmCall?.phase === 'incoming'}
         transparent
         animationType="fade"
-        onRequestClose={handleDeclineIncomingDmCall}
+        onRequestClose={calls.declinePrivateCall}
       >
         <View style={styles.incomingBackdrop}>
           <View style={styles.incomingCard}>
@@ -373,7 +349,7 @@ function AuthenticatedWorkspace() {
               <Pressable
                 accessibilityRole="button"
                 accessibilityLabel="Decline the private call"
-                onPress={handleDeclineIncomingDmCall}
+                onPress={calls.declinePrivateCall}
                 style={styles.declineCallBtn}
               >
                 <Ionicons name="close" size={18} color={PIECES.ink} />
@@ -393,6 +369,7 @@ function AuthenticatedWorkspace() {
           </View>
         </View>
       </Modal>
+    </SafeAreaView>
     </SafeAreaView>
   );
 }
@@ -485,20 +462,28 @@ const styles = StyleSheet.create({
     fontSize: 15,
     color: PIECES.muted,
   },
+  // The strip behind the clock matches the white bar under it.
+  topSafe: { flex: 1, backgroundColor: PIECES.sheet },
   workspaceSafe: {
     flex: 1,
     backgroundColor: PIECES.bg,
   },
   brandBar: {
     backgroundColor: PIECES.sheet,
-    paddingHorizontal: 16,
-    paddingVertical: 10,
+    paddingHorizontal: GUTTER,
+    paddingVertical: 8,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
     gap: 8,
     borderBottomWidth: 1,
     borderBottomColor: PIECES.hair,
+  },
+  brandBarShort: { paddingVertical: 2 },
+  brandLeftRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
   },
   topRightRow: {
     flexDirection: 'row',
@@ -517,52 +502,44 @@ const styles = StyleSheet.create({
   roundBtnOn: {
     backgroundColor: PIECES.ink,
   },
-  liveVoiceChip: {
-    minHeight: TOUCH_MIN,
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-    backgroundColor: PIECES.blue,
-    paddingHorizontal: 16,
-    borderRadius: 22,
-    maxWidth: 160,
-  },
-  liveVoiceChipText: {
-    color: PIECES.sheet,
-    fontSize: 14,
-    fontWeight: '600',
-  },
   screenArea: {
     flex: 1,
     backgroundColor: PIECES.bg,
   },
   column: { flex: 1, width: '100%', maxWidth: 680, alignSelf: 'center' },
+  // Each pane's own GUTTER lines its cards up with the bar above.
   panes: {
     flex: 1,
     flexDirection: 'row',
-    gap: 12,
-    padding: 12,
     backgroundColor: PIECES.bg,
   },
-  paneRooms: { borderRadius: 28, overflow: 'hidden' },
-  paneChat: { flex: 1, minWidth: 0, borderRadius: 28, overflow: 'hidden' },
-  panePeople: { borderRadius: 28, overflow: 'hidden' },
+  paneRooms: { overflow: 'hidden' },
+  paneChat: {
+    flex: 1,
+    minWidth: 0,
+    marginTop: GUTTER,
+    borderTopLeftRadius: 28,
+    borderTopRightRadius: 28,
+    overflow: 'hidden',
+  },
+  paneChatShort: { marginTop: 0, borderTopLeftRadius: 0, borderTopRightRadius: 0 },
+  panePeople: { overflow: 'hidden' },
   tabBar: {
     flexDirection: 'row',
     gap: 8,
     backgroundColor: PIECES.bg,
-    paddingTop: 6,
-    paddingBottom: 8,
-    paddingHorizontal: 12,
+    paddingTop: 2,
+    paddingBottom: 6,
+    paddingHorizontal: GUTTER,
   },
   tabBtn: {
     flex: 1,
-    minHeight: 52,
+    minHeight: TOUCH_MIN,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
     gap: 8,
-    borderRadius: 26,
+    borderRadius: TOUCH_MIN / 2,
     backgroundColor: PIECES.sheet,
   },
   tabBtnActive: {
@@ -575,26 +552,6 @@ const styles = StyleSheet.create({
   },
   tabLabelActive: {
     color: PIECES.sheet,
-  },
-  tabBadge: {
-    minWidth: 24,
-    height: 24,
-    paddingHorizontal: 6,
-    borderRadius: 12,
-    backgroundColor: PIECES.blue,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  tabBadgeOn: {
-    backgroundColor: PIECES.sheet,
-  },
-  tabBadgeText: {
-    fontSize: 13,
-    fontWeight: '700',
-    color: PIECES.sheet,
-  },
-  tabBadgeTextOn: {
-    color: PIECES.blue,
   },
   tabLiveDot: {
     width: 8,

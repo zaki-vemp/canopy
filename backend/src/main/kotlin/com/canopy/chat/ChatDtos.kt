@@ -164,6 +164,11 @@ data class MarkReadResponse(
     val lastReadMessageId: Long
 )
 
+data class MarkAllReadResponse(
+    val ok: Boolean = true,
+    val updatedConversations: Int
+)
+
 internal fun msgTypeToName(code: Int): String = when (code) {
     1 -> "TEXT"
     2 -> "SYSTEM"

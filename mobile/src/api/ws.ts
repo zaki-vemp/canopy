@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useRef } from 'react';
 import { useQueryClient, type InfiniteData } from '@tanstack/react-query';
-import { useAtomValue, useSetAtom } from 'jotai';
+import { useAtomValue, useSetAtom, useStore } from 'jotai';
 import { getWsBaseUrl } from './client';
+import { emitSocketOpen, emitWebRtcSignal } from '../voice/signals';
 import {
   activeDmCallAtom,
   activeDmPeerByPodAtom,
@@ -10,9 +11,8 @@ import {
   activeVoiceSessionAtom,
   apiBaseUrlAtom,
   authTokenAtom,
-  dmCallNoticeAtom,
+  callNoticeAtom,
   dmConvoKey,
-  lastWebRtcSignalAtom,
   peerLastReadByPodPeerAtom,
   podPresenceByPodAtom,
   typingByConvoAtom,
@@ -120,6 +120,7 @@ export interface PodSocketController {
  */
 export function usePodSocket(podId: string | null): PodSocketController {
   const queryClient = useQueryClient();
+  const store = useStore();
   const token = useAtomValue(authTokenAtom);
   const apiBaseUrl = useAtomValue(apiBaseUrlAtom);
   const activeTab = useAtomValue(activeTabAtom);
@@ -129,7 +130,6 @@ export function usePodSocket(podId: string | null): PodSocketController {
   const setPresenceByPod = useSetAtom(podPresenceByPodAtom);
   const setTypingByConvo = useSetAtom(typingByConvoAtom);
   const setVoicePeersByPod = useSetAtom(voicePeersByPodAtom);
-  const setLastSignal = useSetAtom(lastWebRtcSignalAtom);
   const setActiveDmPeerMap = useSetAtom(activeDmPeerByPodAtom);
   const setUnreadGroupMap = useSetAtom(unreadGroupByPodAtom);
   const setUnreadDmMap = useSetAtom(unreadDmByPodPeerAtom);
@@ -137,7 +137,7 @@ export function usePodSocket(podId: string | null): PodSocketController {
   const setActivePodId = useSetAtom(activePodIdAtom);
   const setVoiceSession = useSetAtom(activeVoiceSessionAtom);
   const setActiveDmCall = useSetAtom(activeDmCallAtom);
-  const setDmCallNotice = useSetAtom(dmCallNoticeAtom);
+  const setCallNotice = useSetAtom(callNoticeAtom);
 
   const wsRef = useRef<WebSocket | null>(null);
   const selfPeerIdRef = useRef<string | null>(null);
@@ -483,58 +483,46 @@ export function usePodSocket(podId: string | null): PodSocketController {
         }
 
         case 'dm_call_ringing': {
-          setDmCallNotice(null);
-          setActiveDmCall({
-            podId,
-            peerId: frame.targetPeerId,
-            peerAlias: frame.targetAlias,
-            peerColor: frame.targetColor,
-            peerOnline: frame.targetOnline,
-            phase: 'ringing',
-            muted: false,
-            speaking: false,
-            peerMuted: false,
-            peerSpeaking: false,
-          });
+          // Every device of the caller hears this; only the one that dialled shows it.
+          setActiveDmCall((prev) =>
+            prev?.phase === 'ringing' && prev.peerId === frame.targetPeerId
+              ? { ...prev, peerOnline: frame.targetOnline }
+              : prev
+          );
           break;
         }
 
         case 'dm_call_incoming': {
-          setDmCallNotice(null);
-          setActiveDmCall({
-            podId,
-            peerId: frame.fromPeerId,
-            peerAlias: frame.fromAlias,
-            peerColor: frame.fromColor,
-            peerOnline: true,
-            phase: 'incoming',
-            muted: false,
-            speaking: false,
-            peerMuted: false,
-            peerSpeaking: false,
-          });
+          setCallNotice(null);
+          setActiveDmCall((prev) =>
+            // Busy on another private call: let this one ring out.
+            prev && prev.phase !== 'incoming' && prev.peerId !== frame.fromPeerId
+              ? prev
+              : {
+                  podId,
+                  peerId: frame.fromPeerId,
+                  peerAlias: frame.fromAlias,
+                  peerColor: frame.fromColor,
+                  peerOnline: true,
+                  phase: 'incoming',
+                  muted: false,
+                  speaking: false,
+                  peerMuted: false,
+                  peerSpeaking: false,
+                }
+          );
           break;
         }
 
         case 'dm_call_connected': {
           const selfId = getSelfPeerId();
-          const isA = selfId === frame.peerAId;
-          const partnerId = isA ? frame.peerBId : frame.peerAId;
-          const partnerAlias = isA ? frame.peerBAlias : frame.peerAAlias;
-          setDmCallNotice(null);
-          setActiveDmCall((prev) => ({
-            podId,
-            peerId: partnerId,
-            peerAlias: partnerAlias,
-            peerColor: prev?.peerId === partnerId ? prev.peerColor : '#1f6b3a',
-            peerOnline: true,
-            phase: 'connected',
-            muted: prev?.peerId === partnerId ? prev.muted : false,
-            speaking: prev?.peerId === partnerId ? prev.speaking : false,
-            peerMuted: prev?.peerId === partnerId ? prev.peerMuted : false,
-            peerSpeaking:
-              prev?.peerId === partnerId ? prev.peerSpeaking : false,
-          }));
+          const partnerId = selfId === frame.peerAId ? frame.peerBId : frame.peerAId;
+          setActiveDmCall((prev) => {
+            if (!prev || prev.peerId !== partnerId) return prev;
+            // Still ringing here means another of our devices picked it up.
+            if (prev.phase === 'incoming') return null;
+            return { ...prev, peerOnline: true, phase: 'connected' };
+          });
           break;
         }
 
@@ -562,14 +550,22 @@ export function usePodSocket(podId: string | null): PodSocketController {
         }
 
         case 'dm_call_ended': {
+          const call = store.get(activeDmCallAtom);
+          if (!call) break;
+          // Our own hang-up comes back too, maybe after we dialled someone else. It
+          // only matters when another of our devices turned away a call ringing here.
+          const bySelf = frame.byPeerId === getSelfPeerId();
+          if (bySelf ? call.phase !== 'incoming' : frame.byPeerId !== call.peerId) break;
           setActiveDmCall(null);
-          setDmCallNotice(
-            frame.reason === 'declined'
-              ? 'Call declined.'
-              : frame.reason === 'disconnected'
-              ? 'Private 1:1 call disconnected.'
-              : 'Private 1:1 call ended.'
-          );
+          if (!bySelf) {
+            setCallNotice(
+              frame.reason === 'declined'
+                ? 'Call declined.'
+                : frame.reason === 'disconnected'
+                ? 'The private call dropped.'
+                : 'The private call ended.'
+            );
+          }
           break;
         }
 
@@ -889,12 +885,7 @@ export function usePodSocket(podId: string | null): PodSocketController {
         }
 
         case 'webrtc_signal': {
-          setLastSignal({
-            fromPeerId: frame.fromPeerId,
-            fromAlias: frame.fromAlias,
-            scope: frame.scope,
-            receivedAt: Date.now(),
-          });
+          emitWebRtcSignal(frame);
           break;
         }
 
@@ -920,6 +911,7 @@ export function usePodSocket(podId: string | null): PodSocketController {
         }
         retryAttempt = 0;
         setConnected(true);
+        emitSocketOpen(podId);
         if (pingTimer) clearInterval(pingTimer);
         pingTimer = setInterval(() => {
           if (sock.readyState === WebSocket.OPEN) {
@@ -984,11 +976,11 @@ export function usePodSocket(podId: string | null): PodSocketController {
     token,
     apiBaseUrl,
     queryClient,
+    store,
     setConnected,
     setPresenceByPod,
     setTypingByConvo,
     setVoicePeersByPod,
-    setLastSignal,
     setActiveDmPeerMap,
     setUnreadGroupMap,
     setUnreadDmMap,
@@ -996,7 +988,7 @@ export function usePodSocket(podId: string | null): PodSocketController {
     setActivePodId,
     setVoiceSession,
     setActiveDmCall,
-    setDmCallNotice,
+    setCallNotice,
   ]);
 
   return { sendFrame };

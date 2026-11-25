@@ -86,6 +86,7 @@ data class PodDetailDto(
     val myColor: String,
     val myRole: String = "MEMBER",
     val myStatus: String,
+    val myMuted: Boolean = false,
     val memberCount: Int,
     val maxMembers: Int,
     val openProposalsCount: Int = 0,
@@ -106,6 +107,16 @@ data class PodsListResponse(
 @JsonIgnoreProperties(ignoreUnknown = true)
 data class UpdateStatusRequest(
     val customStatus: String = ""
+)
+
+@JsonIgnoreProperties(ignoreUnknown = true)
+data class UpdateMuteRequest(
+    val muted: Boolean = false
+)
+
+data class UpdateMuteResponse(
+    val ok: Boolean = true,
+    val muted: Boolean
 )
 
 data class OkResponse(

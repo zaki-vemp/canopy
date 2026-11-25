@@ -32,7 +32,7 @@ import {
   type PodDetailDto,
   type RichMessageDto,
 } from '../types/canopy';
-import { PIECES, TOUCH_MIN, pieceColor } from '../theme/palette';
+import { GUTTER, PIECES, TOUCH_MIN, pieceColor } from '../theme/palette';
 import { Btn, Chip } from '../components/Pieces';
 import { MessageCard } from '../components/MessageCard';
 
@@ -282,7 +282,7 @@ export function SearchSavedScreen() {
                 <MessageCard
                   message={item}
                   myPeerId={meta.msgPod?.myPeerId ?? activePod?.myPeerId}
-                  onOpenActions={(msg) => quickToggleItemMutation.mutate(msg)}
+                  onOpenActions={handleOpenInChat}
                   onToggleReaction={(messageId, emoji) =>
                     reactMutation.mutate({ messageId, emoji })
                   }
@@ -293,11 +293,20 @@ export function SearchSavedScreen() {
                     voteProposalMutation.mutate({ proposalId, vote })
                   }
                 />
-                <Btn
-                  label={meta.isPrivateDm ? 'Open the private chat' : 'Open the group chat'}
-                  kind="white"
-                  onPress={() => handleOpenInChat(item)}
-                />
+                <View style={styles.resultActions}>
+                  <Btn
+                    label={meta.isPrivateDm ? 'Open the private chat' : 'Open the group chat'}
+                    kind="white"
+                    onPress={() => handleOpenInChat(item)}
+                  />
+                  <Btn
+                    label={
+                      mode === 'pins' ? 'Unpin' : item.isBookmarked ? 'Unsave' : 'Save it'
+                    }
+                    kind="white"
+                    onPress={() => quickToggleItemMutation.mutate(item)}
+                  />
+                </View>
               </View>
             );
           }}
@@ -318,8 +327,8 @@ export function SearchSavedScreen() {
                     ? `No messages matched "${submittedQuery}".`
                     : 'Type a word or two to search the group chat and your private chats in this room.'
                   : mode === 'pins'
-                  ? 'Nothing is pinned in this room. Press and hold a message to pin it.'
-                  : 'Press and hold any message and choose Save it.'}
+                  ? 'Nothing is pinned in this room. Tap a message in the chat to pin it.'
+                  : 'Tap any message in the chat and choose Save it.'}
               </Text>
             </View>
           }
@@ -335,10 +344,10 @@ const styles = StyleSheet.create({
     backgroundColor: PIECES.sheet,
     borderBottomLeftRadius: 28,
     borderBottomRightRadius: 28,
-    paddingHorizontal: 14,
-    paddingTop: 12,
-    paddingBottom: 14,
-    gap: 12,
+    paddingHorizontal: GUTTER,
+    paddingTop: 10,
+    paddingBottom: GUTTER,
+    gap: 10,
   },
   segRow: { flexDirection: 'row', gap: 8, flexWrap: 'wrap' },
   podScopeRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 8 },
@@ -354,10 +363,11 @@ const styles = StyleSheet.create({
     color: PIECES.ink,
   },
   centerBox: { flex: 1, alignItems: 'center', justifyContent: 'center' },
-  listContent: { padding: 12, paddingBottom: 24, flexGrow: 1 },
+  listContent: { padding: GUTTER, paddingBottom: 24, flexGrow: 1 },
   sep: { height: 16 },
   resultWrap: { gap: 6 },
-  placeTag: { fontSize: 13, color: PIECES.muted, fontFamily: MONO_FONT, paddingHorizontal: 6 },
+  resultActions: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
+  placeTag: { fontSize: 13, color: PIECES.muted, fontFamily: MONO_FONT, paddingHorizontal: 4 },
   emptyState: { alignItems: 'center', padding: 28, gap: 8 },
   emptyTitle: { fontSize: 22, color: PIECES.ink, fontWeight: '600' },
   emptyText: { fontSize: 15, lineHeight: 22, color: PIECES.muted, textAlign: 'center' },

@@ -5,6 +5,7 @@ import type {
   SelfUser,
   VoicePeerDto,
 } from '../types/canopy';
+import type { LinkState } from '../voice/engine';
 import { getDefaultApiBaseUrl } from '../api/client';
 
 export interface PodPresenceState {
@@ -15,10 +16,11 @@ export interface PodPresenceState {
 
 export interface ActiveVoiceSession {
   podId: string;
+  status: 'connecting' | 'connected';
   muted: boolean;
   deafened: boolean;
   speaking: boolean;
-  micMode: 'live' | 'listen-synth';
+  micMode: 'live' | 'listen';
 }
 
 export interface ActiveDmCallSession {
@@ -27,7 +29,7 @@ export interface ActiveDmCallSession {
   peerAlias: string;
   peerColor: string;
   peerOnline: boolean;
-  phase: 'ringing' | 'incoming' | 'connected';
+  phase: 'ringing' | 'incoming' | 'answering' | 'connected';
   muted: boolean;
   speaking: boolean;
   peerMuted: boolean;
@@ -56,10 +58,7 @@ export const typingByConvoAtom = atom<Record<string, string[]>>({});
 export const voicePeersByPodAtom = atom<Record<string, VoicePeerDto[]>>({});
 export const activeVoiceSessionAtom = atom<ActiveVoiceSession | null>(null);
 export const activeDmCallAtom = atom<ActiveDmCallSession | null>(null);
-export const dmCallNoticeAtom = atom<string | null>(null);
-export const lastWebRtcSignalAtom = atom<{
-  fromPeerId: string;
-  fromAlias: string;
-  scope?: 'GROUP' | 'DM';
-  receivedAt: number;
-} | null>(null);
+// How the sound to each person in the call is doing, by peerId.
+export const callLinksAtom = atom<Record<string, LinkState>>({});
+export const callNoticeAtom = atom<string | null>(null);
+export const speakerOnAtom = atom<boolean>(true);

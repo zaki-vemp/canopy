@@ -64,10 +64,13 @@ export function RichTextBody({
   body,
   compactSystem = false,
   color,
+  selectable = false,
 }: {
   body: string;
   compactSystem?: boolean;
   color?: string;
+  /** Off in bubbles: selecting text would swallow the press that opens the message. */
+  selectable?: boolean;
 }) {
   const [revealedSpoilers, setRevealedSpoilers] = useState<
     Record<string, boolean>
@@ -86,7 +89,7 @@ export function RichTextBody({
         if (block.kind === 'codeblock') {
           return (
             <View key={`cb-${bIdx}`} style={styles.codeBlock}>
-              <Text style={styles.codeBlockText} selectable>
+              <Text style={styles.codeBlockText} selectable={selectable}>
                 {block.code}
               </Text>
             </View>
@@ -104,7 +107,7 @@ export function RichTextBody({
                 compactSystem && styles.systemParagraphText,
                 color ? { color } : null,
               ]}
-              selectable
+              selectable={selectable}
             >
               {block.segments.map((seg, sIdx) => {
                 if (seg.kind === 'bold') {
@@ -202,7 +205,7 @@ const styles = StyleSheet.create({
   },
   paragraphText: {
     fontSize: 16,
-    lineHeight: 23,
+    lineHeight: 22,
     color: PIECES.ink,
   },
   systemParagraphText: {

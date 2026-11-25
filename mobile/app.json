@@ -10,14 +10,21 @@
       "supportsTablet": true,
       "bundleIdentifier": "com.canopy.mobile",
       "infoPlist": {
-        "NSMicrophoneUsageDescription": "Canopy uses your microphone for the room call, private calls and voice notes."
+        "NSMicrophoneUsageDescription": "Canopy uses your microphone for the room call, private calls and voice notes.",
+        "UIBackgroundModes": [
+          "audio"
+        ]
       }
     },
     "android": {
       "package": "com.canopy.mobile",
       "permissions": [
         "RECORD_AUDIO",
-        "MODIFY_AUDIO_SETTINGS"
+        "MODIFY_AUDIO_SETTINGS",
+        "ACCESS_NETWORK_STATE",
+        "BLUETOOTH",
+        "BLUETOOTH_CONNECT",
+        "WAKE_LOCK"
       ]
     },
     "web": {

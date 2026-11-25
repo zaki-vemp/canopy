@@ -21,9 +21,11 @@ import {
   fetchPublicizedPods,
   joinPublicizedPod,
   leavePod,
+  markAllPodsRead,
   matchPods,
   saveMyInterests,
   updatePlanTier,
+  updatePodMute,
   updatePodStatus,
 } from '../api/client';
 import {
@@ -43,6 +45,8 @@ import {
   type PodDetail,
 } from '../types/canopy';
 import {
+  GUTTER,
+  INSET,
   PALETTE,
   PIECES,
   PIECE_HEX,
@@ -110,8 +114,8 @@ export function PodsHubScreen() {
   const setActiveTab = useSetAtom(activeTabAtom);
   const [authUser, setAuthUser] = useAtom(authUserAtom);
   const voicePeersByPod = useAtomValue(voicePeersByPodAtom);
-  const unreadGroupMap = useAtomValue(unreadGroupByPodAtom);
-  const unreadDmMap = useAtomValue(unreadDmByPodPeerAtom);
+  const [unreadGroupMap, setUnreadGroupMap] = useAtom(unreadGroupByPodAtom);
+  const [unreadDmMap, setUnreadDmMap] = useAtom(unreadDmByPodPeerAtom);
 
   const isPro = authUser?.planTier === 'PREMIUM';
 
@@ -283,6 +287,51 @@ export function PodsHubScreen() {
     onSuccess: () => {
       setEditingStatusPodId(null);
       queryClient.invalidateQueries({ queryKey: ['pods'] });
+    },
+  });
+
+  const muteMutation = useMutation({
+    mutationFn: ({ podId, muted }: { podId: string; muted: boolean }) =>
+      updatePodMute(podId, muted),
+    onSuccess: (res, vars) => {
+      queryClient.setQueryData(
+        ['pods'],
+        (old: { pods: PodDetail[] } | undefined) =>
+          old
+            ? {
+                pods: old.pods.map((p) =>
+                  p.podId === vars.podId ? { ...p, myMuted: res.muted } : p
+                ),
+              }
+            : old
+      );
+      setFeedbackBanner(res.muted ? 'Room muted.' : 'Room unmuted.');
+    },
+  });
+
+  const markAllReadMutation = useMutation({
+    mutationFn: () => markAllPodsRead(),
+    onSuccess: () => {
+      setUnreadGroupMap({});
+      setUnreadDmMap({});
+      queryClient.setQueryData(
+        ['pods'],
+        (old: { pods: PodDetail[] } | undefined) =>
+          old
+            ? {
+                pods: old.pods.map((p) => ({
+                  ...p,
+                  unreadGroupCount: 0,
+                  dmConversations: (p.dmConversations ?? []).map((dm) => ({
+                    ...dm,
+                    unreadCount: 0,
+                  })),
+                })),
+              }
+            : old
+      );
+      queryClient.invalidateQueries({ queryKey: ['dms'] });
+      setFeedbackBanner('All rooms marked read.');
     },
   });
 
@@ -489,7 +538,30 @@ export function PodsHubScreen() {
 
         {/* Your rooms: one sheet, one row per room */}
         <View style={styles.sheetCard}>
-          <Text style={styles.h2}>Your rooms</Text>
+          <View style={styles.sheetHeadRow}>
+            <Text style={styles.h2}>Your rooms</Text>
+            {pods.some((p) => {
+              if (p.myMuted) return false;
+              const g = unreadGroupMap[p.podId] ?? p.unreadGroupCount ?? 0;
+              const d = (p.dmConversations ?? []).reduce(
+                (s, dm) =>
+                  s +
+                  (unreadDmMap[dmConvoKey(p.podId, dm.peerId)] ??
+                    dm.unreadCount ??
+                    0),
+                0
+              );
+              return g + d > 0;
+            }) ? (
+              <Btn
+                label="Mark all read"
+                icon="checkmark-done"
+                loading={markAllReadMutation.isPending}
+                onPress={() => markAllReadMutation.mutate()}
+                a11yLabel="Mark all rooms read"
+              />
+            ) : null}
+          </View>
 
           {podsQuery.isLoading ? (
             <View style={styles.loadingRow}>
@@ -562,7 +634,16 @@ export function PodsHubScreen() {
                           {pod.myStatus ? ` · ${pod.myStatus}` : ''}
                         </Text>
                       </View>
-                      {unread > 0 ? <Badge n={unread} /> : null}
+                      {pod.myMuted ? (
+                        <Ionicons
+                          name="notifications-off-outline"
+                          size={18}
+                          color={PIECES.muted}
+                          accessibilityLabel="Muted"
+                        />
+                      ) : unread > 0 ? (
+                        <Badge n={unread} />
+                      ) : null}
                     </Pressable>
                     <Pressable
                       accessibilityRole="button"
@@ -634,6 +715,7 @@ export function PodsHubScreen() {
 
                       <View style={styles.actionRow}>
                         <Btn
+                          style={styles.action}
                           label={pod.myStatus ? 'Change status' : 'Set status'}
                           kind="white"
                           icon="pricetag-outline"
@@ -647,6 +729,7 @@ export function PodsHubScreen() {
                           }}
                         />
                         <Btn
+                          style={styles.action}
                           label="Invite"
                           kind="white"
                           icon="share-social-outline"
@@ -655,9 +738,28 @@ export function PodsHubScreen() {
                             pod.title?.trim() || pod.interestLabel
                           }`}
                         />
-                      </View>
-                      <View style={styles.actionRow}>
                         <Btn
+                          style={styles.action}
+                          label={pod.myMuted ? 'Unmute' : 'Mute'}
+                          kind="white"
+                          icon={
+                            pod.myMuted
+                              ? 'notifications-outline'
+                              : 'notifications-off-outline'
+                          }
+                          disabled={muteMutation.isPending}
+                          onPress={() =>
+                            muteMutation.mutate({
+                              podId: pod.podId,
+                              muted: !pod.myMuted,
+                            })
+                          }
+                          a11yLabel={`${pod.myMuted ? 'Unmute' : 'Mute'} ${
+                            pod.title?.trim() || pod.interestLabel
+                          }`}
+                        />
+                        <Btn
+                          style={styles.action}
                           label="Another one"
                           kind="white"
                           a11yLabel={`Join another ${pod.interestLabel} room`}
@@ -667,6 +769,7 @@ export function PodsHubScreen() {
                           }
                         />
                         <Btn
+                          style={styles.action}
                           label="Switch"
                           kind="white"
                           icon="shuffle"
@@ -682,6 +785,7 @@ export function PodsHubScreen() {
                           }
                         />
                         <Btn
+                          style={styles.action}
                           label="Leave"
                           kind="off"
                           a11yLabel={`Leave ${
@@ -1176,29 +1280,35 @@ export function PodsHubScreen() {
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: PIECES.bg },
   flex: { flex: 1, minWidth: 0 },
-  content: { padding: 12, gap: 12, paddingBottom: 24 },
+  content: { padding: GUTTER, gap: GUTTER, paddingBottom: 24 },
   sheetCard: {
     backgroundColor: PIECES.sheet,
     borderRadius: 28,
-    padding: 16,
+    padding: INSET,
     gap: 10,
   },
-  h2: { fontSize: 24, lineHeight: 28, color: PIECES.ink, fontWeight: '600', paddingHorizontal: 4 },
-  h3: { fontSize: 18, lineHeight: 22, color: PIECES.ink, fontWeight: '600', paddingHorizontal: 4 },
+  sheetHeadRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 8,
+  },
+  h2: { fontSize: 24, lineHeight: 28, color: PIECES.ink, fontWeight: '600' },
+  h3: { fontSize: 18, lineHeight: 22, color: PIECES.ink, fontWeight: '600' },
   muted: { fontSize: 14, lineHeight: 20, color: PIECES.muted },
-  loadingRow: { flexDirection: 'row', alignItems: 'center', gap: 10, padding: 8 },
-  emptyBox: { gap: 6, padding: 6 },
+  loadingRow: { flexDirection: 'row', alignItems: 'center', gap: 10, paddingVertical: 8 },
+  emptyBox: { gap: 6, paddingVertical: 6 },
   emptyTitle: { fontSize: 20, color: PIECES.ink, fontWeight: '600' },
   doneBanner: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 8,
-    paddingLeft: 18,
+    paddingLeft: INSET,
     backgroundColor: PIECE_HEX.mint,
     borderRadius: 22,
   },
   errorBanner: {
-    paddingHorizontal: 18,
+    paddingHorizontal: INSET,
     paddingVertical: 14,
     backgroundColor: PIECES.off,
     borderTopLeftRadius: 20,
@@ -1236,7 +1346,6 @@ const styles = StyleSheet.create({
     borderRadius: 22,
     padding: 14,
     gap: 10,
-    marginHorizontal: 4,
   },
   tagRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 6 },
   tag: {
@@ -1251,7 +1360,8 @@ const styles = StyleSheet.create({
   },
   statusEditorRow: { flexDirection: 'row', gap: 8, alignItems: 'center' },
   actionRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
-  dmRow: { minHeight: 60, flexDirection: 'row', alignItems: 'center', gap: 12, paddingVertical: 6, paddingHorizontal: 4 },
+  action: { flexGrow: 1 },
+  dmRow: { minHeight: 60, flexDirection: 'row', alignItems: 'center', gap: 12, paddingVertical: 6 },
   dmName: { fontSize: 16, fontWeight: '600', color: PIECES.ink },
   inviteInputRow: { flexDirection: 'row', gap: 8, alignItems: 'center' },
   segRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },

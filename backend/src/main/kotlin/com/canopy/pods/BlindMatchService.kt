@@ -455,6 +455,7 @@ class BlindMatchService(
             val myColor: String,
             val myRole: String,
             val myStatus: String,
+            val myMuted: Boolean,
             val memberCount: Int,
             val maxMembers: Int
         )
@@ -477,7 +478,8 @@ class BlindMatchService(
                    my_pm.alias AS my_alias,
                    my_pm.alias_color AS my_color,
                    my_pm.role AS my_role,
-                   my_pm.custom_status AS my_status
+                   my_pm.custom_status AS my_status,
+                   my_pm.is_muted AS my_muted
             FROM pod_members my_pm
             JOIN pods p ON p.id = my_pm.pod_id
             JOIN interests i ON i.id = p.interest_id
@@ -505,6 +507,7 @@ class BlindMatchService(
                     myColor = rs.getString("my_color"),
                     myRole = rs.getString("my_role") ?: "MEMBER",
                     myStatus = rs.getString("my_status") ?: "",
+                    myMuted = rs.getInt("my_muted") != 0,
                     memberCount = rs.getInt("member_count"),
                     maxMembers = rs.getInt("max_members")
                 )
@@ -598,6 +601,7 @@ class BlindMatchService(
                 myColor = h.myColor,
                 myRole = h.myRole,
                 myStatus = h.myStatus,
+                myMuted = h.myMuted,
                 memberCount = h.memberCount,
                 maxMembers = h.maxMembers,
                 openProposalsCount = openProposalsByPod[h.id] ?: 0,
@@ -754,6 +758,21 @@ class BlindMatchService(
             .update()
 
         podRealtimeHub.broadcastPresenceSnapshot(podRow.podInternalId, podRow.podIdHex)
+    }
+
+    fun updateMute(principal: AuthPrincipal, podIdHexRaw: String, muted: Boolean): Boolean {
+        val podPublicBytes = parsePublicIdOrBadRequest(podIdHexRaw, "podId")
+        val podRow = requireMemberPodRow(principal.userId(), podPublicBytes)
+
+        jdbcClient.sql(
+            "UPDATE pod_members SET is_muted = :muted WHERE pod_id = :podId AND user_id = :userId"
+        )
+            .param("muted", if (muted) 1 else 0)
+            .param("podId", podRow.podInternalId)
+            .param("userId", principal.userId())
+            .update()
+
+        return muted
     }
 
     fun leavePod(

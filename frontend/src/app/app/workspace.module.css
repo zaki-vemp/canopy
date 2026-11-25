@@ -27,7 +27,9 @@
 
 /* Left: rooms and private chats */
 .left { display: flex; flex-direction: column; padding: 16px 12px 12px; }
-.logoBtn { align-self: flex-start; padding: 6px 10px 14px; border-radius: 14px; }
+.leftHead { display: flex; align-items: center; justify-content: space-between; gap: 6px; padding-bottom: 8px; }
+.logoBtn { align-self: flex-start; padding: 6px 10px 6px; border-radius: 14px; }
+.mutedMark { flex: none; color: var(--muted); }
 .scroll,
 .side { scrollbar-width: thin; scrollbar-color: var(--hair) transparent; }
 .scroll { flex: 1; min-height: 0; overflow: auto; margin: 0 -4px; padding: 0 4px; display: flex; flex-direction: column; gap: 4px; }
@@ -97,6 +99,12 @@
 .headDm h1 { font: 500 24px/1.1 var(--fd); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .headDm p { font-size: 14px; margin-top: 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .notice { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 8px 12px 0; padding: 8px 8px 8px 22px; border-radius: 22px; background: var(--c-amber); font-weight: 500; }
+.pinBar { display: flex; align-items: center; gap: 10px; width: calc(100% - 24px); min-height: 44px; margin: 6px 12px 0; padding: 6px 16px; border-radius: 22px; background: var(--bg); color: var(--ink); font-size: 14px; text-align: left; transition: background 0.15s; }
+.pinBar:hover { background: #e8e8e8; }
+.pinBar > svg { flex: none; color: var(--muted); }
+.pinBar > span { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pinBar b { font-weight: 600; margin-right: 6px; }
+.pinBar em { flex: none; font-style: normal; font: 500 13px/1 var(--fm); color: var(--muted); }
 .strip { display: none; }
 .empty { display: grid; align-content: center; justify-items: start; gap: 20px; padding: 48px; overflow: auto; }
 .empty h1 { font: 500 clamp(32px, 4vw, 52px)/1.02 var(--fd); letter-spacing: -0.02em; text-wrap: balance; max-width: 16ch; }
@@ -201,7 +209,9 @@
   .app { grid-template-columns: 92px minmax(0, 1fr) 304px; }
   .app[data-empty] { grid-template-columns: 92px minmax(0, 1fr); }
   .left { padding: 16px 10px 12px; }
-  .logoBtn { padding: 6px 0 14px; align-self: center; }
+  .leftHead { flex-direction: column; align-items: center; }
+  .leftHead b { display: none; }
+  .logoBtn { padding: 6px 0 6px; align-self: center; }
   .logoBtn > span > span:nth-child(n + 2) { display: none; }
   .logoBtn > span > span { width: 44px; height: 44px; font-size: 26px; border-radius: 12px 12px 12px 0 !important; }
   .rm > span,
@@ -233,7 +243,9 @@
   .app[data-view='rooms'] .left { display: flex; }
   .app[data-view='chat'] .mid { display: grid; }
   .app[data-view='people'] .right { display: flex; }
-  .logoBtn { align-self: flex-start; padding: 6px 10px 14px; }
+  .logoBtn { align-self: flex-start; padding: 6px 10px 6px; }
+  .leftHead { flex-direction: row; align-items: center; }
+  .leftHead b { display: inline; }
   .logoBtn > span > span:nth-child(n + 2) { display: grid; }
   .logoBtn > span > span { width: 30px; height: 30px; font-size: 18px; }
   .logoBtn > span > span:nth-child(2) { border-radius: 0 0 50% 50% !important; }

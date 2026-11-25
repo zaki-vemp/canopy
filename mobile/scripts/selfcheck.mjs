@@ -98,6 +98,20 @@ assert.equal(
   true,
   'Missing read-cursor /api/pods/${podId}/read endpoint'
 );
+assert.equal(
+  clientSrc.includes('/api/pods/${podId}/mute') &&
+    clientSrc.includes('/api/pods/read-all') &&
+    clientSrc.includes('/api/polls/${pollId}/close'),
+  true,
+  'Missing mute, read-all, or closePoll endpoints in src/api/client.ts'
+);
+
+const appSrc = fs.readFileSync(path.join(rootDir, 'App.tsx'), 'utf8');
+assert.equal(
+  appSrc.includes('ROOM_TABS') && appSrc.includes("inRoom && !keyboardOpen"),
+  true,
+  'Phone layout must keep Chat and People tabs scoped within rooms'
+);
 
 const wsSrc = fs.readFileSync(path.join(rootDir, 'src', 'api', 'ws.ts'), 'utf8');
 for (const wsEvent of [
@@ -120,9 +134,11 @@ const chatScreenSrc = fs.readFileSync(
   'utf8'
 );
 assert.equal(
-  chatScreenSrc.includes('dm_call_ring'),
+  fs
+    .readFileSync(path.join(rootDir, 'src', 'voice', 'useCalls.ts'), 'utf8')
+    .includes('dm_call_ring'),
   true,
-  'Missing dm_call_ring trigger in PodChatScreen.tsx'
+  'Missing dm_call_ring trigger in useCalls.ts'
 );
 assert.equal(
   chatScreenSrc.includes('markPodConversationRead'),
@@ -326,6 +342,125 @@ for (const file of sourceFiles) {
   }
 }
 
+// 10. Call engine: who offers, when, and what happens when the other side starts over.
+const { CallEngine } = await import('../src/voice/engine.ts');
+const settle = () => new Promise((r) => setTimeout(r, 5));
+function fakeCall() {
+  const sent = [];
+  const pcs = [];
+  const track = { enabled: true, stopped: false, stop() { this.stopped = true; } };
+  const mic = { getAudioTracks: () => [track], getTracks: () => [track] };
+  const kit = {
+    createPeer() {
+      const pc = {
+        connectionState: 'new',
+        signalingState: 'stable',
+        localDescription: null,
+        remoteDescription: null,
+        candidates: [],
+        closed: false,
+        tracks: 0,
+        addTrack() { pc.tracks += 1; },
+        addTransceiver() { pc.receiveOnly = true; },
+        async createOffer() { return { type: 'offer', sdp: 'offer' }; },
+        async createAnswer() { return { type: 'answer', sdp: 'answer' }; },
+        async setLocalDescription(d) {
+          pc.localDescription = d;
+          pc.signalingState = d.type === 'offer' ? 'have-local-offer' : 'stable';
+        },
+        async setRemoteDescription(d) { pc.remoteDescription = d; pc.signalingState = 'stable'; },
+        async addIceCandidate(c) {
+          assert.ok(pc.remoteDescription, 'candidate added before the description');
+          pc.candidates.push(c.candidate);
+        },
+        async getStats() { return new Map(); },
+        close() { pc.closed = true; },
+      };
+      pcs.push(pc);
+      return pc;
+    },
+    micDenied: false,
+    async getMic() {
+      if (kit.micDenied) throw new Error('denied');
+      return mic;
+    },
+    play: () => () => {},
+    startSession() { kit.session = true; },
+    stopSession() { kit.session = false; },
+    setSpeaker() {},
+  };
+  const engine = new CallEngine(kit, (f) => sent.push(f), () => {});
+  const kinds = () => sent.map((f) => `${f.targetPeerId}:${f.signal.sdp?.type ?? 'candidate'}`);
+  return { engine, kit, pcs, sent, kinds, track };
+}
+const offerFrom = (fp) => ({ sdp: { type: 'offer', sdp: `a=fingerprint:sha-256 ${fp}` } });
+
+{
+  const { engine, pcs, kinds, kit, track } = fakeCall();
+  assert.equal(await engine.open('GROUP', 'p_b'), 'live');
+  // Not on the server's list yet: an offer now would be dropped for good.
+  engine.sync(['p_a', 'p_c']);
+  assert.equal(pcs.length, 0);
+  engine.sync(['p_a', 'p_b', 'p_c']);
+  await settle();
+  assert.deepEqual(kinds(), ['p_c:offer'], 'only the lower peerId offers');
+  assert.equal(pcs.every((pc) => pc.tracks === 1), true, 'every connection carries our voice');
+  // The other side's offer, with a candidate that overtook nothing.
+  engine.receive('p_a', 'GROUP', { candidate: { candidate: 'early' } });
+  engine.receive('p_a', 'GROUP', offerFrom('AA'));
+  await settle();
+  assert.deepEqual(kinds(), ['p_c:offer', 'p_a:answer']);
+  assert.deepEqual(pcs[0].candidates, ['early']);
+  // Same person, new certificate: they rebuilt their connection, so do we.
+  engine.receive('p_a', 'GROUP', offerFrom('BB'));
+  await settle();
+  assert.equal(pcs[0].closed, true);
+  assert.equal(pcs.length, 3);
+  // Both offered at once: ours stands, because p_b sorts before p_c.
+  engine.receive('p_c', 'GROUP', offerFrom('CC'));
+  await settle();
+  assert.equal(kinds().filter((k) => k === 'p_c:answer').length, 0);
+  // A frame from the other kind of call is not ours.
+  engine.receive('p_z', 'DM', offerFrom('ZZ'));
+  assert.equal(pcs.length, 3);
+  engine.setMuted(true);
+  assert.equal(track.enabled, false);
+  engine.sync(['p_b']);
+  assert.equal(pcs.every((pc) => pc.closed), true, 'people who left are closed');
+  engine.close();
+  assert.equal(kit.session, false);
+  assert.equal(track.stopped, true);
+}
+{
+  // The route died (the phone changed networks): ask for a new one, same connection.
+  const { engine, pcs, kinds } = fakeCall();
+  await engine.open('GROUP', 'p_a');
+  engine.sync(['p_a', 'p_b']);
+  await settle();
+  engine.receive('p_b', 'GROUP', { sdp: { type: 'answer', sdp: 'a=fingerprint:sha-256 AA' } });
+  await settle();
+  pcs[0].connectionState = 'failed';
+  pcs[0].onconnectionstatechange();
+  await new Promise((r) => setTimeout(r, 350));
+  assert.deepEqual(kinds(), ['p_b:offer', 'p_b:offer']);
+  assert.equal(pcs.length, 1);
+  engine.close();
+}
+{
+  const { engine, pcs, kit } = fakeCall();
+  kit.micDenied = true;
+  assert.equal(await engine.open('GROUP', 'p_a'), 'listen');
+  engine.sync(['p_a', 'p_b']);
+  assert.equal(pcs[0].receiveOnly, true, 'without a microphone we still ask to hear');
+}
+{
+  const { engine, track } = fakeCall();
+  const opening = engine.open('DM', 'p_a');
+  engine.close();
+  assert.equal(await opening, null, 'hung up during the permission prompt');
+  assert.equal(track.stopped, true);
+}
+
 console.log(
-  'mobile selfcheck passed: zero-violet, zero-channels, Group+1:1-DM, /read + Seen receipts, dm_call_ring, 25-seat tiers, Pieces colours and shapes, and zero-PII verified.'
+  'mobile selfcheck passed: call engine, zero-violet, zero-channels, Group+1:1-DM, /read + Seen receipts, dm_call_ring, 25-seat tiers, Pieces colours and shapes, and zero-PII verified.'
 );

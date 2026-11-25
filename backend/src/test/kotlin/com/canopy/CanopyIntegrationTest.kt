@@ -1564,6 +1564,92 @@ class CanopyIntegrationTest {
         }
     }
 
+    @Test
+    @Order(12)
+    fun `room mute poll closing read-all and server-side coin and dice slash commands work cleanly with zero PII`() {
+        val uA = accounts[0]
+        val uB = accounts[1]
+
+        val matchA = postJson("/api/pods/match", uA.token, mapOf("interest" to "board-games"))
+        val matchB = postJson("/api/pods/match", uB.token, mapOf("interest" to "board-games"))
+        assertEquals(HttpStatus.OK, matchA.statusCode)
+        assertEquals(HttpStatus.OK, matchB.statusCode)
+
+        val podNodeA = objectMapper.readTree(matchA.body!!).path("matched")[0]
+        val podNodeB = objectMapper.readTree(matchB.body!!).path("matched")[0]
+        val bgPodId = podNodeA.path("podId").asText()
+        val peerB = podNodeB.path("myPeerId").asText()
+        assertFalse(podNodeA.path("myMuted").asBoolean())
+
+        // 1. Mute and unmute room (per-user, never affects uB)
+        val muteRes = exchangeJson(HttpMethod.PATCH, "/api/pods/$bgPodId/mute", uA.token, mapOf("muted" to true))
+        assertEquals(HttpStatus.OK, muteRes.statusCode)
+        assertZeroPiiLeak(muteRes.body!!)
+        assertTrue(objectMapper.readTree(muteRes.body!!).path("muted").asBoolean())
+
+        val podAAfterMute = objectMapper.readTree(getJson("/api/pods", uA.token).body!!).path("pods")
+            .first { it.path("podId").asText() == bgPodId }
+        val podBAfterMute = objectMapper.readTree(getJson("/api/pods", uB.token).body!!).path("pods")
+            .first { it.path("podId").asText() == bgPodId }
+        assertTrue(podAAfterMute.path("myMuted").asBoolean())
+        assertFalse(podBAfterMute.path("myMuted").asBoolean())
+
+        val unmuteRes = exchangeJson(HttpMethod.PATCH, "/api/pods/$bgPodId/mute", uA.token, mapOf("muted" to false))
+        assertEquals(HttpStatus.OK, unmuteRes.statusCode)
+        assertFalse(objectMapper.readTree(unmuteRes.body!!).path("muted").asBoolean())
+
+        // 2. Poll creation + vote + close permission check (non-author uB rejected -> author uA closes -> subsequent vote rejected)
+        val pollRes = postJson(
+            "/api/pods/$bgPodId/messages",
+            uA.token,
+            mapOf("body" to "/poll \"Next game?\" \"Catan\" \"Wingspan\"")
+        )
+        assertEquals(HttpStatus.CREATED, pollRes.statusCode)
+        assertZeroPiiLeak(pollRes.body!!)
+        val pollId = objectMapper.readTree(pollRes.body!!).path("message").path("poll").path("pollId").asLong()
+
+        assertEquals(HttpStatus.OK, postJson("/api/polls/$pollId/vote", uB.token, mapOf("optionIndex" to 1)).statusCode)
+        assertEquals(HttpStatus.FORBIDDEN, postJson("/api/polls/$pollId/close", uB.token, emptyMap<String, Any>()).statusCode)
+
+        val closeRes = postJson("/api/polls/$pollId/close", uA.token, emptyMap<String, Any>())
+        assertEquals(HttpStatus.OK, closeRes.statusCode)
+        assertZeroPiiLeak(closeRes.body!!)
+        assertTrue(objectMapper.readTree(closeRes.body!!).path("message").path("poll").path("isClosed").asBoolean())
+        assertEquals(HttpStatus.BAD_REQUEST, postJson("/api/polls/$pollId/vote", uA.token, mapOf("optionIndex" to 0)).statusCode)
+
+        // 3. Fair server-side /coin and /roll in Group Chat and 1:1 DM
+        val coinRes = postJson("/api/pods/$bgPodId/messages", uA.token, mapOf("body" to "/coin"))
+        assertEquals(HttpStatus.CREATED, coinRes.statusCode)
+        assertZeroPiiLeak(coinRes.body!!)
+        val coinBody = objectMapper.readTree(coinRes.body!!).path("message").path("body").asText()
+        assertTrue(coinBody.contains("flipped a coin: **Heads**") || coinBody.contains("flipped a coin: **Tails**"))
+
+        val rollRes = postJson("/api/pods/$bgPodId/dms/$peerB/messages", uA.token, mapOf("body" to "/roll 2d6"))
+        assertEquals(HttpStatus.CREATED, rollRes.statusCode)
+        assertZeroPiiLeak(rollRes.body!!)
+        val rollBody = objectMapper.readTree(rollRes.body!!).path("message").path("body").asText()
+        assertTrue(rollBody.contains("rolled 2d6: **"))
+
+        val badRollRes = postJson("/api/pods/$bgPodId/messages", uA.token, mapOf("body" to "/roll 99d6"))
+        assertEquals(HttpStatus.BAD_REQUEST, badRollRes.statusCode)
+
+        // 4. Mark all read clears both Group Chat and 1:1 DM unread counts across all of uB's pods
+        val podsBeforeReadAll = objectMapper.readTree(getJson("/api/pods", uB.token).body!!).path("pods")
+            .first { it.path("podId").asText() == bgPodId }
+        assertTrue(podsBeforeReadAll.path("unreadGroupCount").asInt() > 0)
+        assertTrue(podsBeforeReadAll.path("dmConversations").any { it.path("unreadCount").asInt() > 0 })
+
+        val readAllRes = postJson("/api/pods/read-all", uB.token, emptyMap<String, Any>())
+        assertEquals(HttpStatus.OK, readAllRes.statusCode)
+        assertZeroPiiLeak(readAllRes.body!!)
+        assertTrue(objectMapper.readTree(readAllRes.body!!).path("updatedConversations").asInt() >= 2)
+
+        val podsAfterReadAll = objectMapper.readTree(getJson("/api/pods", uB.token).body!!).path("pods")
+            .first { it.path("podId").asText() == bgPodId }
+        assertEquals(0, podsAfterReadAll.path("unreadGroupCount").asInt())
+        assertTrue(podsAfterReadAll.path("dmConversations").all { it.path("unreadCount").asInt() == 0 })
+    }
+
     private fun uploadAttachment(
         podId: String,
         bearerToken: String,

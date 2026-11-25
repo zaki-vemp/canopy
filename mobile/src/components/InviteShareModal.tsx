@@ -413,9 +413,9 @@ export function InviteShareModal({
 }
 
 const styles = StyleSheet.create({
-  toastBanner: { paddingHorizontal: 18, paddingVertical: 12, borderRadius: 22, backgroundColor: PIECE_HEX.mint },
+  toastBanner: { paddingHorizontal: 16, paddingVertical: 12, borderRadius: 22, backgroundColor: PIECE_HEX.mint },
   errorBanner: {
-    paddingHorizontal: 18,
+    paddingHorizontal: 16,
     paddingVertical: 14,
     backgroundColor: PIECES.off,
     borderTopLeftRadius: 20,
@@ -425,14 +425,14 @@ const styles = StyleSheet.create({
   },
   bannerText: { fontSize: 15, fontWeight: '600', color: PIECES.ink },
   muted: { fontSize: 14, lineHeight: 20, color: PIECES.muted },
-  loadingWrap: { flexDirection: 'row', alignItems: 'center', gap: 10, padding: 8 },
+  loadingWrap: { flexDirection: 'row', alignItems: 'center', gap: 10, paddingVertical: 8 },
   codeBlock: { backgroundColor: PIECE_HEX.cobalt, borderRadius: 24, padding: 16, gap: 8, alignItems: 'flex-start' },
   linkBlock: { backgroundColor: PIECE_HEX.birch, borderRadius: 24, padding: 16, gap: 8, alignItems: 'flex-start' },
   fieldLabel: { fontSize: 14, fontWeight: '600', color: PIECES.ink },
   inviteCodeText: { fontSize: 26, fontFamily: MONO_FONT, color: PIECES.ink },
   metaStatsText: { fontSize: 13, color: PIECES.ink2 },
   webLinkText: { fontSize: 14, fontFamily: MONO_FONT, color: PIECES.ink },
-  revokedBox: { gap: 6, padding: 6 },
+  revokedBox: { gap: 6 },
   revokedTitle: { fontSize: 20, fontWeight: '600', color: PIECES.ink },
   controlSection: { gap: 8 },
   controlLabel: { fontSize: 15, fontWeight: '600', color: PIECES.ink },

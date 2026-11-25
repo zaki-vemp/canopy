@@ -2,9 +2,9 @@
 
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { useQueryClient } from '@tanstack/react-query';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useAtom, useAtomValue, useSetAtom } from 'jotai';
-import { X } from 'lucide-react';
+import { Pin, X } from 'lucide-react';
 import { apiFetch, enableTabIsolatedMode, getAuthToken } from '@/lib/api';
 import { colorVar } from '@/lib/pieces';
 import { authBootstrapReadyAtom, selfUserQueryAtom } from '@/state/authAtoms';
@@ -50,6 +50,7 @@ import {
   type AcceptInviteResponse,
   type PodDetail,
   type PodMember,
+  type RichMessage,
   type RightPanelMode,
 } from '@/types/canopy';
 import ui from '@/components/pieces/ui.module.css';
@@ -199,6 +200,7 @@ export default function WorkspacePage() {
   const waiting = useMemo(
     () =>
       pods.reduce((sum, p) => {
+        if (p.myMuted) return sum;
         const here = p.podId === podId;
         const count = (id: string | null, stored: number | undefined) =>
           here && id === peerId ? 0 : (unread[conversationKey(p.podId, id)] ?? stored ?? 0);
@@ -237,6 +239,7 @@ export default function WorkspacePage() {
           <>
             <div className={s.top}>
               {peer ? <PersonHead pod={pod} peer={peer} /> : <RoomHead pod={pod} />}
+              {!peer && <PinBanner pod={pod} />}
               <CallStrip pod={pod} inDm={peer !== null} />
               {dmCallNotice && <Notice text={dmCallNotice} onClose={clearDmCallNotice} />}
               {kicked && <Notice text={kicked} onClose={() => setKicked(null)} />}
@@ -301,6 +304,32 @@ export default function WorkspacePage() {
       <SearchDialog pods={pods} pod={pod} />
       <AccountDialog user={user} />
     </div>
+  );
+}
+
+function PinBanner({ pod }: { pod: PodDetail }) {
+  const setPanel = useSetAtom(rightPanelAtom);
+  const pins = useQuery<{ messages: RichMessage[] }>({
+    queryKey: ['pins', pod.podId],
+    queryFn: () => apiFetch<{ messages: RichMessage[] }>(`/api/pods/${pod.podId}/pins`),
+    staleTime: 15_000,
+  });
+  const list = pins.data?.messages ?? [];
+  if (list.length === 0) return null;
+  const top = list[0];
+  return (
+    <button
+      type="button"
+      className={s.pinBar}
+      onClick={() => setPanel('pins')}
+      aria-label={`Pinned by ${top.senderAlias}: ${top.body || 'Attachment'}. View all ${list.length} pinned messages`}
+    >
+      <Pin size={15} aria-hidden="true" />
+      <span>
+        <b>{top.senderAlias}</b> {top.body || 'Pinned attachment'}
+      </span>
+      {list.length > 1 && <em>{list.length}</em>}
+    </button>
   );
 }
 

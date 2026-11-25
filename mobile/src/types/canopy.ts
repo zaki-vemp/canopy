@@ -69,6 +69,7 @@ export interface PodDetailDto {
   myColor: string;
   myRole: PodMemberRole;
   myStatus: string;
+  myMuted?: boolean;
   memberCount: number;
   maxMembers: number;
   openProposalsCount: number;

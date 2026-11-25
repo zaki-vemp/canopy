@@ -386,12 +386,29 @@ export function StatusForm({
 }
 
 function AboutRoom({ pod, pods }: { pod: PodDetail; pods: PodDetail[] }) {
+  const queryClient = useQueryClient();
   const setInvitePod = useSetAtom(inviteModalPodIdAtom);
   const setSettingsPod = useSetAtom(adminSettingsPodIdAtom);
   const leave = useLeaveRoom(pods);
   const [leaving, setLeaving] = useState(false);
   const proRoom = pod.governanceMode === 'ADMIN';
   const canManage = proRoom && (pod.myRole === 'OWNER' || pod.myRole === 'ADMIN');
+
+  const toggleMute = useMutation({
+    mutationFn: (muted: boolean) =>
+      apiFetch<{ ok: boolean; muted: boolean }>(`/api/pods/${pod.podId}/mute`, {
+        method: 'PATCH',
+        body: JSON.stringify({ muted }),
+      }),
+    onSuccess: (res) =>
+      queryClient.setQueryData<{ pods: PodDetail[] }>(['pods'], (old) =>
+        old && {
+          pods: old.pods.map((p) =>
+            p.podId === pod.podId ? { ...p, myMuted: res.muted } : p
+          ),
+        }
+      ),
+  });
 
   return (
     <section className={s.about} aria-label="About this room">
@@ -402,11 +419,12 @@ function AboutRoom({ pod, pods }: { pod: PodDetail; pods: PodDetail[] }) {
           {proRoom
             ? `Run by its owner. ${pod.isPublicized ? 'Listed for anyone to join.' : 'Invite only.'}`
             : 'Nobody owns it. Changes pass by vote.'}
+          {pod.myMuted ? ' Muted.' : ''}
         </p>
       </div>
-      {leave.error && (
+      {(leave.error || toggleMute.error) && (
         <p className={ui.alert} role="alert">
-          {leave.error.message}
+          {(leave.error ?? toggleMute.error)?.message}
         </p>
       )}
       {leaving ? (
@@ -446,6 +464,15 @@ function AboutRoom({ pod, pods }: { pod: PodDetail; pods: PodDetail[] }) {
           <button type="button" className={ui.btn} onClick={() => setInvitePod(pod.podId)}>
             Invite
           </button>
+          <button
+            type="button"
+            className={ui.btn}
+            aria-pressed={Boolean(pod.myMuted)}
+            disabled={toggleMute.isPending}
+            onClick={() => toggleMute.mutate(!pod.myMuted)}
+          >
+            {pod.myMuted ? 'Unmute' : 'Mute'}
+          </button>
           {canManage ? (
             <button type="button" className={ui.btn} onClick={() => setSettingsPod(pod.podId)}>
               Manage
@@ -453,7 +480,7 @@ function AboutRoom({ pod, pods }: { pod: PodDetail; pods: PodDetail[] }) {
           ) : null}
           <button
             type="button"
-            className={`${ui.btn} ${canManage ? s.span : ''}`}
+            className={`${ui.btn} ${canManage ? '' : s.span}`}
             onClick={() => setLeaving(true)}
           >
             Leave

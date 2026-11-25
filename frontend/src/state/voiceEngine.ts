@@ -891,11 +891,24 @@ export function useVoiceEngineController(): void {
     const unsubOpen = subscribeWsOpen((reconnectedPodId) => {
       const current = store.get(voiceSessionAtom);
       if (current.status === 'connected' && current.podId === reconnectedPodId) {
-        sendPodWsFrame({
-          type: 'voice_join',
-          muted: current.muted,
-          deafened: current.deafened,
-        });
+        // The others dropped their side of these connections, so start over. Leave
+        // first in case the server still lists the old session, and hold back new
+        // offers ('connecting') until the join is sent: it drops earlier ones.
+        for (const [peerId, entry] of Array.from(runtime.peers.entries())) {
+          if (entry.scope === 'GROUP') runtime.closePeer(peerId);
+        }
+        store.set(voiceSessionAtom, (prev) => ({ ...prev, status: 'connecting' }));
+        sendPodWsFrame({ type: 'voice_leave' });
+        setTimeout(() => {
+          const now = store.get(voiceSessionAtom);
+          if (now.status !== 'connecting' || now.podId !== reconnectedPodId) return;
+          sendPodWsFrame({
+            type: 'voice_join',
+            muted: now.muted,
+            deafened: now.deafened,
+          });
+          store.set(voiceSessionAtom, (prev) => ({ ...prev, status: 'connected' }));
+        }, 500);
       }
       const curDm = store.get(dmCallSessionAtom);
       if (curDm.status !== 'idle' && curDm.podId === reconnectedPodId) {

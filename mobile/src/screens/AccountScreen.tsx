@@ -28,12 +28,12 @@ import {
   apiBaseUrlAtom,
   authTokenAtom,
   authUserAtom,
-  dmCallNoticeAtom,
+  callNoticeAtom,
   peerLastReadByPodPeerAtom,
   unreadDmByPodPeerAtom,
   unreadGroupByPodAtom,
 } from '../state/atoms';
-import { PIECES, TOUCH_MIN } from '../theme/palette';
+import { GUTTER, INSET, PIECES, TOUCH_MIN } from '../theme/palette';
 import { Btn, Chip, fieldStyles } from '../components/Pieces';
 import { GENDER_OPTIONS, NATIONALITY_CHIPS } from './AuthScreen';
 
@@ -54,7 +54,7 @@ export function AccountScreen({
   const setPeerLastReadMap = useSetAtom(peerLastReadByPodPeerAtom);
   const setVoiceSession = useSetAtom(activeVoiceSessionAtom);
   const setActiveDmCall = useSetAtom(activeDmCallAtom);
-  const setDmCallNotice = useSetAtom(dmCallNoticeAtom);
+  const setCallNotice = useSetAtom(callNoticeAtom);
   const [apiBaseUrl, setApiBaseUrl] = useAtom(apiBaseUrlAtom);
 
   const [fullName, setFullName] = useState(user?.fullName ?? '');
@@ -148,7 +148,7 @@ export function AccountScreen({
     await clearStoredToken();
     setVoiceSession(null);
     setActiveDmCall(null);
-    setDmCallNotice(null);
+    setCallNotice(null);
     setActiveDmPeerMap({});
     setUnreadGroupMap({});
     setUnreadDmMap({});
@@ -180,7 +180,7 @@ export function AccountScreen({
           </View>
         ))}
       </View>
-      <Text style={styles.helperText}>
+      <Text style={[styles.helperText, styles.pageText]}>
         Rooms never see these. Every room you join deals you its own alias.
       </Text>
 
@@ -318,21 +318,21 @@ export function AccountScreen({
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: PIECES.bg },
-  content: { padding: 12, gap: 12, paddingBottom: 28, width: '100%', maxWidth: 640, alignSelf: 'center' },
-  pageTitle: { fontSize: 32, color: PIECES.ink, fontWeight: '600', paddingHorizontal: 6, paddingTop: 4 },
+  content: { padding: GUTTER, gap: GUTTER, paddingBottom: 28, width: '100%', maxWidth: 640, alignSelf: 'center' },
+  pageTitle: { fontSize: 32, lineHeight: 36, color: PIECES.ink, fontWeight: '600', paddingHorizontal: INSET, paddingTop: 4 },
   privateRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
   privateBlock: {
     width: '48%',
     flexGrow: 1,
     backgroundColor: PIECES.ink,
     borderRadius: 20,
-    paddingHorizontal: 16,
+    paddingHorizontal: INSET,
     paddingVertical: 12,
     minHeight: 64,
   },
   privateName: { fontSize: 16, fontWeight: '600', color: PIECES.sheet },
   privateNote: { fontSize: 13, color: '#c9c9c9', marginTop: 2 },
-  card: { backgroundColor: PIECES.sheet, borderRadius: 28, padding: 18, gap: 14 },
+  card: { backgroundColor: PIECES.sheet, borderRadius: 28, padding: INSET, gap: 14 },
   cardTitle: { fontSize: 22, color: PIECES.ink, fontWeight: '600' },
   planHeaderRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 8 },
   planBadge: {
@@ -346,7 +346,9 @@ const styles = StyleSheet.create({
     overflow: 'hidden',
   },
   planBadgePro: { backgroundColor: '#e6a92e' },
-  helperText: { fontSize: 14, lineHeight: 20, color: PIECES.muted, paddingHorizontal: 4 },
+  helperText: { fontSize: 14, lineHeight: 20, color: PIECES.muted },
+  // Outside a card, text lines up with the text inside the cards.
+  pageText: { paddingHorizontal: INSET },
   successText: { fontSize: 14, fontWeight: '600', color: PIECES.ink, backgroundColor: '#9bddbb', borderRadius: 16, paddingHorizontal: 14, paddingVertical: 10, overflow: 'hidden' },
   alertBox: {
     paddingHorizontal: 18,

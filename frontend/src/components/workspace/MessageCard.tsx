@@ -397,7 +397,19 @@ export function MessageCard({
                 <RichMarkdown body={message.body} knownAliases={knownAliases} />
               </div>
             )}
-            {message.poll && <PollBlock poll={message.poll} podId={message.podId} />}
+            {message.poll && (
+              <PollBlock
+                poll={message.poll}
+                podId={message.podId}
+                canClose={(() => {
+                  if (own) return true;
+                  const pod = queryClient
+                    .getQueryData<{ pods: PodDetail[] }>(['pods'])
+                    ?.pods.find((p) => p.podId === message.podId);
+                  return Boolean(pod && pod.governanceMode === 'ADMIN' && pod.myRole !== 'MEMBER');
+                })()}
+              />
+            )}
             {voice.map((a) => (
               <VoiceNote key={a.id} attachment={a} />
             ))}

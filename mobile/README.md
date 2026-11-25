@@ -5,7 +5,8 @@ Native mobile client for **Canopy** — peer-blind multi-pod rooms with **1 Pod 
 ## Tech Stack
 - **Expo SDK 52** (`react-native` `0.76.7`, `react` `18.3.1`, TypeScript `strict: true`)
 - **State & Caching**: `jotai` + `@tanstack/react-query` (zero Redux)
-- **Realtime & Audio**: Native `WebSocket` (`/ws/pods/{podId}?token=...`) + `expo-av`
+- **Realtime & Audio**: Native `WebSocket` (`/ws/pods/{podId}?token=...`) + `expo-av` for voice notes
+- **Calls**: `react-native-webrtc` + `react-native-incall-manager` (`src/voice/`), same signalling as the web client, so phones and browsers share one call
 - **Design System**: Canopy **Pieces**, the same tokens as the web app: white sheets (`#ffffff`) on a `#f4f4f4` table, `#111111` ink, one blue (`#1a4be0`) for anything pressed, the twelve alias colours for people and what they send, `Gabarito` / `Figtree` / `DM Mono`, zero violet, `>=44pt` touch targets. A person's colour and shape come from their alias in `src/theme/palette.ts`, never from the hex the API sends. Phones get three tabs (Rooms, Chat, People); tablets, iPads and phones turned sideways (900pt wide or more) get all three side by side.
 
 ## Prerequisites
@@ -43,6 +44,22 @@ npx expo start --ios
 npx expo start --web --port 8081
 ```
 *(If testing web preview against local Spring Boot `:8090`, include `http://localhost:8081` in `canopy.cors-origins` / `CORS_ORIGINS`.)*
+
+## Calls
+
+Calls use native WebRTC, so they need a build of the app (`npx expo prebuild`, then Gradle or Xcode). In **Expo Go** everything else works and calls say so. The web preview uses the browser's WebRTC.
+
+STUN is enough on most Wi-Fi. Two phones behind carrier networks usually need a TURN relay as well:
+
+```bash
+EXPO_PUBLIC_TURN_URLS="turn:turn.example.com:3478,turns:turn.example.com:5349"
+EXPO_PUBLIC_TURN_USERNAME="..."
+EXPO_PUBLIC_TURN_CREDENTIAL="..."
+```
+
+These values end up inside the app, so use credentials made for it.
+
+Limits today: one room call at a time, and moving to another room ends it. On Android the screen stays on during a call because the system cuts the microphone of an app in the background.
 
 ## Verification Commands
 

@@ -21,7 +21,7 @@ import {
   setStoredToken,
 } from '../api/client';
 import { apiBaseUrlAtom, authTokenAtom, authUserAtom } from '../state/atoms';
-import { PALETTE, PIECES, TOUCH_MIN } from '../theme/palette';
+import { GUTTER, INSET, PALETTE, PIECES, TOUCH_MIN } from '../theme/palette';
 import { Logo } from '../components/Pieces';
 
 export const GENDER_OPTIONS = [
@@ -139,7 +139,7 @@ export function AuthScreen() {
           keyboardShouldPersistTaps="handled"
         >
           <View style={styles.logoRow}>
-            <Logo size={28} />
+            <Logo size={26} />
             <Pressable
               accessibilityRole="button"
               accessibilityLabel={registering ? 'Go to sign in' : 'Go to make an account'}
@@ -370,11 +370,12 @@ export function AuthScreen() {
 const styles = StyleSheet.create({
   safe: { flex: 1, backgroundColor: PALETTE.surface },
   flex: { flex: 1 },
-  scrollContent: { padding: 16, paddingBottom: 32, gap: 16, width: '100%', maxWidth: 520, alignSelf: 'center' },
+  scrollContent: { padding: GUTTER, paddingBottom: 32, gap: GUTTER, width: '100%', maxWidth: 520, alignSelf: 'center' },
   logoRow: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
+    gap: 8,
     minHeight: TOUCH_MIN,
   },
   swapBtn: {
@@ -389,7 +390,7 @@ const styles = StyleSheet.create({
   sheet: {
     backgroundColor: PALETTE.card,
     borderRadius: 28,
-    padding: 22,
+    padding: INSET,
     gap: 16,
   },
   title: { fontSize: 32, lineHeight: 36, color: PALETTE.ink, fontWeight: '700' },
@@ -461,14 +462,14 @@ const styles = StyleSheet.create({
   serverCard: { backgroundColor: PALETTE.card, borderRadius: 24, overflow: 'hidden' },
   serverHeaderBtn: {
     minHeight: TOUCH_MIN + 4,
-    paddingHorizontal: 20,
+    paddingHorizontal: INSET,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
     gap: 8,
   },
   serverTitle: { flex: 1, fontSize: 14, color: PALETTE.muted, fontFamily: MONO_FONT },
-  serverBody: { paddingHorizontal: 20, paddingBottom: 18, gap: 12 },
+  serverBody: { paddingHorizontal: INSET, paddingBottom: INSET, gap: 12 },
   serverHint: { fontSize: 14, lineHeight: 20, color: PALETTE.muted },
   serverActionsRow: { flexDirection: 'row', gap: 8 },
   saveUrlBtn: {

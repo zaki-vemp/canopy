@@ -81,6 +81,12 @@ class ChatController(
         return richChatService.markRead(principal, podId, req)
     }
 
+    @PostMapping("/pods/read-all")
+    fun markAllPodsRead(): MarkAllReadResponse {
+        val principal = requirePrincipal()
+        return richChatService.markAllRead(principal)
+    }
+
     @PatchMapping("/messages/{messageId}")
     fun editMessage(
         @PathVariable messageId: Long,
@@ -125,6 +131,12 @@ class ChatController(
     ): SingleMessageResponse {
         val principal = requirePrincipal()
         return SingleMessageResponse(message = richChatService.votePoll(principal, pollId, req.optionIndex))
+    }
+
+    @PostMapping("/polls/{pollId}/close")
+    fun closePoll(@PathVariable pollId: Long): SingleMessageResponse {
+        val principal = requirePrincipal()
+        return SingleMessageResponse(message = richChatService.closePoll(principal, pollId))
     }
 
     @GetMapping("/pods/{podId}/pins")

@@ -60,6 +60,11 @@ export const PALETTE = {
 
 export const TOUCH_MIN = 44;
 
+// Two lines run down every screen: cards, bubbles and bars start at GUTTER, and
+// the text inside a card (or above it) starts INSET further in.
+export const GUTTER = 12;
+export const INSET = 16;
+
 export type PieceColorName = keyof typeof PIECE_HEX;
 export const PIECE_NAMES = Object.keys(PIECE_HEX) as PieceColorName[];
 

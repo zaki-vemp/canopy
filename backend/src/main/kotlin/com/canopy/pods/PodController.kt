@@ -57,6 +57,16 @@ class PodController(
         return OkResponse(ok = true)
     }
 
+    @PatchMapping("/pods/{podId}/mute")
+    fun updatePodMute(
+        @PathVariable podId: String,
+        @RequestBody req: UpdateMuteRequest
+    ): UpdateMuteResponse {
+        val principal = requirePrincipal()
+        val muted = blindMatchService.updateMute(principal, podId, req.muted)
+        return UpdateMuteResponse(ok = true, muted = muted)
+    }
+
     @PostMapping("/pods/{podId}/leave")
     fun leavePod(
         @PathVariable podId: String,

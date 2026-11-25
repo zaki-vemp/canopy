@@ -306,6 +306,12 @@ class RichChatService(
                 val prefix = trimmed.drop("/shrug".length).trim()
                 effectiveBody = if (prefix.isEmpty()) "¯\\_(ツ)_/¯" else "$prefix ¯\\_(ツ)_/¯"
             }
+            trimmed.equals("/coin", ignoreCase = true) -> {
+                effectiveBody = formatCoinFlip(ctx.myAlias)
+            }
+            trimmed.equals("/roll", ignoreCase = true) || trimmed.startsWith("/roll ", ignoreCase = true) -> {
+                effectiveBody = formatDiceRoll(ctx.myAlias, trimmed.drop("/roll".length).trim())
+            }
         }
 
         if (effectiveBody.length > 4000) {
@@ -359,9 +365,17 @@ class RichChatService(
         }
 
         var effectiveBody = trimmed
-        if (trimmed.equals("/shrug", ignoreCase = true) || trimmed.startsWith("/shrug ", ignoreCase = true)) {
-            val prefix = trimmed.drop("/shrug".length).trim()
-            effectiveBody = if (prefix.isEmpty()) "¯\\_(ツ)_/¯" else "$prefix ¯\\_(ツ)_/¯"
+        when {
+            trimmed.equals("/shrug", ignoreCase = true) || trimmed.startsWith("/shrug ", ignoreCase = true) -> {
+                val prefix = trimmed.drop("/shrug".length).trim()
+                effectiveBody = if (prefix.isEmpty()) "¯\\_(ツ)_/¯" else "$prefix ¯\\_(ツ)_/¯"
+            }
+            trimmed.equals("/coin", ignoreCase = true) -> {
+                effectiveBody = formatCoinFlip(ctx.myAlias)
+            }
+            trimmed.equals("/roll", ignoreCase = true) || trimmed.startsWith("/roll ", ignoreCase = true) -> {
+                effectiveBody = formatDiceRoll(ctx.myAlias, trimmed.drop("/roll".length).trim())
+            }
         }
         if (effectiveBody.length > 4000) {
             effectiveBody = effectiveBody.take(4000)
@@ -560,6 +574,123 @@ class RichChatService(
             )
         )
         return MarkReadResponse(ok = true, lastReadMessageId = effectiveId)
+    }
+
+    fun markAllRead(principal: AuthPrincipal): MarkAllReadResponse {
+        val userId = principal.userId()
+        data class UserPodRow(val podId: Long, val podPub: ByteArray, val podHex: String)
+        val pods = jdbcClient.sql(
+            """
+            SELECT p.id, p.public_id
+            FROM pod_members pm
+            JOIN pods p ON p.id = pm.pod_id
+            WHERE pm.user_id = :userId
+            """.trimIndent()
+        )
+            .param("userId", userId)
+            .query { rs, _ ->
+                val pub = rs.getBytes("public_id")
+                UserPodRow(rs.getLong("id"), pub, UuidV7.toHex(pub))
+            }
+            .list()
+
+        if (pods.isEmpty()) return MarkAllReadResponse(ok = true, updatedConversations = 0)
+
+        data class DmNotify(
+            val podHex: String,
+            val myPeerId: String,
+            val peerUserId: Long,
+            val peerId: String,
+            val lastReadId: Long
+        )
+        val dmNotifies = mutableListOf<DmNotify>()
+        var updatedCount = 0
+
+        txTemplate.executeWithoutResult {
+            for (pod in pods) {
+                val maxGroupId = jdbcClient.sql(
+                    """
+                    SELECT COALESCE(MAX(id), 0) AS max_id
+                    FROM messages FORCE INDEX (idx_messages_convo_cursor)
+                    WHERE pod_id = :podId
+                      AND dm_user_low_id = 0
+                      AND dm_user_high_id = 0
+                      AND is_deleted = 0
+                    """.trimIndent()
+                )
+                    .param("podId", pod.podId)
+                    .query { rs, _ -> rs.getLong("max_id") }
+                    .single()
+
+                if (maxGroupId > 0L) {
+                    upsertReadCursor(pod.podId, userId, 0L, maxGroupId)
+                    updatedCount++
+                }
+
+                data class DmMaxRow(val peerUserId: Long, val peerPub: ByteArray, val maxId: Long)
+                val dmRows = jdbcClient.sql(
+                    """
+                    SELECT peer_id_col AS peer_user_id, u.public_id AS peer_public_id, MAX(max_id) AS max_id
+                    FROM (
+                        SELECT dm_user_high_id AS peer_id_col, MAX(id) AS max_id
+                        FROM messages FORCE INDEX (idx_messages_dm_low)
+                        WHERE pod_id = :podId AND dm_user_low_id = :userId AND is_deleted = 0
+                        GROUP BY dm_user_high_id
+                        UNION ALL
+                        SELECT dm_user_low_id AS peer_id_col, MAX(id) AS max_id
+                        FROM messages FORCE INDEX (idx_messages_dm_high)
+                        WHERE pod_id = :podId AND dm_user_high_id = :userId AND is_deleted = 0
+                        GROUP BY dm_user_low_id
+                    ) d
+                    JOIN users u ON u.id = d.peer_id_col
+                    WHERE d.peer_id_col > 0
+                    GROUP BY d.peer_id_col, u.public_id
+                    """.trimIndent()
+                )
+                    .param("podId", pod.podId)
+                    .param("userId", userId)
+                    .query { rs, _ ->
+                        DmMaxRow(
+                            peerUserId = rs.getLong("peer_user_id"),
+                            peerPub = rs.getBytes("peer_public_id"),
+                            maxId = rs.getLong("max_id")
+                        )
+                    }
+                    .list()
+
+                val myPeerId = UuidV7.peerId(pod.podPub, principal.userPublicId())
+                for (dm in dmRows) {
+                    if (dm.maxId > 0L) {
+                        upsertReadCursor(pod.podId, userId, dm.peerUserId, dm.maxId)
+                        val effectiveId = readEffectiveCursor(pod.podId, userId, dm.peerUserId)
+                        updatedCount++
+                        dmNotifies.add(
+                            DmNotify(
+                                podHex = pod.podHex,
+                                myPeerId = myPeerId,
+                                peerUserId = dm.peerUserId,
+                                peerId = UuidV7.peerId(pod.podPub, dm.peerPub),
+                                lastReadId = effectiveId
+                            )
+                        )
+                    }
+                }
+            }
+        }
+
+        for (n in dmNotifies) {
+            podRealtimeHub.sendToUsers(
+                n.podHex,
+                setOf(userId, n.peerUserId),
+                WsServerFrame.DmReadOut(
+                    peerId = n.myPeerId,
+                    targetPeerId = n.peerId,
+                    lastReadMessageId = n.lastReadId
+                )
+            )
+        }
+
+        return MarkAllReadResponse(ok = true, updatedConversations = updatedCount)
     }
 
     private fun upsertReadCursor(
@@ -827,6 +958,120 @@ class RichChatService(
             podRealtimeHub.broadcastToPod(lookup.podIdHex, frame)
         }
         return updated
+    }
+
+    fun closePoll(principal: AuthPrincipal, pollId: Long): RichMessageDto {
+        data class PollCloseLookup(
+            val pollId: Long,
+            val messageId: Long,
+            val senderUserId: Long,
+            val isClosed: Boolean,
+            val podIdHex: String,
+            val governanceMode: String,
+            val dmLow: Long,
+            val dmHigh: Long,
+            val myRole: String
+        )
+
+        val lookup = jdbcClient.sql(
+            """
+            SELECT pl.id AS poll_id,
+                   pl.message_id,
+                   pl.is_closed,
+                   m.sender_user_id,
+                   m.dm_user_low_id,
+                   m.dm_user_high_id,
+                   p.public_id AS pod_public_id,
+                   p.governance_mode,
+                   pm.role AS my_role
+            FROM polls pl
+            JOIN messages m ON m.id = pl.message_id
+            JOIN pods p ON p.id = m.pod_id
+            LEFT JOIN pod_members pm ON pm.pod_id = m.pod_id AND pm.user_id = :userId
+            WHERE pl.id = :pollId
+            LIMIT 1
+            """.trimIndent()
+        )
+            .param("userId", principal.userId())
+            .param("pollId", pollId)
+            .query { rs, _ ->
+                val role = rs.getString("my_role")
+                    ?: throw ResponseStatusException(HttpStatus.FORBIDDEN, "Not a member of this pod")
+                val dmLow = rs.getLong("dm_user_low_id")
+                val dmHigh = rs.getLong("dm_user_high_id")
+                if (dmLow > 0L && principal.userId() != dmLow && principal.userId() != dmHigh) {
+                    throw ResponseStatusException(HttpStatus.FORBIDDEN, "Private message restricted to participants")
+                }
+                PollCloseLookup(
+                    pollId = rs.getLong("poll_id"),
+                    messageId = rs.getLong("message_id"),
+                    senderUserId = rs.getLong("sender_user_id"),
+                    isClosed = rs.getInt("is_closed") != 0,
+                    podIdHex = UuidV7.toHex(rs.getBytes("pod_public_id")),
+                    governanceMode = rs.getString("governance_mode") ?: "DEMOCRATIC",
+                    dmLow = dmLow,
+                    dmHigh = dmHigh,
+                    myRole = role
+                )
+            }
+            .optional()
+            .orElseThrow { ResponseStatusException(HttpStatus.NOT_FOUND, "Poll not found") }
+
+        val canClose = lookup.senderUserId == principal.userId() ||
+            (lookup.governanceMode == "ADMIN" && lookup.myRole in setOf("OWNER", "ADMIN"))
+        if (!canClose) {
+            throw ResponseStatusException(HttpStatus.FORBIDDEN, "Only the poll author or a room admin can close this poll")
+        }
+
+        if (!lookup.isClosed) {
+            jdbcClient.sql("UPDATE polls SET is_closed = 1 WHERE id = :pollId")
+                .param("pollId", pollId)
+                .update()
+        }
+
+        val updated = fetchSingleHydratedMessage(lookup.messageId, principal.userId())
+        val frame = WsServerFrame.PollUpdatedOut(message = updated)
+        if (lookup.dmLow > 0L) {
+            podRealtimeHub.sendToUsers(lookup.podIdHex, setOf(lookup.dmLow, lookup.dmHigh), frame)
+        } else {
+            podRealtimeHub.broadcastToPod(lookup.podIdHex, frame)
+        }
+        return updated
+    }
+
+    internal fun formatCoinFlip(alias: String): String {
+        val side = if (rng.nextBoolean()) "Heads" else "Tails"
+        return "🪙 $alias flipped a coin: **$side**"
+    }
+
+    internal fun formatDiceRoll(alias: String, rawSpec: String): String {
+        val spec = rawSpec.trim().lowercase()
+        val (count, sides) = when {
+            spec.isEmpty() -> 1 to 6
+            spec.matches(Regex("^\\d+$")) -> {
+                val s = spec.toIntOrNull()
+                    ?: throw ResponseStatusException(HttpStatus.BAD_REQUEST, "Usage: /roll [2d6 | 20]")
+                1 to s
+            }
+            else -> {
+                val m = Regex("^(\\d*)d(\\d+)$").matchEntire(spec)
+                    ?: throw ResponseStatusException(HttpStatus.BAD_REQUEST, "Usage: /roll [2d6 | 20]")
+                val c = if (m.groupValues[1].isEmpty()) 1 else m.groupValues[1].toIntOrNull() ?: 0
+                val s = m.groupValues[2].toIntOrNull() ?: 0
+                c to s
+            }
+        }
+        if (count !in 1..10 || sides !in 2..1000) {
+            throw ResponseStatusException(HttpStatus.BAD_REQUEST, "Roll 1–10 dice with 2–1000 sides (e.g. /roll 2d6)")
+        }
+        val rolls = List(count) { rng.nextInt(sides) + 1 }
+        val total = rolls.sum()
+        val label = "${count}d$sides"
+        return if (count == 1) {
+            "🎲 $alias rolled $label: **$total**"
+        } else {
+            "🎲 $alias rolled $label: **$total** (${rolls.joinToString(", ")})"
+        }
     }
 
     fun listPodPins(principal: AuthPrincipal, podIdHexRaw: String): List<RichMessageDto> {

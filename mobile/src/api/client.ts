@@ -292,6 +292,26 @@ export async function updatePodStatus(
   });
 }
 
+export async function updatePodMute(
+  podId: string,
+  muted: boolean
+): Promise<{ ok: boolean; muted: boolean }> {
+  return apiFetch<{ ok: boolean; muted: boolean }>(`/api/pods/${podId}/mute`, {
+    method: 'PATCH',
+    body: JSON.stringify({ muted }),
+  });
+}
+
+export async function markAllPodsRead(): Promise<{
+  ok: boolean;
+  updatedConversations: number;
+}> {
+  return apiFetch<{ ok: boolean; updatedConversations: number }>(
+    '/api/pods/read-all',
+    { method: 'POST' }
+  );
+}
+
 export async function leavePod(
   podId: string,
   payload: LeavePodRequest = {}
@@ -608,6 +628,14 @@ export async function votePoll(
   return apiFetch<{ message: RichMessageDto }>(`/api/polls/${pollId}/vote`, {
     method: 'POST',
     body: JSON.stringify({ optionIndex }),
+  });
+}
+
+export async function closePoll(
+  pollId: number
+): Promise<{ message: RichMessageDto }> {
+  return apiFetch<{ message: RichMessageDto }>(`/api/polls/${pollId}/close`, {
+    method: 'POST',
   });
 }
 
